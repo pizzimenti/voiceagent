@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voiceagent"
+version = "0.1.0"
+description = "Simple push-to-talk KDE voice app in Python"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "PySide6>=6.10,<6.11",
+  "sounddevice>=0.5,<0.6",
+  "faster-whisper>=1.2,<2",
+  "piper-tts>=1.4,<2",
+]
+
+[project.scripts]
+voiceagent = "voiceagent.__main__:main"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
