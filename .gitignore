@@ -1,6 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
+pkg/
+src/vendor/
+*.pkg.tar.*
 *.pyo
 *.egg-info/
 build/
