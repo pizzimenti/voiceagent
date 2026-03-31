@@ -8,6 +8,7 @@ Simple KDE-friendly push-to-talk desktop app in Python.
 - `sounddevice` for microphone capture
 - `faster-whisper` for local transcription
 - `piper-tts` for local speech synthesis
+- `aria2c` for segmented model downloads
 - LM Studio's OpenAI-compatible local API for chat
 - Piper CLI invocation for local speech synthesis
 
@@ -16,6 +17,7 @@ Simple KDE-friendly push-to-talk desktop app in Python.
 Use a virtual environment so the app dependencies stay isolated from the system Python:
 
 ```bash
+sudo apt install aria2
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
@@ -32,9 +34,15 @@ Environment variables:
 - `WHISPER_MODEL` default: `large-v3`
 - `WHISPER_DEVICE` default: `auto`
 - `WHISPER_COMPUTE_TYPE` default: `auto`
+- `VOICEAGENT_STT_MODEL_ROOT` default: `./stt-models`
+- `VOICEAGENT_TTS_MODEL_ROOT` default: `./tts-models`
 - `TTS_COMMAND` default: `piper`
 - `TTS_MODEL` optional Piper voice name like `en_US-lessac-medium` or a path to a Piper model file
 - `TTS_EXTRA_ARGS` optional extra command-line flags for TTS
+
+Whisper downloads and Hugging Face cache data are kept under `./stt-models` by default, and Piper voices are expected under `./tts-models`.
+
+Model downloads use `aria2c` with 10 parallel connections by default, and the app shows live progress and transfer speed while Whisper is loading.
 
 ## Run
 

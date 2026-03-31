@@ -16,7 +16,9 @@ htmlcov/
 *.ogg
 *.flac
 *.log
+*.aria2
 logs/
 models/
+stt-models/
+tts-models/
 recordings/
-

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 import tempfile
 import threading
@@ -15,6 +16,8 @@ class MicrophoneRecorder:
         self._frames: list[bytes] = []
         self._lock = threading.Lock()
         self._stream: Any | None = None
+        self._logger = logging.getLogger(__name__)
+        self._status_count = 0
 
     def start(self) -> None:
         with self._lock:
@@ -24,6 +27,7 @@ class MicrophoneRecorder:
             import sounddevice as sd
 
             self._frames = []
+            self._status_count = 0
             self._stream = sd.RawInputStream(
                 samplerate=self.sample_rate,
                 channels=self.channels,
@@ -31,6 +35,11 @@ class MicrophoneRecorder:
                 callback=self._handle_audio_chunk,
             )
             self._stream.start()
+            self._logger.info(
+                "Microphone recording started sample_rate=%s channels=%s",
+                self.sample_rate,
+                self.channels,
+            )
 
     def stop(self) -> Path:
         with self._lock:
@@ -44,6 +53,7 @@ class MicrophoneRecorder:
         stream.close()
 
         if not self._frames:
+            self._logger.warning("Microphone recording stopped with no audio frames captured")
             raise RuntimeError("No audio was captured from the microphone.")
 
         fd, raw_path = tempfile.mkstemp(prefix="voiceagent-input-", suffix=".wav")
@@ -58,10 +68,19 @@ class MicrophoneRecorder:
             for frame in self._frames:
                 wav_file.writeframes(frame)
 
+        self._logger.info(
+            "Microphone recording saved path=%s frames=%s bytes=%s status_events=%s",
+            path,
+            len(self._frames),
+            path.stat().st_size,
+            self._status_count,
+        )
         return path
 
     def _handle_audio_chunk(self, indata, frames, time_info, status) -> None:
         if status:
+            self._status_count += 1
+            self._logger.warning("Audio callback status=%s", status)
             return
 
         self._frames.append(bytes(indata))

@@ -1,32 +1,54 @@
 from __future__ import annotations
 
 import sys
+import logging
+import os
+from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
 from voiceagent.audio_check import AudioCheckController
 from voiceagent.config import AppConfig
 from voiceagent.controller import VoiceController
+from voiceagent.logging_utils import configure_logging
+from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.services.audio import MicrophoneRecorder
 from voiceagent.services.chat import LmStudioClient
 from voiceagent.services.playback import AudioPlayer
 from voiceagent.services.stt import WhisperTranscriber
 from voiceagent.services.tts import PiperTtsService
+from voiceagent.tts_loader import TtsVoiceLoader
 from voiceagent.window import MainWindow
 
 
-def build_shared_services(config: AppConfig) -> tuple[WhisperTranscriber, PiperTtsService]:
+def build_shared_services(config: AppConfig) -> tuple[WhisperTranscriber, PiperTtsService, WhisperModelLoader, TtsVoiceLoader]:
     transcriber = WhisperTranscriber(
         model_name=config.whisper_model,
         device=config.whisper_device,
         compute_type=config.whisper_compute_type,
     )
+    transcriber.model_root = config.stt_model_root
     tts_service = PiperTtsService(
         command=config.tts_command,
         model_path=config.tts_model,
         extra_args=config.tts_extra_args,
     )
-    return transcriber, tts_service
+    tts_service.model_root = config.tts_model_root
+    model_loader = WhisperModelLoader(transcriber)
+    tts_loader = TtsVoiceLoader(tts_service)
+    return transcriber, tts_service, model_loader, tts_loader
+
+
+def configure_model_environment(stt_model_root: Path, tts_model_root: Path) -> None:
+    stt_model_root.mkdir(parents=True, exist_ok=True)
+    tts_model_root.mkdir(parents=True, exist_ok=True)
+    hf_home = stt_model_root / "huggingface"
+    hf_home.mkdir(parents=True, exist_ok=True)
+
+    os.environ["HF_HOME"] = str(hf_home)
+    os.environ["HUGGINGFACE_HUB_CACHE"] = str(hf_home / "hub")
+    os.environ["HF_HUB_CACHE"] = str(hf_home / "hub")
+    os.environ["TRANSFORMERS_CACHE"] = str(hf_home / "transformers")
 
 
 def build_controller(
@@ -66,15 +88,21 @@ def build_audio_check_controller(
 
 
 def main() -> int:
+    log_path = configure_logging()
+    logging.getLogger(__name__).info("Starting voiceagent")
     app = QApplication(sys.argv)
     config = AppConfig.from_env()
-    transcriber, tts_service = build_shared_services(config)
+    configure_model_environment(config.stt_model_root, config.tts_model_root)
+    logging.getLogger(__name__).info("Configured log file path=%s", log_path)
+    logging.getLogger(__name__).info("Configured STT model root path=%s", config.stt_model_root)
+    logging.getLogger(__name__).info("Configured TTS model root path=%s", config.tts_model_root)
+    transcriber, tts_service, model_loader, tts_loader = build_shared_services(config)
     controller = build_controller(config, transcriber=transcriber, tts_service=tts_service)
     audio_check_controller = build_audio_check_controller(
         config,
         transcriber=transcriber,
         tts_service=tts_service,
     )
-    window = MainWindow(controller, audio_check_controller)
+    window = MainWindow(controller, audio_check_controller, model_loader, tts_loader)
     window.show()
     return app.exec()

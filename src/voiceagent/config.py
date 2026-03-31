@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
 import shlex
+import sys
 
 
 @dataclass(slots=True)
@@ -16,10 +18,20 @@ class AppConfig:
     tts_command: list[str]
     tts_model: str | None
     tts_extra_args: list[str]
+    stt_model_root: Path
+    tts_model_root: Path
     sample_rate: int = 16_000
 
     @classmethod
     def from_env(cls) -> "AppConfig":
+        stt_model_root = Path(os.environ.get("VOICEAGENT_STT_MODEL_ROOT", Path.cwd() / "stt-models")).expanduser()
+        tts_model_root = Path(os.environ.get("VOICEAGENT_TTS_MODEL_ROOT", Path.cwd() / "tts-models")).expanduser()
+        default_tts_command = os.environ.get("TTS_COMMAND", "").strip()
+        if default_tts_command:
+            tts_command = shlex.split(default_tts_command)
+        else:
+            venv_piper = Path(sys.executable).with_name("piper")
+            tts_command = [str(venv_piper)] if venv_piper.exists() else ["piper"]
         return cls(
             lm_studio_base_url=os.environ.get("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1").rstrip("/"),
             lm_studio_model=os.environ.get("LM_STUDIO_MODEL", "").strip(),
@@ -30,8 +42,9 @@ class AppConfig:
             whisper_model=os.environ.get("WHISPER_MODEL", "large-v3").strip(),
             whisper_device=os.environ.get("WHISPER_DEVICE", "auto").strip(),
             whisper_compute_type=os.environ.get("WHISPER_COMPUTE_TYPE", "auto").strip(),
-            tts_command=shlex.split(os.environ.get("TTS_COMMAND", "piper")),
+            tts_command=tts_command,
             tts_model=os.environ.get("TTS_MODEL", "").strip() or None,
             tts_extra_args=shlex.split(os.environ.get("TTS_EXTRA_ARGS", "")),
+            stt_model_root=stt_model_root,
+            tts_model_root=tts_model_root,
         )
-

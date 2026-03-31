@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -40,6 +41,7 @@ class VoiceController(QObject):
         self.player = player
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceagent")
         self.state = AppState.IDLE
+        self._logger = logging.getLogger(__name__)
 
         self.pipeline_completed.connect(self._apply_pipeline_result)
         self.pipeline_failed.connect(self._apply_pipeline_error)
@@ -54,10 +56,13 @@ class VoiceController(QObject):
             return
 
         self.error_changed.emit("")
+        self.transcript_changed.emit("")
+        self.response_changed.emit("")
         self.status_changed.emit("Listening")
         try:
             self.recorder.start()
         except Exception as exc:
+            self._logger.exception("Failed to start microphone recording")
             self.error_changed.emit(str(exc))
             self._apply_state(AppState.IDLE.value, "Microphone unavailable")
             return
@@ -71,11 +76,12 @@ class VoiceController(QObject):
         try:
             audio_path = self.recorder.stop()
         except Exception as exc:
+            self._logger.exception("Failed to stop microphone recording")
             self.error_changed.emit(str(exc))
             self._apply_state(AppState.IDLE.value, "Recording failed")
             return
 
-        self._apply_state(AppState.TRANSCRIBING.value, "Transcribing")
+        self._apply_state(AppState.TRANSCRIBING.value, "Preparing audio")
         future = self.executor.submit(self._run_pipeline, audio_path)
         future.add_done_callback(self._handle_pipeline_done)
 
@@ -84,20 +90,32 @@ class VoiceController(QObject):
 
     def _run_pipeline(self, audio_path: Path) -> PipelineResult:
         try:
+            if not self.transcriber.is_loaded:
+                self.pipeline_state_changed.emit(AppState.TRANSCRIBING.value, "Loading Whisper model")
+                self.transcriber.ensure_loaded()
+
+            self.pipeline_state_changed.emit(AppState.TRANSCRIBING.value, "Transcribing")
             transcript = self.transcriber.transcribe(audio_path)
+            self.transcript_changed.emit(transcript)
             self.pipeline_state_changed.emit(AppState.THINKING.value, "Waiting for LM Studio")
             response = self.chat_client.complete(transcript)
+            self.response_changed.emit(response)
 
             tts_audio_path = None
             if self.tts_service.enabled:
                 self.pipeline_state_changed.emit(AppState.SYNTHESIZING.value, "Generating speech")
                 tts_audio_path = self.tts_service.synthesize(response)
+            else:
+                self._logger.info("TTS skipped because no voice is selected")
 
             return PipelineResult(
                 transcript=transcript,
                 response=response,
                 tts_audio_path=tts_audio_path,
             )
+        except Exception:
+            self._logger.exception("Voice pipeline failed path=%s", audio_path)
+            raise
         finally:
             audio_path.unlink(missing_ok=True)
 
@@ -112,8 +130,6 @@ class VoiceController(QObject):
 
     def _apply_pipeline_result(self, result: PipelineResult) -> None:
         self.error_changed.emit("")
-        self.transcript_changed.emit(result.transcript)
-        self.response_changed.emit(result.response)
 
         if result.tts_audio_path is None:
             self._apply_state(AppState.IDLE.value, "Ready")
@@ -127,10 +143,10 @@ class VoiceController(QObject):
         self.error_changed.emit(message)
         self._apply_state(AppState.IDLE.value, "Ready")
 
-    def _handle_playback_finished(self) -> None:
+    def _handle_playback_finished(self, _path: str) -> None:
         self._apply_state(AppState.IDLE.value, "Ready")
 
-    def _handle_playback_failed(self, message: str) -> None:
+    def _handle_playback_failed(self, _path: str, message: str) -> None:
         self.error_changed.emit(message)
         self._apply_state(AppState.IDLE.value, "Ready")
 
@@ -141,4 +157,3 @@ class VoiceController(QObject):
     def _set_state(self, state: AppState) -> None:
         self.state = state
         self.state_changed.emit(state.value)
-

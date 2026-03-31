@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QVBoxLayout
 
 from voiceagent.models import AppState
+from voiceagent.replay_widgets import ReplayableTextBlock
 from voiceagent.services.audio import MicrophoneRecorder
 from voiceagent.services.playback import AudioPlayer
 from voiceagent.services.stt import WhisperTranscriber
@@ -37,6 +39,7 @@ class AudioCheckController(QObject):
         self.player = player
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceagent-audio-check")
         self.state = AppState.IDLE
+        self._logger = logging.getLogger(__name__)
 
         self.playback_ready.connect(self._play_transcript_audio)
         self.pipeline_failed.connect(self._handle_pipeline_error)
@@ -51,9 +54,11 @@ class AudioCheckController(QObject):
             return
 
         self.error_changed.emit("")
+        self.transcript_changed.emit("")
         try:
             self.recorder.start()
         except Exception as exc:
+            self._logger.exception("Failed to start audio-check microphone recording")
             self.error_changed.emit(str(exc))
             self._apply_state(AppState.IDLE.value, "Microphone unavailable")
             return
@@ -68,11 +73,12 @@ class AudioCheckController(QObject):
         try:
             audio_path = self.recorder.stop()
         except Exception as exc:
+            self._logger.exception("Failed to stop audio-check microphone recording")
             self.error_changed.emit(str(exc))
             self._apply_state(AppState.IDLE.value, "Recording failed")
             return
 
-        self._apply_state(AppState.TRANSCRIBING.value, "Transcribing")
+        self._apply_state(AppState.TRANSCRIBING.value, "Preparing audio")
         future = self.executor.submit(self._run_pipeline, audio_path)
         future.add_done_callback(self._handle_pipeline_done)
 
@@ -81,7 +87,13 @@ class AudioCheckController(QObject):
 
     def _run_pipeline(self, audio_path: Path) -> tuple[str, str]:
         try:
+            if not self.transcriber.is_loaded:
+                self.pipeline_state_changed.emit(AppState.TRANSCRIBING.value, "Loading Whisper model")
+                self.transcriber.ensure_loaded()
+
+            self.pipeline_state_changed.emit(AppState.TRANSCRIBING.value, "Transcribing")
             transcript = self.transcriber.transcribe(audio_path)
+            self.transcript_changed.emit(transcript)
             self.pipeline_state_changed.emit(AppState.SYNTHESIZING.value, "Generating speech")
             if not self.tts_service.enabled:
                 raise RuntimeError("TTS is not configured. Set TTS_MODEL to a Piper voice or model path.")
@@ -89,6 +101,9 @@ class AudioCheckController(QObject):
             if tts_audio_path is None:
                 raise RuntimeError("TTS did not return an audio file.")
             return transcript, str(tts_audio_path)
+        except Exception:
+            self._logger.exception("Audio-check pipeline failed path=%s", audio_path)
+            raise
         finally:
             audio_path.unlink(missing_ok=True)
 
@@ -100,7 +115,6 @@ class AudioCheckController(QObject):
             return
 
         self.error_changed.emit("")
-        self.transcript_changed.emit(transcript)
         self.playback_ready.emit(tts_audio_path)
 
     def _play_transcript_audio(self, audio_path: str) -> None:
@@ -112,10 +126,10 @@ class AudioCheckController(QObject):
         self.error_changed.emit(message)
         self._apply_state(AppState.IDLE.value, "Ready")
 
-    def _handle_playback_finished(self) -> None:
+    def _handle_playback_finished(self, _path: str) -> None:
         self._apply_state(AppState.IDLE.value, "Ready")
 
-    def _handle_playback_failed(self, message: str) -> None:
+    def _handle_playback_failed(self, _path: str, message: str) -> None:
         self.error_changed.emit(message)
         self._apply_state(AppState.IDLE.value, "Ready")
 
@@ -129,12 +143,17 @@ class AudioCheckController(QObject):
 
 
 class AudioCheckDialog(QDialog):
-    def __init__(self, controller: AudioCheckController, parent=None) -> None:
+    def __init__(
+        self,
+        controller: AudioCheckController,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.controller = controller
+        self.replay_player = AudioPlayer(self)
 
         self.setWindowTitle("Audio Check")
-        self.resize(560, 360)
+        self.resize(560, 320)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -143,14 +162,12 @@ class AudioCheckDialog(QDialog):
         self.status_label = QLabel("Ready", self)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        self.record_button = QPushButton("Hold To Record Check", self)
+        self.record_button = QPushButton("Click To Record Check", self)
         self.record_button.setMinimumHeight(64)
-        self.record_button.pressed.connect(self.controller.start_recording)
-        self.record_button.released.connect(self.controller.stop_recording)
+        self.record_button.clicked.connect(self._toggle_recording)
+        self.record_button.setVisible(True)
 
-        self.transcript_box = QTextEdit(self)
-        self.transcript_box.setReadOnly(True)
-        self.transcript_box.setPlaceholderText("Transcription will appear here before playback.")
+        self.transcript_block = ReplayableTextBlock("Transcript", self.controller.tts_service, self.replay_player, self)
 
         self.error_label = QLabel("", self)
         self.error_label.setWordWrap(True)
@@ -158,12 +175,11 @@ class AudioCheckDialog(QDialog):
 
         layout.addWidget(self.status_label)
         layout.addWidget(self.record_button)
-        layout.addWidget(QLabel("Transcript", self))
-        layout.addWidget(self.transcript_box, 1)
+        layout.addWidget(self.transcript_block, 1)
         layout.addWidget(self.error_label)
 
         self.controller.status_changed.connect(self.status_label.setText)
-        self.controller.transcript_changed.connect(self.transcript_box.setPlainText)
+        self.controller.transcript_changed.connect(self.transcript_block.set_text)
         self.controller.error_changed.connect(self.error_label.setText)
         self.controller.state_changed.connect(self._apply_state)
 
@@ -174,7 +190,7 @@ class AudioCheckDialog(QDialog):
         self.record_button.setEnabled(can_record)
 
         if state == "recording":
-            self.record_button.setText("Release To Transcribe")
+            self.record_button.setText("Click To Transcribe")
         elif state == "transcribing":
             self.record_button.setText("Transcribing...")
         elif state == "synthesizing":
@@ -182,4 +198,12 @@ class AudioCheckDialog(QDialog):
         elif state == "speaking":
             self.record_button.setText("Playing...")
         else:
-            self.record_button.setText("Hold To Record Check")
+            self.record_button.setText("Click To Record Check")
+
+    def _toggle_recording(self) -> None:
+        if self.controller.state == "recording":
+            self.controller.stop_recording()
+            return
+
+        if self.controller.state == "idle":
+            self.controller.start_recording()
