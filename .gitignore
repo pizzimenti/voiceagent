@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.pyc
+.codex
 .codex/
 pkg/
 src/vendor/
