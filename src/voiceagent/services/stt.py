@@ -7,10 +7,14 @@ from typing import Any
 
 from huggingface_hub import HfApi, hf_hub_url
 
+from voiceagent.backends import SpeechToTextBackend
 from voiceagent.downloaders import AriaDownloader, DownloadFile
+from voiceagent.paths import default_stt_model_root
 
 
-class WhisperTranscriber:
+class WhisperTranscriber(SpeechToTextBackend):
+    backend_name = "Whisper"
+    selection_label = "Model"
     REQUIRED_MODEL_FILES = (
         ".gitattributes",
         "README.md",
@@ -45,12 +49,15 @@ class WhisperTranscriber:
         self.compute_type = compute_type
         self._model: Any | None = None
         self._logger = logging.getLogger(__name__)
-        self.model_root = Path.cwd() / "stt-models"
+        self.model_root = default_stt_model_root()
         self.downloader = AriaDownloader(connections=10)
 
     @classmethod
     def available_model_names(cls) -> list[str]:
         return list(cls.MODEL_REPOSITORIES.keys())
+
+    def available_items(self) -> list[str]:
+        return self.available_model_names()
 
     @property
     def is_loaded(self) -> bool:
@@ -84,12 +91,22 @@ class WhisperTranscriber:
         )
         return has_required_files and has_vocabulary_file
 
+    def is_item_available(self, item_name: str) -> bool:
+        return self.is_model_available(self.model_root, item_name)
+
+    @property
+    def selected_item(self) -> str:
+        return self.model_name
+
     def set_model_name(self, model_name: str) -> None:
         if self.model_name == model_name:
             return
 
         self.model_name = model_name
         self._model = None
+
+    def set_selected_item(self, item_name: str) -> None:
+        self.set_model_name(item_name)
 
     def ensure_loaded(self) -> None:
         self._get_model()

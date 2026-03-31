@@ -4,9 +4,11 @@ from logging.handlers import RotatingFileHandler
 import logging
 from pathlib import Path
 
+from voiceagent.paths import default_log_dir
+
 
 def configure_logging() -> Path:
-    log_dir = Path.cwd() / "logs"
+    log_dir = default_log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "voiceagent.log"
 

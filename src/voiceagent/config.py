@@ -6,6 +6,8 @@ from pathlib import Path
 import shlex
 import sys
 
+from voiceagent.paths import default_stt_model_root, default_tts_model_root
+
 
 @dataclass(slots=True)
 class AppConfig:
@@ -24,8 +26,8 @@ class AppConfig:
 
     @classmethod
     def from_env(cls) -> "AppConfig":
-        stt_model_root = Path(os.environ.get("VOICEAGENT_STT_MODEL_ROOT", Path.cwd() / "stt-models")).expanduser()
-        tts_model_root = Path(os.environ.get("VOICEAGENT_TTS_MODEL_ROOT", Path.cwd() / "tts-models")).expanduser()
+        stt_model_root = Path(os.environ.get("VOICEAGENT_STT_MODEL_ROOT", default_stt_model_root())).expanduser()
+        tts_model_root = Path(os.environ.get("VOICEAGENT_TTS_MODEL_ROOT", default_tts_model_root())).expanduser()
         default_tts_command = os.environ.get("TTS_COMMAND", "").strip()
         if default_tts_command:
             tts_command = shlex.split(default_tts_command)

@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class SpeechToTextBackend(Protocol):
+    backend_name: str
+    selection_label: str
+    model_root: Path
+
+    @property
+    def is_loaded(self) -> bool: ...
+
+    @property
+    def is_available(self) -> bool: ...
+
+    @property
+    def selected_item(self) -> str: ...
+
+    def available_items(self) -> list[str]: ...
+
+    def is_item_available(self, item_name: str) -> bool: ...
+
+    def set_selected_item(self, item_name: str) -> None: ...
+
+    def ensure_loaded(self) -> None: ...
+
+    def download_and_load(self, progress_callback=None) -> None: ...
+
+    def transcribe(self, audio_path: Path) -> str: ...
+
+
+@runtime_checkable
+class TextToSpeechBackend(Protocol):
+    backend_name: str
+    selection_label: str
+    model_root: Path
+
+    @property
+    def enabled(self) -> bool: ...
+
+    @property
+    def is_available(self) -> bool: ...
+
+    @property
+    def selected_item(self) -> str | None: ...
+
+    def available_items(self) -> list[str]: ...
+
+    def is_item_available(self, item_name: str) -> bool: ...
+
+    def set_selected_item(self, item_name: str | None) -> None: ...
+
+    def synthesize(self, text: str, progress_callback=None) -> Path | None: ...
+
+    def download_selected_item(self, progress_callback=None) -> None: ...

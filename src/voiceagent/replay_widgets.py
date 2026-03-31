@@ -17,8 +17,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from voiceagent.backends import TextToSpeechBackend
 from voiceagent.services.playback import AudioPlayer
-from voiceagent.services.tts import PiperTtsService
 
 
 class ClickableTextEdit(QTextEdit):
@@ -33,7 +33,7 @@ class ReplayableTextBlock(QWidget):
     def __init__(
         self,
         title: str,
-        tts_service: PiperTtsService,
+        tts_service: TextToSpeechBackend,
         player: AudioPlayer,
         parent: QWidget | None = None,
     ) -> None:
@@ -169,7 +169,7 @@ class ConversationBubble(QWidget):
         self,
         role: str,
         text: str,
-        tts_service: PiperTtsService,
+        tts_service: TextToSpeechBackend,
         player: AudioPlayer,
         parent: QWidget | None = None,
     ) -> None:
@@ -317,7 +317,7 @@ class ConversationBubble(QWidget):
 
 
 class ConversationView(QScrollArea):
-    def __init__(self, tts_service: PiperTtsService, player: AudioPlayer, parent: QWidget | None = None) -> None:
+    def __init__(self, tts_service: TextToSpeechBackend, player: AudioPlayer, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.tts_service = tts_service
         self.player = player

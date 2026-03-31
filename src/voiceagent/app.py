@@ -4,10 +4,13 @@ import sys
 import logging
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from voiceagent.audio_check import AudioCheckController
+from voiceagent.backends import SpeechToTextBackend, TextToSpeechBackend
 from voiceagent.config import AppConfig
 from voiceagent.controller import VoiceController
 from voiceagent.logging_utils import configure_logging
@@ -15,13 +18,22 @@ from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.services.audio import MicrophoneRecorder
 from voiceagent.services.chat import LmStudioClient
 from voiceagent.services.playback import AudioPlayer
-from voiceagent.services.stt import WhisperTranscriber
-from voiceagent.services.tts import PiperTtsService
 from voiceagent.tts_loader import TtsVoiceLoader
 from voiceagent.window import MainWindow
 
+if TYPE_CHECKING:
+    from voiceagent.services.stt import WhisperTranscriber
+    from voiceagent.services.tts import PiperTtsService
 
-def build_shared_services(config: AppConfig) -> tuple[WhisperTranscriber, PiperTtsService, WhisperModelLoader, TtsVoiceLoader]:
+
+def build_shared_services(
+    config: AppConfig,
+) -> tuple[SpeechToTextBackend, TextToSpeechBackend, WhisperModelLoader, TtsVoiceLoader]:
+    # Backend imports stay local so future optional engines can be added
+    # without forcing every provider dependency to be importable at startup.
+    from voiceagent.services.stt import WhisperTranscriber
+    from voiceagent.services.tts import PiperTtsService
+
     transcriber = WhisperTranscriber(
         model_name=config.whisper_model,
         device=config.whisper_device,
@@ -53,8 +65,8 @@ def configure_model_environment(stt_model_root: Path, tts_model_root: Path) -> N
 
 def build_controller(
     config: AppConfig,
-    transcriber: WhisperTranscriber,
-    tts_service: PiperTtsService,
+    transcriber: SpeechToTextBackend,
+    tts_service: TextToSpeechBackend,
 ) -> VoiceController:
     recorder = MicrophoneRecorder(sample_rate=config.sample_rate)
     chat_client = LmStudioClient(
@@ -74,8 +86,8 @@ def build_controller(
 
 def build_audio_check_controller(
     config: AppConfig,
-    transcriber: WhisperTranscriber,
-    tts_service: PiperTtsService,
+    transcriber: SpeechToTextBackend,
+    tts_service: TextToSpeechBackend,
 ) -> AudioCheckController:
     recorder = MicrophoneRecorder(sample_rate=config.sample_rate)
     player = AudioPlayer()
@@ -91,6 +103,11 @@ def main() -> int:
     log_path = configure_logging()
     logging.getLogger(__name__).info("Starting voiceagent")
     app = QApplication(sys.argv)
+    app.setApplicationName("voiceagent")
+    app.setApplicationDisplayName("Voice Agent")
+    app.setDesktopFileName("voiceagent")
+    app.setOrganizationName("voiceagent")
+    app.setWindowIcon(QIcon.fromTheme("audio-input-microphone"))
     config = AppConfig.from_env()
     configure_model_environment(config.stt_model_root, config.tts_model_root)
     logging.getLogger(__name__).info("Configured log file path=%s", log_path)

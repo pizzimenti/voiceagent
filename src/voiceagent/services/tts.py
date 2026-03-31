@@ -3,16 +3,21 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 import urllib.request
+import wave
 
 from huggingface_hub import hf_hub_url
+from piper import PiperVoice
 
+from voiceagent.backends import TextToSpeechBackend
 from voiceagent.downloaders import AriaDownloader, DownloadFile, DownloadProgress
+from voiceagent.paths import default_tts_model_root
 
 
-class PiperTtsService:
+class PiperTtsService(TextToSpeechBackend):
+    backend_name = "Piper"
+    selection_label = "Voice"
     VOICE_REPOSITORY = "rhasspy/piper-voices"
     VOICES_JSON_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/voices.json?download=true"
 
@@ -20,9 +25,11 @@ class PiperTtsService:
         self.command = command
         self.model_path = model_path
         self.extra_args = extra_args or []
-        self.model_root = Path.cwd() / "tts-models"
+        self.model_root = default_tts_model_root()
         self.downloader = AriaDownloader(connections=10)
         self._logger = logging.getLogger(__name__)
+        self._loaded_voice_path: Path | None = None
+        self._voice: PiperVoice | None = None
 
     @property
     def enabled(self) -> bool:
@@ -52,6 +59,9 @@ class PiperTtsService:
 
         return sorted(voices)
 
+    def available_items(self) -> list[str]:
+        return self.available_voice_names(self.model_root, self.model_path)
+
     @classmethod
     def is_voice_available(cls, model_root: Path, model_path: str | None) -> bool:
         if not model_path:
@@ -69,8 +79,20 @@ class PiperTtsService:
         json_candidate = model_root / f"{model_path}.onnx.json"
         return onnx_candidate.exists() and json_candidate.exists()
 
+    def is_item_available(self, item_name: str) -> bool:
+        return self.is_voice_available(self.model_root, item_name)
+
+    @property
+    def selected_item(self) -> str | None:
+        return self.model_path
+
     def set_model_path(self, model_path: str | None) -> None:
         self.model_path = model_path
+        self._loaded_voice_path = None
+        self._voice = None
+
+    def set_selected_item(self, item_name: str | None) -> None:
+        self.set_model_path(item_name)
 
     def synthesize(self, text: str, progress_callback=None) -> Path | None:
         if not self.enabled:
@@ -84,28 +106,13 @@ class PiperTtsService:
         resolved_model_path = self._resolve_existing_model_path()
         if resolved_model_path is None:
             raise RuntimeError(self._missing_model_message())
-        args = [
-            *self.command,
-            "--model",
-            str(resolved_model_path),
-            "--data-dir",
-            str(self.model_root),
-            "--output_file",
-            str(output_path),
-            *self.extra_args,
-        ]
 
-        proc = subprocess.run(
-            args,
-            input=text.encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if proc.returncode != 0:
+        try:
+            with wave.open(str(output_path), "wb") as wav_file:
+                self._get_voice(resolved_model_path).synthesize_wav(text, wav_file)
+        except Exception as exc:
             output_path.unlink(missing_ok=True)
-            stderr = proc.stderr.decode("utf-8", errors="replace").strip()
-            raise RuntimeError(stderr or "TTS command failed.")
+            raise RuntimeError(str(exc) or "TTS synthesis failed.") from exc
 
         if not output_path.exists() or output_path.stat().st_size == 0:
             output_path.unlink(missing_ok=True)
@@ -126,6 +133,9 @@ class PiperTtsService:
         assert self.model_path is not None
         self._download_voice(self.model_path, progress_callback=progress_callback)
 
+    def download_selected_item(self, progress_callback=None) -> None:
+        self.download_voice(progress_callback=progress_callback)
+
     def _resolve_existing_model_path(self) -> Path | None:
         assert self.model_path is not None
 
@@ -142,6 +152,21 @@ class PiperTtsService:
             return onnx_candidate
 
         return None
+
+    def _get_voice(self, resolved_model_path: Path) -> PiperVoice:
+        if self._voice is not None and self._loaded_voice_path == resolved_model_path:
+            return self._voice
+
+        config_path = Path(f"{resolved_model_path}.json")
+        self._logger.info("Loading Piper voice model=%s config=%s", resolved_model_path, config_path)
+        self._voice = PiperVoice.load(
+            resolved_model_path,
+            config_path=config_path,
+            use_cuda=False,
+            download_dir=self.model_root,
+        )
+        self._loaded_voice_path = resolved_model_path
+        return self._voice
 
     def _download_voice(self, voice_name: str, progress_callback=None) -> None:
         onnx_path = self.model_root / f"{voice_name}.onnx"

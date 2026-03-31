@@ -6,12 +6,11 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
+from voiceagent.backends import SpeechToTextBackend, TextToSpeechBackend
 from voiceagent.models import AppState, PipelineResult
 from voiceagent.services.audio import MicrophoneRecorder
 from voiceagent.services.chat import LmStudioClient
 from voiceagent.services.playback import AudioPlayer
-from voiceagent.services.stt import WhisperTranscriber
-from voiceagent.services.tts import PiperTtsService
 
 
 class VoiceController(QObject):
@@ -27,9 +26,9 @@ class VoiceController(QObject):
     def __init__(
         self,
         recorder: MicrophoneRecorder,
-        transcriber: WhisperTranscriber,
+        transcriber: SpeechToTextBackend,
         chat_client: LmStudioClient,
-        tts_service: PiperTtsService,
+        tts_service: TextToSpeechBackend,
         player: AudioPlayer,
         parent: QObject | None = None,
     ) -> None:
@@ -91,7 +90,10 @@ class VoiceController(QObject):
     def _run_pipeline(self, audio_path: Path) -> PipelineResult:
         try:
             if not self.transcriber.is_loaded:
-                self.pipeline_state_changed.emit(AppState.TRANSCRIBING.value, "Loading Whisper model")
+                self.pipeline_state_changed.emit(
+                    AppState.TRANSCRIBING.value,
+                    f"Loading {self.transcriber.backend_name} {self.transcriber.selection_label.lower()}",
+                )
                 self.transcriber.ensure_loaded()
 
             self.pipeline_state_changed.emit(AppState.TRANSCRIBING.value, "Transcribing")

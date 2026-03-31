@@ -5,8 +5,8 @@ import logging
 
 from PySide6.QtCore import QObject, Signal
 
+from voiceagent.backends import SpeechToTextBackend
 from voiceagent.downloaders import DownloadProgress
-from voiceagent.services.stt import WhisperTranscriber
 
 
 class WhisperModelLoader(QObject):
@@ -19,7 +19,7 @@ class WhisperModelLoader(QObject):
     load_completed = Signal()
     load_failed = Signal(str)
 
-    def __init__(self, transcriber: WhisperTranscriber, parent: QObject | None = None) -> None:
+    def __init__(self, transcriber: SpeechToTextBackend, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.transcriber = transcriber
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceagent-model-loader")
@@ -41,13 +41,13 @@ class WhisperModelLoader(QObject):
 
     @property
     def selected_model(self) -> str:
-        return self.transcriber.model_name
+        return self.transcriber.selected_item
 
     def select_model(self, model_name: str) -> None:
         if self._loading:
             return
 
-        self.transcriber.set_model_name(model_name)
+        self.transcriber.set_selected_item(model_name)
         self._last_progress = DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0)
         self.selection_changed.emit(model_name)
         self._emit_initial_state()
@@ -60,7 +60,7 @@ class WhisperModelLoader(QObject):
         self._last_progress = DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0)
         self.loading_changed.emit(True)
         self.error_changed.emit("")
-        self.status_changed.emit("Checking Whisper model files")
+        self.status_changed.emit(f"Checking {self.transcriber.backend_name} {self.transcriber.selection_label.lower()} files")
         self.progress_changed.emit(self._last_progress)
 
         future = self.executor.submit(self._load_model)
@@ -73,14 +73,18 @@ class WhisperModelLoader(QObject):
         self.ready_changed.emit(self.is_ready)
         self.loading_changed.emit(self._loading)
         if self.is_ready:
-            self.status_changed.emit("Whisper model ready")
+            self.status_changed.emit(f"{self.transcriber.backend_name} {self.transcriber.selection_label.lower()} ready")
         else:
-            self.status_changed.emit("Download Whisper model to enable audio")
+            self.status_changed.emit(
+                f"Download {self.transcriber.backend_name} {self.transcriber.selection_label.lower()} to enable audio"
+            )
         self.progress_changed.emit(self._last_progress)
 
     def _load_model(self) -> None:
         try:
-            self.status_changed.emit("Downloading Whisper model with aria2")
+            self.status_changed.emit(
+                f"Downloading {self.transcriber.backend_name} {self.transcriber.selection_label.lower()} with aria2"
+            )
             self.transcriber.download_and_load(progress_callback=self._emit_progress)
         except Exception as exc:
             self._logger.exception("Whisper model load failed")
@@ -96,7 +100,7 @@ class WhisperModelLoader(QObject):
         self._loading = False
         self.loading_changed.emit(False)
         self.ready_changed.emit(True)
-        self.status_changed.emit("Whisper model ready")
+        self.status_changed.emit(f"{self.transcriber.backend_name} {self.transcriber.selection_label.lower()} ready")
         self.progress_changed.emit(
             DownloadProgress(
                 completed_bytes=self._last_progress.total_bytes or 1,
@@ -109,7 +113,7 @@ class WhisperModelLoader(QObject):
         self._loading = False
         self.loading_changed.emit(False)
         self.ready_changed.emit(False)
-        self.status_changed.emit("Model load failed")
+        self.status_changed.emit(f"{self.transcriber.backend_name} load failed")
         self.error_changed.emit(message)
         self.progress_changed.emit(DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0))
 

@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QStatusBar,
@@ -22,9 +21,6 @@ from voiceagent.downloaders import format_bytes, format_transfer_rate
 from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.replay_widgets import ConversationView
 from voiceagent.services.playback import AudioPlayer
-from voiceagent.services.chat import LmStudioClient
-from voiceagent.services.stt import WhisperTranscriber
-from voiceagent.services.tts import PiperTtsService
 from voiceagent.tts_loader import TtsVoiceLoader
 
 
@@ -47,11 +43,8 @@ class MainWindow(QMainWindow):
         self.replay_player = AudioPlayer(self)
         self.audio_check_dialog: QDialog | None = None
         self._default_llm_url = "silverthread:1234"
-        self._stt_catalog = WhisperTranscriber.available_model_names()
-        self._tts_catalog = PiperTtsService.available_voice_names(
-            self.tts_loader.tts_service.model_root,
-            self.tts_loader.selected_model,
-        )
+        self._stt_catalog = self.model_loader.transcriber.available_items()
+        self._tts_catalog = self.tts_loader.tts_service.available_items()
         self.setWindowTitle("Voice Agent")
         self.resize(760, 520)
 
@@ -67,11 +60,15 @@ class MainWindow(QMainWindow):
 
         stt_row = QHBoxLayout()
         stt_row.setSpacing(8)
-        stt_row.addWidget(QLabel("STT Model", root))
+        stt_row.addWidget(QLabel(f"STT {self.model_loader.transcriber.selection_label}", root))
         stt_row.addWidget(self.stt_selector, 1)
         stt_row.addWidget(self.stt_download_button)
 
-        self.model_status_label = QLabel("Load Whisper model to enable audio", root)
+        self.model_status_label = QLabel(
+            f"Load {self.model_loader.transcriber.backend_name} "
+            f"{self.model_loader.transcriber.selection_label.lower()} to enable audio",
+            root,
+        )
         self.model_status_label.setWordWrap(True)
 
         self.model_progress_bar = QProgressBar(root)
@@ -83,7 +80,11 @@ class MainWindow(QMainWindow):
         self.model_progress_detail_label.setVisible(False)
         self.model_progress_detail_label.setWordWrap(True)
 
-        self.tts_status_label = QLabel("Load Piper voice to enable speech", root)
+        self.tts_status_label = QLabel(
+            f"Load {self.tts_loader.tts_service.backend_name} "
+            f"{self.tts_loader.tts_service.selection_label.lower()} to enable speech",
+            root,
+        )
         self.tts_status_label.setWordWrap(True)
         self.tts_status_label.setVisible(self.tts_loader.is_enabled)
 
@@ -94,7 +95,7 @@ class MainWindow(QMainWindow):
 
         tts_row = QHBoxLayout()
         tts_row.setSpacing(8)
-        tts_row.addWidget(QLabel("TTS Voice", root))
+        tts_row.addWidget(QLabel(f"TTS {self.tts_loader.tts_service.selection_label}", root))
         tts_row.addWidget(self.tts_selector, 1)
         tts_row.addWidget(self.tts_download_button)
 
@@ -279,7 +280,10 @@ class MainWindow(QMainWindow):
         else:
             self.tts_status_label.setVisible(not available and self.tts_loader.is_loading)
             if available:
-                self.tts_status_label.setText("Piper voice ready")
+                self.tts_status_label.setText(
+                    f"{self.tts_loader.tts_service.backend_name} "
+                    f"{self.tts_loader.tts_service.selection_label.lower()} ready"
+                )
         self._refresh_tts_controls()
         self._refresh_action_buttons()
 
@@ -300,7 +304,10 @@ class MainWindow(QMainWindow):
         total = progress.total_bytes
         speed = progress.download_speed_bytes_per_second
         if self.tts_loader.is_ready and total > 0 and current >= total:
-            self.tts_status_label.setText("Piper voice ready")
+            self.tts_status_label.setText(
+                f"{self.tts_loader.tts_service.backend_name} "
+                f"{self.tts_loader.tts_service.selection_label.lower()} ready"
+            )
             self.tts_progress_bar.setVisible(False)
             self.tts_progress_detail_label.setVisible(False)
             self._refresh_tts_controls()
@@ -405,10 +412,10 @@ class MainWindow(QMainWindow):
         self._populate_tts_selector()
 
     def _is_stt_downloaded(self, model_name: str) -> bool:
-        return WhisperTranscriber.is_model_available(self.model_loader.transcriber.model_root, model_name)
+        return self.model_loader.transcriber.is_item_available(model_name)
 
     def _is_tts_downloaded(self, model_name: str) -> bool:
-        return PiperTtsService.is_voice_available(self.tts_loader.tts_service.model_root, model_name)
+        return self.tts_loader.tts_service.is_item_available(model_name)
 
     def _main_actions_ready(self) -> bool:
         return self._audio_check_ready() and self._llm_ready()

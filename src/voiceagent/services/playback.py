@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import threading
+from typing import Any
 import wave
 
 from PySide6.QtCore import QObject, Signal
-import sounddevice as sd
 
 
 class AudioPlayer(QObject):
@@ -19,7 +19,7 @@ class AudioPlayer(QObject):
         super().__init__(parent)
         self._current_file: Path | None = None
         self._logger = logging.getLogger(__name__)
-        self._stream: sd.RawOutputStream | None = None
+        self._stream: Any | None = None
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._pause_condition = threading.Condition()
@@ -82,6 +82,8 @@ class AudioPlayer(QObject):
 
     def _playback_worker(self, path: Path) -> None:
         try:
+            import sounddevice as sd
+
             with wave.open(str(path), "rb") as wav_file:
                 channels = wav_file.getnchannels()
                 sample_rate = wav_file.getframerate()

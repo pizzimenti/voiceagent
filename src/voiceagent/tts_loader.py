@@ -5,8 +5,8 @@ import logging
 
 from PySide6.QtCore import QObject, Signal
 
+from voiceagent.backends import TextToSpeechBackend
 from voiceagent.downloaders import DownloadProgress
-from voiceagent.services.tts import PiperTtsService
 
 
 class TtsVoiceLoader(QObject):
@@ -19,7 +19,7 @@ class TtsVoiceLoader(QObject):
     load_completed = Signal()
     load_failed = Signal(str)
 
-    def __init__(self, tts_service: PiperTtsService, parent: QObject | None = None) -> None:
+    def __init__(self, tts_service: TextToSpeechBackend, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.tts_service = tts_service
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceagent-tts-loader")
@@ -45,10 +45,10 @@ class TtsVoiceLoader(QObject):
 
     @property
     def selected_model(self) -> str | None:
-        return self.tts_service.model_path
+        return self.tts_service.selected_item
 
     def select_model(self, model_name: str | None) -> None:
-        self.tts_service.set_model_path(model_name)
+        self.tts_service.set_selected_item(model_name)
         self._last_progress = DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0)
         self.selection_changed.emit(model_name or "")
         self._emit_initial_state()
@@ -61,7 +61,9 @@ class TtsVoiceLoader(QObject):
         self._last_progress = DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0)
         self.loading_changed.emit(True)
         self.error_changed.emit("")
-        self.status_changed.emit("Preparing Piper voice download")
+        self.status_changed.emit(
+            f"Preparing {self.tts_service.backend_name} {self.tts_service.selection_label.lower()} download"
+        )
         self.progress_changed.emit(self._last_progress)
 
         future = self.executor.submit(self._load_voice)
@@ -69,7 +71,7 @@ class TtsVoiceLoader(QObject):
 
     def select_and_load(self, model_name: str) -> None:
         """Select a model and immediately start downloading it."""
-        self.tts_service.set_model_path(model_name)
+        self.tts_service.set_selected_item(model_name)
         self._last_progress = DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0)
         self.selection_changed.emit(model_name)
         self._emit_initial_state()
@@ -82,17 +84,23 @@ class TtsVoiceLoader(QObject):
         self.ready_changed.emit(self.is_ready)
         self.loading_changed.emit(self._loading)
         if not self.selected_model:
-            self.status_changed.emit("Select a Piper voice")
+            self.status_changed.emit(
+                f"Select a {self.tts_service.backend_name} {self.tts_service.selection_label.lower()}"
+            )
         elif self.is_ready:
-            self.status_changed.emit("Piper voice ready")
+            self.status_changed.emit(f"{self.tts_service.backend_name} {self.tts_service.selection_label.lower()} ready")
         else:
-            self.status_changed.emit("Load Piper voice to enable speech")
+            self.status_changed.emit(
+                f"Load {self.tts_service.backend_name} {self.tts_service.selection_label.lower()} to enable speech"
+            )
         self.progress_changed.emit(self._last_progress)
 
     def _load_voice(self) -> None:
         try:
-            self.status_changed.emit("Downloading Piper voice with aria2")
-            self.tts_service.download_voice(progress_callback=self._emit_progress)
+            self.status_changed.emit(
+                f"Downloading {self.tts_service.backend_name} {self.tts_service.selection_label.lower()} with aria2"
+            )
+            self.tts_service.download_selected_item(progress_callback=self._emit_progress)
         except Exception as exc:
             self._logger.exception("Piper voice load failed")
             self.load_failed.emit(str(exc))
@@ -112,7 +120,7 @@ class TtsVoiceLoader(QObject):
         self._loading = False
         self.loading_changed.emit(False)
         self.ready_changed.emit(True)
-        self.status_changed.emit("Piper voice ready")
+        self.status_changed.emit(f"{self.tts_service.backend_name} {self.tts_service.selection_label.lower()} ready")
         self.progress_changed.emit(
             DownloadProgress(
                 completed_bytes=self._last_progress.total_bytes or 1,
@@ -125,7 +133,7 @@ class TtsVoiceLoader(QObject):
         self._loading = False
         self.loading_changed.emit(False)
         self.ready_changed.emit(False)
-        self.status_changed.emit("Piper voice load failed")
+        self.status_changed.emit(f"{self.tts_service.backend_name} load failed")
         self.error_changed.emit(message)
         self.progress_changed.emit(DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0))
 

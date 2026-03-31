@@ -1,0 +1,22 @@
+pkgbase = voiceagent
+	pkgdesc = Push-to-talk KDE-friendly desktop voice assistant
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/pizzimenti/voiceagent
+	arch = any
+	license = MIT
+	makedepends = python-build
+	makedepends = python-installer
+	makedepends = python-setuptools
+	makedepends = python-wheel
+	depends = python
+	depends = pyside6
+	depends = python-huggingface-hub
+	depends = aria2
+	optdepends = python-sounddevice: microphone capture backend (AUR)
+	optdepends = python-faster-whisper: local speech-to-text backend (AUR)
+	optdepends = piper-tts: local Piper speech synthesis backend (AUR)
+	source = packaging/voiceagent.desktop
+	sha256sums = 1cc6792d8915e6c79c4050af3dd0ea037f3167e5239694381906dc007c528151
+
+pkgname = voiceagent

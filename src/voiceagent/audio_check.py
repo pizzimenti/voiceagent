@@ -7,12 +7,11 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QVBoxLayout
 
+from voiceagent.backends import SpeechToTextBackend, TextToSpeechBackend
 from voiceagent.models import AppState
 from voiceagent.replay_widgets import ReplayableTextBlock
 from voiceagent.services.audio import MicrophoneRecorder
 from voiceagent.services.playback import AudioPlayer
-from voiceagent.services.stt import WhisperTranscriber
-from voiceagent.services.tts import PiperTtsService
 
 
 class AudioCheckController(QObject):
@@ -27,8 +26,8 @@ class AudioCheckController(QObject):
     def __init__(
         self,
         recorder: MicrophoneRecorder,
-        transcriber: WhisperTranscriber,
-        tts_service: PiperTtsService,
+        transcriber: SpeechToTextBackend,
+        tts_service: TextToSpeechBackend,
         player: AudioPlayer,
         parent: QObject | None = None,
     ) -> None:
@@ -88,7 +87,10 @@ class AudioCheckController(QObject):
     def _run_pipeline(self, audio_path: Path) -> tuple[str, str]:
         try:
             if not self.transcriber.is_loaded:
-                self.pipeline_state_changed.emit(AppState.TRANSCRIBING.value, "Loading Whisper model")
+                self.pipeline_state_changed.emit(
+                    AppState.TRANSCRIBING.value,
+                    f"Loading {self.transcriber.backend_name} {self.transcriber.selection_label.lower()}",
+                )
                 self.transcriber.ensure_loaded()
 
             self.pipeline_state_changed.emit(AppState.TRANSCRIBING.value, "Transcribing")
@@ -96,7 +98,10 @@ class AudioCheckController(QObject):
             self.transcript_changed.emit(transcript)
             self.pipeline_state_changed.emit(AppState.SYNTHESIZING.value, "Generating speech")
             if not self.tts_service.enabled:
-                raise RuntimeError("TTS is not configured. Set TTS_MODEL to a Piper voice or model path.")
+                raise RuntimeError(
+                    f"TTS is not configured. Set TTS_MODEL to a {self.tts_service.backend_name} "
+                    f"{self.tts_service.selection_label.lower()} or model path."
+                )
             tts_audio_path = self.tts_service.synthesize(transcript)
             if tts_audio_path is None:
                 raise RuntimeError("TTS did not return an audio file.")
