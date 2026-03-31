@@ -382,7 +382,10 @@ class MainWindow(QMainWindow):
         selected_model = self.tts_selector.currentText()
         if not selected_model:
             return
-        self.tts_loader.load_voice()
+        if selected_model != (self.tts_loader.selected_model or ""):
+            self.tts_loader.select_and_load(selected_model)
+        else:
+            self.tts_loader.load_voice()
 
     def _sync_stt_selection(self, model_name: str) -> None:
         if self.stt_selector.currentText() != model_name:

@@ -48,9 +48,6 @@ class TtsVoiceLoader(QObject):
         return self.tts_service.model_path
 
     def select_model(self, model_name: str | None) -> None:
-        if self._loading:
-            return
-
         self.tts_service.set_model_path(model_name)
         self._last_progress = DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0)
         self.selection_changed.emit(model_name or "")
@@ -69,6 +66,14 @@ class TtsVoiceLoader(QObject):
 
         future = self.executor.submit(self._load_voice)
         future.add_done_callback(self._handle_done)
+
+    def select_and_load(self, model_name: str) -> None:
+        """Select a model and immediately start downloading it."""
+        self.tts_service.set_model_path(model_name)
+        self._last_progress = DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0)
+        self.selection_changed.emit(model_name)
+        self._emit_initial_state()
+        self.load_voice()
 
     def shutdown(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=True)
@@ -96,7 +101,12 @@ class TtsVoiceLoader(QObject):
         self.load_completed.emit()
 
     def _handle_done(self, future: Future[None]) -> None:
-        future.result()
+        try:
+            future.result()
+        except Exception:
+            self._logger.exception("TTS load future raised unexpectedly")
+            if self._loading:
+                self.load_failed.emit("Voice download failed unexpectedly")
 
     def _finish_success(self) -> None:
         self._loading = False
