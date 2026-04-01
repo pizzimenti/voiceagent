@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from array import array
 import logging
+import math
 from pathlib import Path
 import threading
 import time
@@ -27,6 +29,11 @@ class AudioPlayer(QObject):
         self._pause_condition = threading.Condition()
         self._paused = False
         self._muted = False
+        self._level_lock = threading.Lock()
+        self._current_output_level = 0.0
+        self._recent_output_chunk = b""
+        self._recent_output_timestamp = 0.0
+        self._recent_output_sample_rate = 0
 
     def play_file(self, path: Path) -> bool:
         self._logger.info(
@@ -86,6 +93,8 @@ class AudioPlayer(QObject):
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=1.0)
         self._thread = None
+        self._set_output_level(0.0)
+        self._set_recent_output(b"", 0)
         self._cleanup_current_file()
 
     @property
@@ -99,6 +108,19 @@ class AudioPlayer(QObject):
     @property
     def is_muted(self) -> bool:
         return self._muted
+
+    @property
+    def current_output_level(self) -> float:
+        with self._level_lock:
+            return self._current_output_level
+
+    def recent_output_chunk(self) -> tuple[bytes, int, float]:
+        with self._level_lock:
+            return (
+                self._recent_output_chunk,
+                self._recent_output_sample_rate,
+                self._recent_output_timestamp,
+            )
 
     def set_muted(self, muted: bool) -> None:
         if self._muted == muted:
@@ -144,6 +166,8 @@ class AudioPlayer(QObject):
                         data = wav_file.readframes(4096)
                         if not data:
                             break
+                        self._set_output_level(self._normalize_level(self._chunk_rms(data)))
+                        self._set_recent_output(data, sample_rate)
                         if self._muted:
                             frame_count = len(data) // max(1, channels * sample_width)
                             time.sleep(frame_count / sample_rate)
@@ -172,6 +196,8 @@ class AudioPlayer(QObject):
                 self._current_file == path,
             )
             self._stream = None
+            self._set_output_level(0.0)
+            self._set_recent_output(b"", 0)
             if self._current_file == path:
                 self._cleanup_current_file()
             self._stop_event.clear()
@@ -195,3 +221,29 @@ class AudioPlayer(QObject):
         if sample_width == 4:
             return "int32"
         raise RuntimeError(f"Unsupported WAV sample width: {sample_width}")
+
+    def _chunk_rms(self, chunk: bytes) -> float:
+        if not chunk:
+            return 0.0
+        samples = array("h")
+        samples.frombytes(chunk)
+        if not samples:
+            return 0.0
+        total = sum(sample * sample for sample in samples)
+        return (total / len(samples)) ** 0.5
+
+    def _normalize_level(self, rms: float) -> float:
+        if rms <= 0:
+            return 0.0
+        ceiling = 8000.0
+        return min(1.0, math.log10(1.0 + rms) / math.log10(1.0 + ceiling))
+
+    def _set_output_level(self, level: float) -> None:
+        with self._level_lock:
+            self._current_output_level = max(0.0, min(1.0, level))
+
+    def _set_recent_output(self, chunk: bytes, sample_rate: int) -> None:
+        with self._level_lock:
+            self._recent_output_chunk = chunk
+            self._recent_output_sample_rate = sample_rate
+            self._recent_output_timestamp = time.monotonic() if chunk else 0.0

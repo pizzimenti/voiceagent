@@ -29,7 +29,7 @@ class VoiceController(QObject):
     partial_transcription_ready = Signal(object)
 
     _PARTIAL_CHECK_INTERVAL_MS = 350
-    _PARTIAL_MIN_SPEECH_SECONDS = 0.9
+    _PARTIAL_MIN_SPEECH_SECONDS = 0.35
     _PARTIAL_STALE_SECONDS = 2.0
     _PARTIAL_SKIP_LOG_INTERVAL_SECONDS = 2.5
     _POST_FINALIZE_INPUT_HOLDOFF_SECONDS = 0.9

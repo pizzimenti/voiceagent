@@ -3,6 +3,7 @@ from __future__ import annotations
 from array import array
 from collections import deque
 import logging
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -25,9 +26,9 @@ class MicrophoneRecorder:
         self._logger = logging.getLogger(__name__)
         self._status_count = 0
         self._segment_ready_callback: Callable[[], None] | None = None
-        self._speech_threshold = 600
+        self._speech_threshold = 480
         self._silence_threshold = 180
-        self._active_speech_threshold = 600.0
+        self._active_speech_threshold = 480.0
         self._active_silence_threshold = 180.0
         self._silence_timeout_frames = int(self.sample_rate * 1.5)
         self._max_turn_frames = int(self.sample_rate * 120.0)
@@ -47,18 +48,30 @@ class MicrophoneRecorder:
         self._input_suspended = False
         self._ignore_input_until_monotonic = 0.0
         self._ignore_input_reason = ""
+        self._current_input_level = 0.0
+        self._recent_input_chunk = b""
+        self._recent_input_timestamp = 0.0
 
     @property
     def is_recording(self) -> bool:
         with self._lock:
             return self._stream is not None
 
+    @property
+    def current_input_level(self) -> float:
+        with self._lock:
+            return self._current_input_level
+
+    def recent_input_chunk(self) -> tuple[bytes, int, float]:
+        with self._lock:
+            return self._recent_input_chunk, self.sample_rate, self._recent_input_timestamp
+
     def start(
         self,
         *,
         segment_ready_callback: Callable[[], None] | None = None,
         silence_timeout_seconds: float = 1.5,
-        speech_threshold: int = 600,
+        speech_threshold: int = 480,
         silence_threshold: int = 180,
         max_turn_seconds: float = 120.0,
         min_speech_seconds: float = 0.35,
@@ -193,6 +206,9 @@ class MicrophoneRecorder:
     def suspend_input(self) -> None:
         with self._lock:
             self._input_suspended = True
+            self._current_input_level = 0.0
+            self._recent_input_chunk = b""
+            self._recent_input_timestamp = 0.0
             self._frames = []
             self._pending_segments.clear()
             self._pre_roll_frames.clear()
@@ -204,6 +220,9 @@ class MicrophoneRecorder:
     def resume_input(self, *, warmup_seconds: float = 0.0, reason: str = "resume_input") -> None:
         with self._lock:
             self._input_suspended = False
+            self._current_input_level = 0.0
+            self._recent_input_chunk = b""
+            self._recent_input_timestamp = 0.0
             self._frames = []
             self._pending_segments.clear()
             self._pre_roll_frames.clear()
@@ -235,6 +254,9 @@ class MicrophoneRecorder:
             self._pending_segments.clear()
             self._pre_roll_frames.clear()
             self._pre_roll_rms.clear()
+            self._current_input_level = 0.0
+            self._recent_input_chunk = b""
+            self._recent_input_timestamp = 0.0
             self._reset_segment_tracking_locked()
         self._logger.info("Extracted microphone frames source=%s frame_chunks=%s", source, len(frames))
         return frames
@@ -274,7 +296,11 @@ class MicrophoneRecorder:
         with self._lock:
             if self._stream is None:
                 return
+            self._current_input_level = self._normalize_level(rms)
+            self._recent_input_chunk = chunk
+            self._recent_input_timestamp = time.monotonic()
             if self._input_suspended:
+                self._current_input_level = 0.0
                 self._idle_peak_rms = max(self._idle_peak_rms, rms)
                 self._idle_log_frames += frames
                 if self._idle_log_frames >= self.sample_rate * 2:
@@ -289,6 +315,7 @@ class MicrophoneRecorder:
                 return
             ignore_remaining_seconds = self._ignore_input_until_monotonic - time.monotonic()
             if ignore_remaining_seconds > 0:
+                self._current_input_level = 0.0
                 self._idle_peak_rms = max(self._idle_peak_rms, rms)
                 self._idle_log_frames += frames
                 self._append_pre_roll_locked(chunk, frames, rms)
@@ -409,6 +436,9 @@ class MicrophoneRecorder:
         self._segment_started = False
         self._speech_candidate_frames = 0
         self._speech_candidate_peak_rms = 0.0
+        self._current_input_level = 0.0
+        self._recent_input_chunk = b""
+        self._recent_input_timestamp = 0.0
         self._pre_roll_frame_total = 0
         self._last_logged_rms = 0.0
         self._idle_peak_rms = 0.0
@@ -427,6 +457,12 @@ class MicrophoneRecorder:
 
         total = sum(sample * sample for sample in samples)
         return (total / len(samples)) ** 0.5
+
+    def _normalize_level(self, rms: float) -> float:
+        if rms <= 0:
+            return 0.0
+        ceiling = 5000.0
+        return min(1.0, math.log10(1.0 + rms) / math.log10(1.0 + ceiling))
 
     def _finalize_segment_locked(self, reason: str, callback: Callable[[], None] | None) -> Callable[[], None] | None:
         total_turn_frames = self._speech_frames + self._silence_frames

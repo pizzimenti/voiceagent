@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 import logging
 
 from voiceagent.audio_check import AudioCheckController, AudioCheckDialog
+from voiceagent.audio_visualizer import OscilloscopeTrace
 from voiceagent.controller import VoiceController
 from voiceagent.downloaders import format_bytes, format_transfer_rate
 from voiceagent.model_loader import WhisperModelLoader
@@ -162,6 +163,21 @@ class MainWindow(QMainWindow):
         voice_controls_row.addWidget(self.push_to_talk_button, 1)
         voice_controls_row.addWidget(self.mute_button)
 
+        self.input_meter_label = QLabel("Mic In", root)
+        self.input_meter = OscilloscopeTrace("#2ea043", parent=root)
+
+        self.output_meter_label = QLabel("Speaker Out", root)
+        self.output_meter = OscilloscopeTrace("#58a6ff", parent=root)
+
+        audio_meters_row = QGridLayout()
+        audio_meters_row.setHorizontalSpacing(8)
+        audio_meters_row.setVerticalSpacing(6)
+        audio_meters_row.addWidget(self.input_meter_label, 0, 0)
+        audio_meters_row.addWidget(self.input_meter, 0, 1)
+        audio_meters_row.addWidget(self.output_meter_label, 1, 0)
+        audio_meters_row.addWidget(self.output_meter, 1, 1)
+        audio_meters_row.setColumnStretch(1, 1)
+
         self.conversation_view = ConversationView(self.tts_loader.tts_service, self.replay_player, root)
 
         self.error_label = QLabel("", root)
@@ -178,6 +194,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(llm_row)
         layout.addLayout(llm_model_row)
         layout.addLayout(voice_controls_row)
+        layout.addLayout(audio_meters_row)
         layout.addWidget(self.conversation_view, 1)
         layout.addWidget(self.error_label)
 
@@ -216,6 +233,10 @@ class MainWindow(QMainWindow):
         self._populate_llm_url_selector()
         self._populate_llm_model_selector([], "")
         self._restore_initial_selections()
+        self._level_timer = QTimer(self)
+        self._level_timer.setInterval(16)
+        self._level_timer.timeout.connect(self._refresh_audio_levels)
+        self._level_timer.start()
         self._apply_state("idle")
         self._apply_model_ready(self.model_loader.is_ready)
         self._apply_model_loading(self.model_loader.is_loading)
@@ -224,6 +245,7 @@ class MainWindow(QMainWindow):
         self._apply_audio_mute_state(self.settings.value("audio_output_muted", False, bool))
         self._apply_voice_connection_state(self.controller.voice_connection_enabled)
         self._refresh_action_buttons()
+        self._refresh_audio_levels()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.controller.shutdown()
@@ -280,6 +302,17 @@ class MainWindow(QMainWindow):
         icon = QStyle.StandardPixmap.SP_MediaVolumeMuted if enabled else QStyle.StandardPixmap.SP_MediaVolume
         self.mute_button.setIcon(self.style().standardIcon(icon))
         self.mute_button.setToolTip("Unmute app audio output" if enabled else "Mute app audio output")
+
+    def _refresh_audio_levels(self) -> None:
+        input_chunk, input_rate, input_timestamp = self.controller.recorder.recent_input_chunk()
+        self.input_meter.set_audio_chunk(input_chunk, input_rate, input_timestamp)
+
+        response_chunk, response_rate, response_timestamp = self.controller.player.recent_output_chunk()
+        replay_chunk, replay_rate, replay_timestamp = self.replay_player.recent_output_chunk()
+        if replay_timestamp >= response_timestamp:
+            self.output_meter.set_audio_chunk(replay_chunk, replay_rate, replay_timestamp)
+        else:
+            self.output_meter.set_audio_chunk(response_chunk, response_rate, response_timestamp)
 
     def _apply_model_ready(self, ready: bool) -> None:
         self.model_status_label.setVisible(self.model_loader.is_loading or not ready)
@@ -481,6 +514,10 @@ class MainWindow(QMainWindow):
         self.push_to_talk_button.setEnabled(talk_ready)
         self.mute_button.setVisible(talk_ready)
         self.mute_button.setEnabled(talk_ready)
+        self.input_meter_label.setVisible(talk_ready)
+        self.input_meter.setVisible(talk_ready)
+        self.output_meter_label.setVisible(talk_ready)
+        self.output_meter.setVisible(talk_ready)
         self.audio_check_button.setEnabled(audio_check_ready)
         self.audio_check_button.setToolTip(
             "" if audio_check_ready else "Select downloaded STT and TTS models first."
