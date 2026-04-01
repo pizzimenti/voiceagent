@@ -49,6 +49,7 @@ class TtsVoiceLoader(QObject):
 
     def select_model(self, model_name: str | None) -> None:
         self.tts_service.set_selected_item(model_name)
+        self._log_state("select_model")
         self._last_progress = DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0)
         self.selection_changed.emit(model_name or "")
         self._emit_initial_state()
@@ -72,6 +73,7 @@ class TtsVoiceLoader(QObject):
     def select_and_load(self, model_name: str) -> None:
         """Select a model and immediately start downloading it."""
         self.tts_service.set_selected_item(model_name)
+        self._log_state("select_and_load")
         self._last_progress = DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0)
         self.selection_changed.emit(model_name)
         self._emit_initial_state()
@@ -81,6 +83,7 @@ class TtsVoiceLoader(QObject):
         self.executor.shutdown(wait=False, cancel_futures=True)
 
     def _emit_initial_state(self) -> None:
+        self._log_state("emit_initial_state")
         self.ready_changed.emit(self.is_ready)
         self.loading_changed.emit(self._loading)
         if not self.selected_model:
@@ -117,6 +120,7 @@ class TtsVoiceLoader(QObject):
                 self.load_failed.emit("Voice download failed unexpectedly")
 
     def _finish_success(self) -> None:
+        self._log_state("finish_success")
         self._loading = False
         self.loading_changed.emit(False)
         self.ready_changed.emit(True)
@@ -130,6 +134,12 @@ class TtsVoiceLoader(QObject):
         )
 
     def _finish_failure(self, message: str) -> None:
+        self._logger.error(
+            "TTS load failed selected_model=%s message=%s",
+            self.selected_model,
+            message,
+        )
+        self._log_state("finish_failure")
         self._loading = False
         self.loading_changed.emit(False)
         self.ready_changed.emit(False)
@@ -140,3 +150,33 @@ class TtsVoiceLoader(QObject):
     def _emit_progress(self, progress: DownloadProgress) -> None:
         self._last_progress = progress
         self.progress_changed.emit(progress)
+
+    def _log_state(self, context: str) -> None:
+        details_getter = getattr(self.tts_service, "describe_selection_state", None)
+        if callable(details_getter):
+            details = details_getter()
+            self._logger.info(
+                "TTS state context=%s enabled=%s ready=%s loading=%s selected_model=%s available=%s can_download=%s resolved_model_path=%s direct_candidate=%s local_candidate=%s onnx_candidate=%s json_candidate=%s",
+                context,
+                self.is_enabled,
+                self.is_ready,
+                self.is_loading,
+                details.get("selected_model", ""),
+                details.get("available", False),
+                details.get("can_download", False),
+                details.get("resolved_model_path", ""),
+                details.get("direct_candidate", ""),
+                details.get("local_candidate", ""),
+                details.get("onnx_candidate", ""),
+                details.get("json_candidate", ""),
+            )
+            return
+
+        self._logger.info(
+            "TTS state context=%s enabled=%s ready=%s loading=%s selected_model=%s",
+            context,
+            self.is_enabled,
+            self.is_ready,
+            self.is_loading,
+            self.selected_model,
+        )

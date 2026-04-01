@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import threading
+import time
 from typing import Any
 import wave
 
@@ -14,6 +15,7 @@ class AudioPlayer(QObject):
     playback_finished = Signal(str)
     playback_failed = Signal(str, str)
     playback_state_changed = Signal(str, str)
+    muted_changed = Signal(bool)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -24,15 +26,24 @@ class AudioPlayer(QObject):
         self._stop_event = threading.Event()
         self._pause_condition = threading.Condition()
         self._paused = False
+        self._muted = False
 
-    def play_file(self, path: Path) -> None:
-        self._logger.info("Starting audio playback path=%s exists=%s bytes=%s", path, path.exists(), path.stat().st_size if path.exists() else 0)
+    def play_file(self, path: Path) -> bool:
+        self._logger.info(
+            "Starting audio playback path=%s exists=%s bytes=%s currently_playing=%s currently_paused=%s",
+            path,
+            path.exists(),
+            path.stat().st_size if path.exists() else 0,
+            self.is_playing,
+            self.is_paused,
+        )
         self.stop()
         self._current_file = path
         self._stop_event.clear()
         self._paused = False
         self._thread = threading.Thread(target=self._playback_worker, args=(path,), daemon=True)
         self._thread.start()
+        return True
 
     def pause(self) -> None:
         if self._current_file is None or self._paused:
@@ -55,7 +66,12 @@ class AudioPlayer(QObject):
         if self._current_file is None and self._thread is None:
             return
 
-        self._logger.info("Stopping audio playback path=%s", self._current_file)
+        self._logger.info(
+            "Stopping audio playback path=%s thread_alive=%s paused=%s",
+            self._current_file,
+            self._thread.is_alive() if self._thread is not None else False,
+            self._paused,
+        )
         self._stop_event.set()
         with self._pause_condition:
             self._paused = False
@@ -80,10 +96,23 @@ class AudioPlayer(QObject):
     def is_paused(self) -> bool:
         return self._current_file is not None and self._paused
 
+    @property
+    def is_muted(self) -> bool:
+        return self._muted
+
+    def set_muted(self, muted: bool) -> None:
+        if self._muted == muted:
+            return
+        self._muted = muted
+        self._logger.info("Audio output muted=%s", muted)
+        self.muted_changed.emit(muted)
+
     def _playback_worker(self, path: Path) -> None:
         try:
             import sounddevice as sd
 
+            chunk_writes = 0
+            muted_chunk_sleeps = 0
             with wave.open(str(path), "rb") as wav_file:
                 channels = wav_file.getnchannels()
                 sample_rate = wav_file.getframerate()
@@ -115,15 +144,33 @@ class AudioPlayer(QObject):
                         data = wav_file.readframes(4096)
                         if not data:
                             break
+                        if self._muted:
+                            frame_count = len(data) // max(1, channels * sample_width)
+                            time.sleep(frame_count / sample_rate)
+                            muted_chunk_sleeps += 1
+                            continue
                         stream.write(data)
+                        chunk_writes += 1
         except Exception as exc:
             self._logger.exception("Audio playback failed path=%s", path)
             self.playback_failed.emit(str(path), str(exc) or "Audio playback failed.")
         else:
             if not self._stop_event.is_set():
-                self._logger.info("Audio playback finished path=%s", path)
+                self._logger.info(
+                    "Audio playback finished path=%s chunk_writes=%s muted_chunk_sleeps=%s",
+                    path,
+                    chunk_writes,
+                    muted_chunk_sleeps,
+                )
                 self.playback_finished.emit(str(path))
         finally:
+            self._logger.info(
+                "Audio playback worker finalizing path=%s stop_event=%s paused=%s current_file_matches=%s",
+                path,
+                self._stop_event.is_set(),
+                self._paused,
+                self._current_file == path,
+            )
             self._stream = None
             if self._current_file == path:
                 self._cleanup_current_file()

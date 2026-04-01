@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+VENV_PYTHON="${ROOT_DIR}/.venv/bin/python"
+
+if [ ! -x "${VENV_PYTHON}" ]; then
+  echo "Missing virtualenv python at ${VENV_PYTHON}" >&2
+  exit 1
+fi
+
+if [ -n "${PYTHONPATH:-}" ]; then
+  export PYTHONPATH="${ROOT_DIR}/src:${PYTHONPATH}"
+else
+  export PYTHONPATH="${ROOT_DIR}/src"
+fi
+
+exec "${VENV_PYTHON}" -m voiceagent "$@"

@@ -7,6 +7,7 @@ pkgdesc='Push-to-talk KDE-friendly desktop voice assistant'
 arch=('any')
 url='https://github.com/pizzimenti/voiceagent'
 license=('MIT')
+options=(!strip !debug)
 depends=(
   'python'
   'pyside6'

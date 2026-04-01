@@ -125,7 +125,8 @@ class AudioCheckController(QObject):
     def _play_transcript_audio(self, audio_path: str) -> None:
         self._set_state(AppState.SPEAKING)
         self.status_changed.emit("Playing transcript")
-        self.player.play_file(Path(audio_path))
+        if not self.player.play_file(Path(audio_path)):
+            self._apply_state(AppState.IDLE.value, "Ready")
 
     def _handle_pipeline_error(self, message: str) -> None:
         self.error_changed.emit(message)

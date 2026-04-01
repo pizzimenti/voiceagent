@@ -5,15 +5,19 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QStatusBar,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
+import logging
 
 from voiceagent.audio_check import AudioCheckController, AudioCheckDialog
 from voiceagent.controller import VoiceController
@@ -42,6 +46,7 @@ class MainWindow(QMainWindow):
         self.settings.remove("llm_model_history")
         self.replay_player = AudioPlayer(self)
         self.audio_check_dialog: QDialog | None = None
+        self._logger = logging.getLogger(__name__)
         self._default_llm_url = "silverthread:1234"
         self._stt_catalog = self.model_loader.transcriber.available_items()
         self._tts_catalog = self.tts_loader.tts_service.available_items()
@@ -57,12 +62,6 @@ class MainWindow(QMainWindow):
         self.stt_download_button = QPushButton("Download STT", root)
         self.stt_download_button.clicked.connect(self._download_selected_stt_model)
         self.stt_selector.currentTextChanged.connect(self._handle_stt_selection_changed)
-
-        stt_row = QHBoxLayout()
-        stt_row.setSpacing(8)
-        stt_row.addWidget(QLabel(f"STT {self.model_loader.transcriber.selection_label}", root))
-        stt_row.addWidget(self.stt_selector, 1)
-        stt_row.addWidget(self.stt_download_button)
 
         self.model_status_label = QLabel(
             f"Load {self.model_loader.transcriber.backend_name} "
@@ -93,11 +92,26 @@ class MainWindow(QMainWindow):
         self.tts_download_button.clicked.connect(self._download_selected_tts_model)
         self.tts_selector.currentTextChanged.connect(self._handle_tts_selection_changed)
 
-        tts_row = QHBoxLayout()
-        tts_row.setSpacing(8)
-        tts_row.addWidget(QLabel(f"TTS {self.tts_loader.tts_service.selection_label}", root))
-        tts_row.addWidget(self.tts_selector, 1)
-        tts_row.addWidget(self.tts_download_button)
+        self.audio_check_button = QPushButton("Audio\nCheck", root)
+        self.audio_check_button.clicked.connect(self._open_audio_check)
+        self.audio_check_button.setFixedSize(88, 88)
+        self.audio_check_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        selectors_layout = QHBoxLayout()
+        selectors_layout.setSpacing(12)
+        selectors_layout.addWidget(self.audio_check_button, alignment=Qt.AlignmentFlag.AlignTop)
+
+        selectors_grid = QGridLayout()
+        selectors_grid.setHorizontalSpacing(8)
+        selectors_grid.setVerticalSpacing(8)
+        selectors_grid.addWidget(QLabel(f"STT {self.model_loader.transcriber.selection_label}", root), 0, 0)
+        selectors_grid.addWidget(self.stt_selector, 0, 1)
+        selectors_grid.addWidget(self.stt_download_button, 0, 2)
+        selectors_grid.addWidget(QLabel(f"TTS {self.tts_loader.tts_service.selection_label}", root), 1, 0)
+        selectors_grid.addWidget(self.tts_selector, 1, 1)
+        selectors_grid.addWidget(self.tts_download_button, 1, 2)
+        selectors_grid.setColumnStretch(1, 1)
+        selectors_layout.addLayout(selectors_grid, 1)
 
         self.tts_progress_bar = QProgressBar(root)
         self.tts_progress_bar.setVisible(False)
@@ -130,13 +144,23 @@ class MainWindow(QMainWindow):
         llm_model_row.addWidget(QLabel("LLM Model", root))
         llm_model_row.addWidget(self.llm_model_selector, 1)
 
-        self.push_to_talk_button = QPushButton("Click To Record", root)
-        self.push_to_talk_button.setMinimumHeight(72)
-        self.push_to_talk_button.clicked.connect(self._toggle_recording)
+        self.push_to_talk_button = QPushButton("Voice Connection Off", root)
+        self.push_to_talk_button.setCheckable(True)
+        self.push_to_talk_button.setMinimumHeight(44)
+        self.push_to_talk_button.toggled.connect(self._toggle_recording)
         self.push_to_talk_button.setVisible(False)
 
-        self.audio_check_button = QPushButton("Audio Check", root)
-        self.audio_check_button.clicked.connect(self._open_audio_check)
+        self.mute_button = QPushButton(root)
+        self.mute_button.setCheckable(True)
+        self.mute_button.setFixedHeight(44)
+        self.mute_button.setFixedWidth(52)
+        self.mute_button.toggled.connect(self._toggle_audio_mute)
+        self.mute_button.setVisible(False)
+
+        voice_controls_row = QHBoxLayout()
+        voice_controls_row.setSpacing(8)
+        voice_controls_row.addWidget(self.push_to_talk_button, 1)
+        voice_controls_row.addWidget(self.mute_button)
 
         self.conversation_view = ConversationView(self.tts_loader.tts_service, self.replay_player, root)
 
@@ -144,18 +168,16 @@ class MainWindow(QMainWindow):
         self.error_label.setWordWrap(True)
         self.error_label.setStyleSheet("color: #b00020;")
 
-        layout.addLayout(stt_row)
+        layout.addLayout(selectors_layout)
         layout.addWidget(self.model_status_label)
         layout.addWidget(self.model_progress_bar)
         layout.addWidget(self.model_progress_detail_label)
-        layout.addLayout(tts_row)
         layout.addWidget(self.tts_status_label)
         layout.addWidget(self.tts_progress_bar)
         layout.addWidget(self.tts_progress_detail_label)
         layout.addLayout(llm_row)
         layout.addLayout(llm_model_row)
-        layout.addWidget(self.push_to_talk_button)
-        layout.addWidget(self.audio_check_button)
+        layout.addLayout(voice_controls_row)
         layout.addWidget(self.conversation_view, 1)
         layout.addWidget(self.error_label)
 
@@ -165,10 +187,15 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
 
         self.controller.status_changed.connect(self.status_bar.showMessage)
+        self.controller.connection_changed.connect(self._apply_voice_connection_state)
+        self.controller.live_transcript_changed.connect(self._apply_live_transcript)
         self.controller.transcript_changed.connect(self._append_user_message)
         self.controller.response_changed.connect(self._append_assistant_message)
         self.controller.error_changed.connect(self.error_label.setText)
         self.controller.state_changed.connect(self._apply_state)
+        self.replay_player.playback_started.connect(self.controller.handle_aux_playback_started)
+        self.replay_player.playback_finished.connect(self.controller.handle_aux_playback_finished)
+        self.replay_player.playback_failed.connect(self.controller.handle_aux_playback_failed)
         self.model_loader.ready_changed.connect(self._apply_model_ready)
         self.model_loader.loading_changed.connect(self._apply_model_loading)
         self.model_loader.status_changed.connect(self._apply_model_status)
@@ -194,6 +221,8 @@ class MainWindow(QMainWindow):
         self._apply_model_loading(self.model_loader.is_loading)
         self._apply_tts_ready(self.tts_loader.is_ready)
         self._apply_tts_loading(self.tts_loader.is_loading)
+        self._apply_audio_mute_state(self.settings.value("audio_output_muted", False, bool))
+        self._apply_voice_connection_state(self.controller.voice_connection_enabled)
         self._refresh_action_buttons()
 
     def closeEvent(self, event) -> None:  # noqa: N802
@@ -207,21 +236,8 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _apply_state(self, state: str) -> None:
-        can_record = self._main_actions_ready() and (state == "idle" or state == "recording")
-        self.push_to_talk_button.setEnabled(can_record)
-
-        if state == "recording":
-            self.push_to_talk_button.setText("Click To Send")
-        elif state == "transcribing":
-            self.push_to_talk_button.setText("Transcribing...")
-        elif state == "thinking":
-            self.push_to_talk_button.setText("Thinking...")
-        elif state == "synthesizing":
-            self.push_to_talk_button.setText("Synthesizing...")
-        elif state == "speaking":
-            self.push_to_talk_button.setText("Speaking...")
-        else:
-            self.push_to_talk_button.setText("Click To Record")
+        self.push_to_talk_button.setEnabled(self._main_actions_ready())
+        self._apply_voice_connection_state(self.controller.voice_connection_enabled)
 
     def _open_audio_check(self) -> None:
         if not self._main_actions_ready():
@@ -234,14 +250,36 @@ class MainWindow(QMainWindow):
         self.audio_check_dialog.raise_()
         self.audio_check_dialog.activateWindow()
 
-    def _toggle_recording(self) -> None:
-        if self.controller.state == "recording":
-            self.controller.stop_recording()
-            return
-
-        if self.controller.state == "idle":
+    def _toggle_recording(self, enabled: bool) -> None:
+        self._logger.info("UI voice connection toggled enabled=%s", enabled)
+        if enabled:
             self._persist_current_llm_url()
             self.controller.start_recording()
+            return
+
+        self.controller.stop_recording()
+
+    def _apply_voice_connection_state(self, enabled: bool) -> None:
+        self._logger.info("UI applying voice connection state enabled=%s", enabled)
+        self.push_to_talk_button.blockSignals(True)
+        self.push_to_talk_button.setChecked(enabled)
+        self.push_to_talk_button.blockSignals(False)
+        self.push_to_talk_button.setText("Voice Connection On" if enabled else "Voice Connection Off")
+
+    def _toggle_audio_mute(self, enabled: bool) -> None:
+        self.settings.setValue("audio_output_muted", enabled)
+        self._apply_audio_mute_state(enabled)
+
+    def _apply_audio_mute_state(self, enabled: bool) -> None:
+        self._logger.info("UI applying audio mute enabled=%s", enabled)
+        self.controller.player.set_muted(enabled)
+        self.replay_player.set_muted(enabled)
+        self.mute_button.blockSignals(True)
+        self.mute_button.setChecked(enabled)
+        self.mute_button.blockSignals(False)
+        icon = QStyle.StandardPixmap.SP_MediaVolumeMuted if enabled else QStyle.StandardPixmap.SP_MediaVolume
+        self.mute_button.setIcon(self.style().standardIcon(icon))
+        self.mute_button.setToolTip("Unmute app audio output" if enabled else "Mute app audio output")
 
     def _apply_model_ready(self, ready: bool) -> None:
         self.model_status_label.setVisible(self.model_loader.is_loading or not ready)
@@ -440,6 +478,9 @@ class MainWindow(QMainWindow):
         talk_ready = self._main_actions_ready()
         audio_check_ready = self._audio_check_ready()
         self.push_to_talk_button.setVisible(talk_ready)
+        self.push_to_talk_button.setEnabled(talk_ready)
+        self.mute_button.setVisible(talk_ready)
+        self.mute_button.setEnabled(talk_ready)
         self.audio_check_button.setEnabled(audio_check_ready)
         self.audio_check_button.setToolTip(
             "" if audio_check_ready else "Select downloaded STT and TTS models first."
@@ -459,6 +500,13 @@ class MainWindow(QMainWindow):
         self.settings.setValue("selected_tts_model", model_name)
         if model_name and model_name != (self.tts_loader.selected_model or ""):
             self.tts_loader.select_model(model_name)
+        self._logger.info(
+            "UI selected TTS model=%s loader_selected=%s ready=%s downloaded=%s",
+            model_name,
+            self.tts_loader.selected_model,
+            self.tts_loader.is_ready,
+            self._is_tts_downloaded(model_name) if model_name else False,
+        )
         self._refresh_tts_controls()
 
     def _handle_llm_url_changed(self, value: str) -> None:
@@ -468,10 +516,13 @@ class MainWindow(QMainWindow):
         self._refresh_action_buttons()
 
     def _append_user_message(self, text: str) -> None:
-        self.conversation_view.add_user_message(text)
+        self.conversation_view.commit_live_transcript(text)
 
     def _append_assistant_message(self, text: str) -> None:
         self.conversation_view.add_assistant_message(text)
+
+    def _apply_live_transcript(self, text: str) -> None:
+        self.conversation_view.set_live_transcript(text)
 
     def _restore_initial_selections(self) -> None:
         stt_model = self._resolve_initial_selection(
@@ -485,6 +536,12 @@ class MainWindow(QMainWindow):
             self.settings.value("selected_tts_model", "", str) or "",
             self.tts_loader.selected_model or "",
             self._is_tts_downloaded,
+        )
+        self._logger.info(
+            "Restoring selections persisted_tts=%s loader_tts=%s resolved_tts=%s",
+            self.settings.value("selected_tts_model", "", str) or "",
+            self.tts_loader.selected_model or "",
+            tts_model,
         )
         self._set_selector_value(self.stt_selector, stt_model, self._handle_stt_selection_changed)
         self._set_selector_value(self.tts_selector, tts_model, self._handle_tts_selection_changed)

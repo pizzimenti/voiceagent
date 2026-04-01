@@ -118,7 +118,8 @@ class ReplayableTextBlock(QWidget):
         if self._audio_path is None:
             return
 
-        self.player.play_file(self._audio_path)
+        if not self.player.play_file(self._audio_path):
+            self._clear_replay_state()
 
     def _handle_playback_started(self, path: str) -> None:
         if not self._active or self._audio_path is None or str(self._audio_path) != path:
@@ -278,7 +279,8 @@ class ConversationBubble(QWidget):
         if self._audio_path is None:
             return
 
-        self.player.play_file(self._audio_path)
+        if not self.player.play_file(self._audio_path):
+            self._clear_replay_state()
 
     def _handle_playback_started(self, path: str) -> None:
         if not self._active or self._audio_path is None or str(self._audio_path) != path:
@@ -316,6 +318,55 @@ class ConversationBubble(QWidget):
         self.replay_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause))
 
 
+class LiveTranscriptBubble(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addStretch(1)
+
+        self.bubble = QFrame(self)
+        self.bubble.setObjectName("live-user-bubble")
+        self.bubble.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Minimum)
+        self.bubble.setMaximumWidth(520)
+
+        bubble_layout = QVBoxLayout(self.bubble)
+        bubble_layout.setContentsMargins(14, 10, 14, 10)
+        bubble_layout.setSpacing(4)
+
+        self.title_label = QLabel("Listening", self.bubble)
+        self.title_label.setStyleSheet("font-size: 11px; font-weight: 600;")
+        bubble_layout.addWidget(self.title_label)
+
+        self.text_label = QLabel("", self.bubble)
+        self.text_label.setWordWrap(True)
+        self.text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        bubble_layout.addWidget(self.text_label)
+
+        row.addWidget(self.bubble)
+
+        self.setStyleSheet(
+            """
+            QFrame#live-user-bubble {
+                background-color: #7cb28b;
+                border: 1px dashed #3c6e4c;
+                border-radius: 14px;
+                color: #102016;
+            }
+            """
+        )
+        self.setVisible(False)
+
+    def set_text(self, text: str) -> None:
+        cleaned = text.strip()
+        self.text_label.setText(cleaned)
+        self.setVisible(bool(cleaned))
+
+    def current_text(self) -> str:
+        return self.text_label.text().strip()
+
+
 class ConversationView(QScrollArea):
     def __init__(self, tts_service: TextToSpeechBackend, player: AudioPlayer, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -331,6 +382,8 @@ class ConversationView(QScrollArea):
         self.container_layout = QVBoxLayout(self.container)
         self.container_layout.setContentsMargins(0, 0, 0, 0)
         self.container_layout.setSpacing(10)
+        self.live_transcript_bubble = LiveTranscriptBubble(self.container)
+        self.container_layout.addWidget(self.live_transcript_bubble)
         self.container_layout.addStretch(1)
         self.setWidget(self.container)
 
@@ -340,6 +393,28 @@ class ConversationView(QScrollArea):
     def add_assistant_message(self, text: str) -> None:
         self._add_message("assistant", text)
 
+    def commit_live_transcript(self, text: str) -> None:
+        cleaned = text.strip()
+        if not cleaned:
+            self.set_live_transcript("")
+            return
+
+        if self._last_bubble is not None and self._last_bubble.matches("user", cleaned):
+            self.set_live_transcript("")
+            return
+
+        bubble = ConversationBubble("user", cleaned, self.tts_service, self.player, self.container)
+        live_index = self.container_layout.indexOf(self.live_transcript_bubble)
+        insert_index = live_index if live_index >= 0 else max(0, self.container_layout.count() - 1)
+        self.container_layout.insertWidget(insert_index, bubble)
+        self._last_bubble = bubble
+        self.live_transcript_bubble.set_text("")
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def set_live_transcript(self, text: str) -> None:
+        self.live_transcript_bubble.set_text(text)
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
     def _add_message(self, role: str, text: str) -> None:
         cleaned = text.strip()
         if not cleaned:
@@ -348,7 +423,7 @@ class ConversationView(QScrollArea):
             return
 
         bubble = ConversationBubble(role, cleaned, self.tts_service, self.player, self.container)
-        self.container_layout.insertWidget(self.container_layout.count() - 1, bubble)
+        self.container_layout.insertWidget(self.container_layout.count() - 2, bubble)
         self._last_bubble = bubble
         QTimer.singleShot(0, self._scroll_to_bottom)
 

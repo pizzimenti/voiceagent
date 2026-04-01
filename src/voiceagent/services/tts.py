@@ -153,6 +153,36 @@ class PiperTtsService(TextToSpeechBackend):
 
         return None
 
+    def describe_selection_state(self) -> dict[str, str | bool]:
+        model_path = self.model_path
+        if not model_path:
+            return {
+                "selected_model": "",
+                "available": False,
+                "can_download": False,
+                "resolved_model_path": "",
+                "direct_candidate": "",
+                "local_candidate": "",
+                "onnx_candidate": "",
+                "json_candidate": "",
+            }
+
+        candidate = Path(model_path).expanduser()
+        local_candidate = self.model_root / model_path
+        onnx_candidate = self.model_root / f"{model_path}.onnx"
+        json_candidate = self.model_root / f"{model_path}.onnx.json"
+        resolved_model_path = self._resolve_existing_model_path()
+        return {
+            "selected_model": model_path,
+            "available": resolved_model_path is not None,
+            "can_download": self.can_download,
+            "resolved_model_path": str(resolved_model_path) if resolved_model_path else "",
+            "direct_candidate": str(candidate),
+            "local_candidate": str(local_candidate),
+            "onnx_candidate": str(onnx_candidate),
+            "json_candidate": str(json_candidate),
+        }
+
     def _get_voice(self, resolved_model_path: Path) -> PiperVoice:
         if self._voice is not None and self._loaded_voice_path == resolved_model_path:
             return self._voice
