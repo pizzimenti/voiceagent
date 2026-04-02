@@ -98,7 +98,7 @@ When additional STT or TTS backends are introduced, prefer this packaging policy
 
 Before publishing or updating the AUR package:
 
-1. Create and push a signed or otherwise finalized Git tag such as `v0.1.0`.
+1. Create and push a signed or otherwise finalized Git tag such as `v0.2.0`.
 2. Confirm the GitHub release tarball for that tag exists and matches the expected source layout.
 3. Update `pkgver` in `packaging/PKGBUILD.aur` if needed.
 4. Replace `sha256sums=('SKIP')` in `packaging/PKGBUILD.aur` with the real release checksum if you want reproducible source verification.
