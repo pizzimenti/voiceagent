@@ -18,6 +18,8 @@ class TtsVoiceLoader(QObject):
     error_changed = Signal(str)
     load_completed = Signal()
     load_failed = Signal(str)
+    delete_completed = Signal()
+    delete_failed = Signal(str)
 
     def __init__(self, tts_service: TextToSpeechBackend, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -29,6 +31,8 @@ class TtsVoiceLoader(QObject):
 
         self.load_completed.connect(self._finish_success)
         self.load_failed.connect(self._finish_failure)
+        self.delete_completed.connect(self._finish_delete_success)
+        self.delete_failed.connect(self._finish_delete_failure)
         self._emit_initial_state()
 
     @property
@@ -55,7 +59,13 @@ class TtsVoiceLoader(QObject):
         self._emit_initial_state()
 
     def load_voice(self) -> None:
-        if not self.is_enabled or self._loading or self.is_ready:
+        if not self.is_enabled or self._loading or not self.selected_model or self.is_ready:
+            return
+
+        self.download_voice(self.selected_model)
+
+    def download_voice(self, model_name: str) -> None:
+        if not self.tts_service.command or self._loading or not model_name or self.tts_service.is_item_available(model_name):
             return
 
         self._loading = True
@@ -67,7 +77,7 @@ class TtsVoiceLoader(QObject):
         )
         self.progress_changed.emit(self._last_progress)
 
-        future = self.executor.submit(self._load_voice)
+        future = self.executor.submit(self._load_voice, model_name)
         future.add_done_callback(self._handle_done)
 
     def select_and_load(self, model_name: str) -> None:
@@ -77,7 +87,23 @@ class TtsVoiceLoader(QObject):
         self._last_progress = DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0)
         self.selection_changed.emit(model_name)
         self._emit_initial_state()
-        self.load_voice()
+        self.download_voice(model_name)
+
+    def delete_voice(self, model_name: str) -> None:
+        if self._loading or not model_name or not self.tts_service.is_item_available(model_name):
+            return
+
+        self._loading = True
+        self._last_progress = DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0)
+        self.loading_changed.emit(True)
+        self.error_changed.emit("")
+        self.status_changed.emit(
+            f"Removing {self.tts_service.backend_name} {self.tts_service.selection_label.lower()}"
+        )
+        self.progress_changed.emit(self._last_progress)
+
+        future = self.executor.submit(self._delete_voice, model_name)
+        future.add_done_callback(self._handle_done)
 
     def shutdown(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=True)
@@ -98,18 +124,28 @@ class TtsVoiceLoader(QObject):
             )
         self.progress_changed.emit(self._last_progress)
 
-    def _load_voice(self) -> None:
+    def _load_voice(self, model_name: str) -> None:
         try:
             self.status_changed.emit(
                 f"Downloading {self.tts_service.backend_name} {self.tts_service.selection_label.lower()} with aria2"
             )
-            self.tts_service.download_selected_item(progress_callback=self._emit_progress)
+            self.tts_service.download_item(model_name, progress_callback=self._emit_progress)
         except Exception as exc:
             self._logger.exception("Piper voice load failed")
             self.load_failed.emit(str(exc))
             return
 
         self.load_completed.emit()
+
+    def _delete_voice(self, model_name: str) -> None:
+        try:
+            self.tts_service.remove_item(model_name)
+        except Exception as exc:
+            self._logger.exception("Piper voice delete failed")
+            self.delete_failed.emit(str(exc))
+            return
+
+        self.delete_completed.emit()
 
     def _handle_done(self, future: Future[None]) -> None:
         try:
@@ -123,7 +159,7 @@ class TtsVoiceLoader(QObject):
         self._log_state("finish_success")
         self._loading = False
         self.loading_changed.emit(False)
-        self.ready_changed.emit(True)
+        self.ready_changed.emit(self.is_ready)
         self.status_changed.emit(f"{self.tts_service.backend_name} {self.tts_service.selection_label.lower()} ready")
         self.progress_changed.emit(
             DownloadProgress(
@@ -142,8 +178,29 @@ class TtsVoiceLoader(QObject):
         self._log_state("finish_failure")
         self._loading = False
         self.loading_changed.emit(False)
-        self.ready_changed.emit(False)
+        self.ready_changed.emit(self.is_ready)
         self.status_changed.emit(f"{self.tts_service.backend_name} load failed")
+        self.error_changed.emit(message)
+        self.progress_changed.emit(DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0))
+
+    def _finish_delete_success(self) -> None:
+        self._log_state("finish_delete_success")
+        self._loading = False
+        self.loading_changed.emit(False)
+        self.ready_changed.emit(self.is_ready)
+        self.status_changed.emit(f"{self.tts_service.backend_name} voice removed")
+        self.progress_changed.emit(DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0))
+
+    def _finish_delete_failure(self, message: str) -> None:
+        self._logger.error(
+            "TTS delete failed selected_model=%s message=%s",
+            self.selected_model,
+            message,
+        )
+        self._loading = False
+        self.loading_changed.emit(False)
+        self.ready_changed.emit(self.is_ready)
+        self.status_changed.emit(f"{self.tts_service.backend_name} remove failed")
         self.error_changed.emit(message)
         self.progress_changed.emit(DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0))
 

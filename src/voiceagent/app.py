@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from voiceagent.audio_check import AudioCheckController
 from voiceagent.backends import SpeechToTextBackend, TextToSpeechBackend
 from voiceagent.config import AppConfig
 from voiceagent.controller import VoiceController
@@ -84,21 +83,6 @@ def build_controller(
     )
 
 
-def build_audio_check_controller(
-    config: AppConfig,
-    transcriber: SpeechToTextBackend,
-    tts_service: TextToSpeechBackend,
-) -> AudioCheckController:
-    recorder = MicrophoneRecorder(sample_rate=config.sample_rate)
-    player = AudioPlayer()
-    return AudioCheckController(
-        recorder=recorder,
-        transcriber=transcriber,
-        tts_service=tts_service,
-        player=player,
-    )
-
-
 def main() -> int:
     log_path = configure_logging()
     logging.getLogger(__name__).info("Starting voiceagent")
@@ -115,11 +99,6 @@ def main() -> int:
     logging.getLogger(__name__).info("Configured TTS model root path=%s", config.tts_model_root)
     transcriber, tts_service, model_loader, tts_loader = build_shared_services(config)
     controller = build_controller(config, transcriber=transcriber, tts_service=tts_service)
-    audio_check_controller = build_audio_check_controller(
-        config,
-        transcriber=transcriber,
-        tts_service=tts_service,
-    )
-    window = MainWindow(controller, audio_check_controller, model_loader, tts_loader)
+    window = MainWindow(controller, model_loader, tts_loader)
     window.show()
     return app.exec()
