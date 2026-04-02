@@ -259,7 +259,7 @@ class StubVoiceAgent(QObject):
 app = QApplication([])
 engine = QQmlApplicationEngine()
 stub = StubVoiceAgent()
-engine.rootContext().setContextProperty("voiceAgent", stub)
+engine.setInitialProperties({"voiceAgent": stub})
 qml_path = Path("src/voiceagent/qml/MainWindow.qml").resolve()
 engine.load(QUrl.fromLocalFile(str(qml_path)))
 if not engine.rootObjects():

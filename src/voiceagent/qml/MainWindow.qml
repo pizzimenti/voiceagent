@@ -11,69 +11,18 @@ Kirigami.ApplicationWindow {
     height: 840
     visible: true
     title: "Voice Agent"
-
-    QtObject {
-        id: nullVoiceAgent
-
-        property var sttCatalog: []
-        property var ttsCatalog: []
-        property bool talkReady: false
-        property bool voiceConnectionEnabled: false
-        property string selectedSttModel: ""
-        property string selectedTtsModel: ""
-        property string currentLlmUrl: ""
-        property string selectedLlmModel: ""
-        property string themeModeLabel: "Auto"
-        property string themeMode: "auto"
-        property bool audioMuted: false
-        property string modelStatus: "No STT models installed"
-        property var sttOptions: []
-        property bool modelLoading: false
-        property real modelProgressValue: 0
-        property bool modelProgressIndeterminate: false
-        property string modelProgressText: ""
-        property string ttsStatus: "No TTS voices installed"
-        property var ttsOptions: []
-        property bool ttsLoading: false
-        property real ttsProgressValue: 0
-        property bool ttsProgressIndeterminate: false
-        property string ttsProgressText: ""
-        property bool llmServerConnected: false
-        property bool llmConnectionBusy: false
-        property bool llmModelBusy: false
-        property var llmUrls: []
-        property string llmConnectionButtonText: "Connect"
-        property var llmModelOptions: [""]
-        property var conversationMessages: []
-
-        function setThemeMode(_) {}
-        function setAudioMuted(_) {}
-        function selectSttModel(_) {}
-        function deleteSttModel(_) {}
-        function installSttModel(_) {}
-        function selectTtsModel(_) {}
-        function deleteTtsModel(_) {}
-        function installTtsModel(_) {}
-        function setVoiceConnectionEnabled(_) {}
-        function setCurrentLlmUrl(_) {}
-        function persistCurrentLlmUrl() {}
-        function toggleLlmServerConnection(_) {}
-        function selectLlmModel(_) {}
-        function replayMessage(_) {}
-    }
-
-    readonly property var agent: (typeof voiceAgent !== "undefined" && voiceAgent !== null) ? voiceAgent : nullVoiceAgent
+    required property QtObject voiceAgent
 
     readonly property bool compactMode: width < Kirigami.Units.gridUnit * 25
     readonly property bool largeMode: width >= Kirigami.Units.gridUnit * 50
     readonly property bool mediumMode: !compactMode && !largeMode
     readonly property bool ultraCompactMode: compactMode
     readonly property int dashboardColumns: largeMode ? 2 : 1
-    readonly property int sttInstalledCount: countInstalled(root.agent.sttCatalog)
-    readonly property int ttsInstalledCount: countInstalled(root.agent.ttsCatalog)
-    readonly property color micPulseColor: root.agent.talkReady ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
-    readonly property color micButtonColor: root.agent.voiceConnectionEnabled ? Kirigami.Theme.highlightColor : Kirigami.Theme.alternateBackgroundColor
-    readonly property bool micPulseActive: root.agent.voiceConnectionEnabled || root.agent.talkReady
+    readonly property int sttInstalledCount: countInstalled(voiceAgent.sttCatalog)
+    readonly property int ttsInstalledCount: countInstalled(voiceAgent.ttsCatalog)
+    readonly property color micPulseColor: voiceAgent.talkReady ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
+    readonly property color micButtonColor: voiceAgent.voiceConnectionEnabled ? Kirigami.Theme.highlightColor : Kirigami.Theme.alternateBackgroundColor
+    readonly property bool micPulseActive: voiceAgent.voiceConnectionEnabled || voiceAgent.talkReady
     readonly property real pageContentMargin: root.compactMode ? Kirigami.Units.smallSpacing : (root.mediumMode ? Kirigami.Units.mediumSpacing : Kirigami.Units.largeSpacing)
     readonly property real pageContentSpacing: root.compactMode ? Kirigami.Units.smallSpacing : Kirigami.Units.largeSpacing
 
@@ -105,16 +54,16 @@ Kirigami.ApplicationWindow {
 
     function sessionReadinessText() {
         const missing = [];
-        if (!root.agent.selectedSttModel) {
+        if (!voiceAgent.selectedSttModel) {
             missing.push("an STT model");
         }
-        if (!root.agent.selectedTtsModel) {
+        if (!voiceAgent.selectedTtsModel) {
             missing.push("a TTS voice");
         }
-        if (!root.agent.currentLlmUrl) {
+        if (!voiceAgent.currentLlmUrl) {
             missing.push("an LLM URL");
         }
-        if (!root.agent.selectedLlmModel) {
+        if (!voiceAgent.selectedLlmModel) {
             missing.push("a loaded LLM");
         }
         if (missing.length === 0) {
@@ -168,41 +117,41 @@ Kirigami.ApplicationWindow {
 
     Kirigami.Action {
         id: themeAction
-        text: "Theme: " + root.agent.themeModeLabel
+        text: "Theme: " + voiceAgent.themeModeLabel
         icon.name: "preferences-desktop-theme-global"
         visible: !root.compactMode
 
         Kirigami.Action {
             text: "Auto"
             checkable: true
-            checked: root.agent.themeMode === "auto"
+            checked: voiceAgent.themeMode === "auto"
             ActionGroup.group: themeActionGroup
-            onTriggered: root.agent.setThemeMode("auto")
+            onTriggered: voiceAgent.setThemeMode("auto")
         }
 
         Kirigami.Action {
             text: "Light"
             checkable: true
-            checked: root.agent.themeMode === "light"
+            checked: voiceAgent.themeMode === "light"
             ActionGroup.group: themeActionGroup
-            onTriggered: root.agent.setThemeMode("light")
+            onTriggered: voiceAgent.setThemeMode("light")
         }
 
         Kirigami.Action {
             text: "Dark"
             checkable: true
-            checked: root.agent.themeMode === "dark"
+            checked: voiceAgent.themeMode === "dark"
             ActionGroup.group: themeActionGroup
-            onTriggered: root.agent.setThemeMode("dark")
+            onTriggered: voiceAgent.setThemeMode("dark")
         }
     }
 
     Kirigami.Action {
         id: muteAction
-        text: root.agent.audioMuted ? "Unmute" : "Mute"
-        icon.name: root.agent.audioMuted ? "audio-volume-muted" : "audio-volume-high"
-        enabled: root.agent.talkReady
-        onTriggered: root.agent.setAudioMuted(!root.agent.audioMuted)
+        text: voiceAgent.audioMuted ? "Unmute" : "Mute"
+        icon.name: voiceAgent.audioMuted ? "audio-volume-muted" : "audio-volume-high"
+        enabled: voiceAgent.talkReady
+        onTriggered: voiceAgent.setAudioMuted(!voiceAgent.audioMuted)
     }
 
     Window {
@@ -317,7 +266,7 @@ Kirigami.ApplicationWindow {
                             Layout.fillHeight: true
                             clip: true
                             spacing: 0
-                            model: root.agent.sttCatalog
+                            model: voiceAgent.sttCatalog
                             boundsBehavior: Flickable.StopAtBounds
                             flickDeceleration: 1800
                             maximumFlickVelocity: 24000
@@ -337,7 +286,7 @@ Kirigami.ApplicationWindow {
                                 padding: Kirigami.Units.mediumSpacing
                                 onClicked: {
                                     if (modelData.installed) {
-                                        root.agent.selectSttModel(modelData.name);
+                                        voiceAgent.selectSttModel(modelData.name);
                                     }
                                 }
                                 background: Rectangle {
@@ -353,7 +302,7 @@ Kirigami.ApplicationWindow {
                                         Label {
                                             Layout.fillWidth: true
                                             text: modelData.name
-                                            font.weight: root.agent.selectedSttModel === modelData.name ? Font.DemiBold : Font.Normal
+                                            font.weight: voiceAgent.selectedSttModel === modelData.name ? Font.DemiBold : Font.Normal
                                             wrapMode: Text.WordWrap
                                         }
 
@@ -370,19 +319,19 @@ Kirigami.ApplicationWindow {
 
                                         ToolButton {
                                             visible: modelData.installed
-                                            text: root.agent.selectedSttModel === modelData.name ? "Current" : "Use"
-                                            enabled: root.agent.selectedSttModel !== modelData.name
-                                            onClicked: root.agent.selectSttModel(modelData.name)
+                                            text: voiceAgent.selectedSttModel === modelData.name ? "Current" : "Use"
+                                            enabled: voiceAgent.selectedSttModel !== modelData.name
+                                            onClicked: voiceAgent.selectSttModel(modelData.name)
                                         }
 
                                         ToolButton {
                                             text: root.modelActionLabel(modelData)
-                                            enabled: !root.agent.modelLoading
+                                            enabled: !voiceAgent.modelLoading
                                             onClicked: {
                                                 if (modelData.installed) {
-                                                    root.agent.deleteSttModel(modelData.name);
+                                                    voiceAgent.deleteSttModel(modelData.name);
                                                 } else {
-                                                    root.agent.installSttModel(modelData.name);
+                                                    voiceAgent.installSttModel(modelData.name);
                                                 }
                                             }
                                         }
@@ -412,7 +361,7 @@ Kirigami.ApplicationWindow {
                             Layout.fillHeight: true
                             clip: true
                             spacing: 0
-                            model: root.agent.ttsCatalog
+                            model: voiceAgent.ttsCatalog
                             boundsBehavior: Flickable.StopAtBounds
                             flickDeceleration: 1800
                             maximumFlickVelocity: 24000
@@ -432,7 +381,7 @@ Kirigami.ApplicationWindow {
                                 padding: Kirigami.Units.mediumSpacing
                                 onClicked: {
                                     if (modelData.installed) {
-                                        root.agent.selectTtsModel(modelData.name);
+                                        voiceAgent.selectTtsModel(modelData.name);
                                     }
                                 }
                                 background: Rectangle {
@@ -448,7 +397,7 @@ Kirigami.ApplicationWindow {
                                         Label {
                                             Layout.fillWidth: true
                                             text: modelData.name
-                                            font.weight: root.agent.selectedTtsModel === modelData.name ? Font.DemiBold : Font.Normal
+                                            font.weight: voiceAgent.selectedTtsModel === modelData.name ? Font.DemiBold : Font.Normal
                                             wrapMode: Text.WordWrap
                                         }
 
@@ -465,19 +414,19 @@ Kirigami.ApplicationWindow {
 
                                         ToolButton {
                                             visible: modelData.installed
-                                            text: root.agent.selectedTtsModel === modelData.name ? "Current" : "Use"
-                                            enabled: root.agent.selectedTtsModel !== modelData.name
-                                            onClicked: root.agent.selectTtsModel(modelData.name)
+                                            text: voiceAgent.selectedTtsModel === modelData.name ? "Current" : "Use"
+                                            enabled: voiceAgent.selectedTtsModel !== modelData.name
+                                            onClicked: voiceAgent.selectTtsModel(modelData.name)
                                         }
 
                                         ToolButton {
                                             text: root.modelActionLabel(modelData)
-                                            enabled: !root.agent.ttsLoading
+                                            enabled: !voiceAgent.ttsLoading
                                             onClicked: {
                                                 if (modelData.installed) {
-                                                    root.agent.deleteTtsModel(modelData.name);
+                                                    voiceAgent.deleteTtsModel(modelData.name);
                                                 } else {
-                                                    root.agent.installTtsModel(modelData.name);
+                                                    voiceAgent.installTtsModel(modelData.name);
                                                 }
                                             }
                                         }
@@ -523,7 +472,7 @@ Kirigami.ApplicationWindow {
 
                         Label {
                             Layout.fillWidth: true
-                            text: "Speech: " + root.agent.modelStatus
+                            text: "Speech: " + voiceAgent.modelStatus
                             color: Kirigami.Theme.disabledTextColor
                             wrapMode: Text.WordWrap
                         }
@@ -533,10 +482,10 @@ Kirigami.ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.minimumWidth: 0
                             Layout.preferredWidth: Kirigami.Units.gridUnit * 14
-                            model: root.agent.sttOptions
-                            currentIndex: root.stringIndex(root.agent.sttOptions, root.agent.selectedSttModel)
+                            model: voiceAgent.sttOptions
+                            currentIndex: root.stringIndex(voiceAgent.sttOptions, voiceAgent.selectedSttModel)
                             displayText: currentIndex >= 0 ? currentText : "No installed STT models"
-                            onActivated: root.agent.selectSttModel(currentText)
+                            onActivated: voiceAgent.selectSttModel(currentText)
                         }
 
                         Item {
@@ -560,15 +509,15 @@ Kirigami.ApplicationWindow {
                                     NumberAnimation {
                                         target: mediumMicButtonFrame
                                         property: "glowOpacity"
-                                        to: root.agent.voiceConnectionEnabled ? 1.0 : 0.78
-                                        duration: root.agent.voiceConnectionEnabled ? 700 : 1200
+                                        to: voiceAgent.voiceConnectionEnabled ? 1.0 : 0.78
+                                        duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
                                         easing.type: Easing.InOutSine
                                     }
                                     NumberAnimation {
                                         target: mediumMicButtonFrame
                                         property: "glowScale"
                                         to: 1.02
-                                        duration: root.agent.voiceConnectionEnabled ? 700 : 1200
+                                        duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
                                         easing.type: Easing.InOutSine
                                     }
                                 }
@@ -577,15 +526,15 @@ Kirigami.ApplicationWindow {
                                     NumberAnimation {
                                         target: mediumMicButtonFrame
                                         property: "glowOpacity"
-                                        to: root.agent.voiceConnectionEnabled ? 0.45 : 0.35
-                                        duration: root.agent.voiceConnectionEnabled ? 700 : 1200
+                                        to: voiceAgent.voiceConnectionEnabled ? 0.45 : 0.35
+                                        duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
                                         easing.type: Easing.InOutSine
                                     }
                                     NumberAnimation {
                                         target: mediumMicButtonFrame
                                         property: "glowScale"
                                         to: 1.0
-                                        duration: root.agent.voiceConnectionEnabled ? 700 : 1200
+                                        duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
                                         easing.type: Easing.InOutSine
                                     }
                                 }
@@ -595,11 +544,11 @@ Kirigami.ApplicationWindow {
                                 anchors.fill: parent
                                 anchors.margins: 0
                                 text: "\ud83c\udf99\ufe0f"
-                                enabled: root.agent.talkReady
+                                enabled: voiceAgent.talkReady
                                 font.pixelSize: 38
                                 scale: mediumMicButtonFrame.glowScale
                                 opacity: root.micPulseActive ? 1 : 0.92
-                                onClicked: root.agent.setVoiceConnectionEnabled(!root.agent.voiceConnectionEnabled)
+                                onClicked: voiceAgent.setVoiceConnectionEnabled(!voiceAgent.voiceConnectionEnabled)
 
                                 background: Rectangle {
                                     radius: height / 2
@@ -612,7 +561,7 @@ Kirigami.ApplicationWindow {
 
                         Label {
                             Layout.fillWidth: true
-                            text: "Voice: " + root.agent.ttsStatus
+                            text: "Voice: " + voiceAgent.ttsStatus
                             color: Kirigami.Theme.disabledTextColor
                             wrapMode: Text.WordWrap
                         }
@@ -622,10 +571,10 @@ Kirigami.ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.minimumWidth: 0
                             Layout.preferredWidth: Kirigami.Units.gridUnit * 14
-                            model: root.agent.ttsOptions
-                            currentIndex: root.stringIndex(root.agent.ttsOptions, root.agent.selectedTtsModel)
+                            model: voiceAgent.ttsOptions
+                            currentIndex: root.stringIndex(voiceAgent.ttsOptions, voiceAgent.selectedTtsModel)
                             displayText: currentIndex >= 0 ? currentText : "No installed TTS voices"
-                            onActivated: root.agent.selectTtsModel(currentText)
+                            onActivated: voiceAgent.selectTtsModel(currentText)
                         }
 
                         Label {
@@ -644,25 +593,25 @@ Kirigami.ApplicationWindow {
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 0
                                 Layout.preferredWidth: Kirigami.Units.gridUnit * 16
-                                editable: !root.agent.llmServerConnected && !root.agent.llmModelBusy
-                                enabled: !root.agent.llmServerConnected && !root.agent.llmModelBusy
-                                model: root.agent.llmUrls
-                                currentIndex: root.stringIndex(root.agent.llmUrls, root.agent.currentLlmUrl)
-                                Component.onCompleted: editText = root.agent.currentLlmUrl
+                                editable: !voiceAgent.llmServerConnected && !voiceAgent.llmModelBusy
+                                enabled: !voiceAgent.llmServerConnected && !voiceAgent.llmModelBusy
+                                model: voiceAgent.llmUrls
+                                currentIndex: root.stringIndex(voiceAgent.llmUrls, voiceAgent.currentLlmUrl)
+                                Component.onCompleted: editText = voiceAgent.currentLlmUrl
                                 onAccepted: {
-                                    root.agent.setCurrentLlmUrl(editText);
-                                    root.agent.persistCurrentLlmUrl();
+                                    voiceAgent.setCurrentLlmUrl(editText);
+                                    voiceAgent.persistCurrentLlmUrl();
                                 }
-                                onActivated: root.agent.setCurrentLlmUrl(currentText)
+                                onActivated: voiceAgent.setCurrentLlmUrl(currentText)
                             }
 
                             Button {
                                 Layout.minimumWidth: Kirigami.Units.gridUnit * 9
                                 Layout.preferredWidth: Kirigami.Units.gridUnit * 10
-                                text: root.agent.llmConnectionButtonText
-                                enabled: !!llmUrlBox.editText.trim() && !root.agent.llmModelBusy
-                                    && (!root.agent.llmServerConnected || !root.agent.llmConnectionBusy)
-                                onClicked: root.agent.toggleLlmServerConnection(llmUrlBox.editText)
+                                text: voiceAgent.llmConnectionButtonText
+                                enabled: !!llmUrlBox.editText.trim() && !voiceAgent.llmModelBusy
+                                    && (!voiceAgent.llmServerConnected || !voiceAgent.llmConnectionBusy)
+                                onClicked: voiceAgent.toggleLlmServerConnection(llmUrlBox.editText)
                             }
                         }
 
@@ -677,11 +626,11 @@ Kirigami.ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.minimumWidth: 0
                             Layout.preferredWidth: Kirigami.Units.gridUnit * 16
-                            enabled: root.agent.llmServerConnected && !root.agent.llmConnectionBusy && !root.agent.llmModelBusy
-                            model: root.agent.llmModelOptions
-                            currentIndex: root.stringIndex(root.agent.llmModelOptions, root.agent.selectedLlmModel)
+                            enabled: voiceAgent.llmServerConnected && !voiceAgent.llmConnectionBusy && !voiceAgent.llmModelBusy
+                            model: voiceAgent.llmModelOptions
+                            currentIndex: root.stringIndex(voiceAgent.llmModelOptions, voiceAgent.selectedLlmModel)
                             displayText: currentIndex <= 0 ? "Select a loaded model" : currentText
-                            onActivated: root.agent.selectLlmModel(currentText)
+                            onActivated: voiceAgent.selectLlmModel(currentText)
                         }
                     }
                 }
@@ -692,34 +641,34 @@ Kirigami.ApplicationWindow {
 
                     ProgressBar {
                         Layout.fillWidth: true
-                        visible: root.agent.modelLoading
+                        visible: voiceAgent.modelLoading
                         from: 0
                         to: 1
-                        indeterminate: root.agent.modelProgressIndeterminate
-                        value: root.agent.modelProgressValue
+                        indeterminate: voiceAgent.modelProgressIndeterminate
+                        value: voiceAgent.modelProgressValue
                     }
 
                     Label {
                         Layout.fillWidth: true
-                        visible: root.agent.modelLoading
-                        text: root.agent.modelProgressText
+                        visible: voiceAgent.modelLoading
+                        text: voiceAgent.modelProgressText
                         wrapMode: Text.WordWrap
                         color: Kirigami.Theme.disabledTextColor
                     }
 
                     ProgressBar {
                         Layout.fillWidth: true
-                        visible: root.agent.ttsLoading
+                        visible: voiceAgent.ttsLoading
                         from: 0
                         to: 1
-                        indeterminate: root.agent.ttsProgressIndeterminate
-                        value: root.agent.ttsProgressValue
+                        indeterminate: voiceAgent.ttsProgressIndeterminate
+                        value: voiceAgent.ttsProgressValue
                     }
 
                     Label {
                         Layout.fillWidth: true
-                        visible: root.agent.ttsLoading
-                        text: root.agent.ttsProgressText
+                        visible: voiceAgent.ttsLoading
+                        text: voiceAgent.ttsProgressText
                         wrapMode: Text.WordWrap
                         color: Kirigami.Theme.disabledTextColor
                     }
@@ -754,7 +703,7 @@ Kirigami.ApplicationWindow {
 
                     Label {
                         visible: !root.compactMode
-                        text: root.agent.voiceConnectionEnabled ? "Live" : "Idle"
+                        text: voiceAgent.voiceConnectionEnabled ? "Live" : "Idle"
                         color: Kirigami.Theme.disabledTextColor
                     }
                 }
@@ -765,7 +714,7 @@ Kirigami.ApplicationWindow {
                     Layout.fillHeight: true
                     clip: true
                     spacing: Kirigami.Units.smallSpacing
-                    model: root.agent.conversationMessages
+                    model: voiceAgent.conversationMessages
 
                     delegate: Item {
                         width: conversationView.width
@@ -850,14 +799,14 @@ Kirigami.ApplicationWindow {
                                 visible: !root.compactMode && modelData.replayable
                                 text: "Replay"
                                 Layout.alignment: Qt.AlignBottom
-                                onClicked: root.agent.replayMessage(index)
+                                onClicked: voiceAgent.replayMessage(index)
                             }
                         }
                     }
 
                     footer: Kirigami.PlaceholderMessage {
                         width: conversationView.width
-                        visible: root.agent.conversationMessages.length === 0
+                        visible: voiceAgent.conversationMessages.length === 0
                         text: "Spoken turns will appear here once voice mode is active."
                     }
                 }
@@ -867,9 +816,9 @@ Kirigami.ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.preferredHeight: Kirigami.Units.gridUnit * 5
                     text: "\ud83c\udf99\ufe0f"
-                    enabled: root.agent.talkReady
+                    enabled: voiceAgent.talkReady
                     font.pixelSize: 32
-                    onClicked: root.agent.setVoiceConnectionEnabled(!root.agent.voiceConnectionEnabled)
+                    onClicked: voiceAgent.setVoiceConnectionEnabled(!voiceAgent.voiceConnectionEnabled)
                     background: Rectangle {
                         radius: height / 2
                         color: root.micButtonColor
@@ -902,15 +851,15 @@ Kirigami.ApplicationWindow {
                         NumberAnimation {
                             target: largeMicButtonFrame
                             property: "glowOpacity"
-                            to: root.agent.voiceConnectionEnabled ? 1.0 : 0.78
-                            duration: root.agent.voiceConnectionEnabled ? 700 : 1200
+                            to: voiceAgent.voiceConnectionEnabled ? 1.0 : 0.78
+                            duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
                             easing.type: Easing.InOutSine
                         }
                         NumberAnimation {
                             target: largeMicButtonFrame
                             property: "glowScale"
                             to: 1.02
-                            duration: root.agent.voiceConnectionEnabled ? 700 : 1200
+                            duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
                             easing.type: Easing.InOutSine
                         }
                     }
@@ -919,15 +868,15 @@ Kirigami.ApplicationWindow {
                         NumberAnimation {
                             target: largeMicButtonFrame
                             property: "glowOpacity"
-                            to: root.agent.voiceConnectionEnabled ? 0.45 : 0.35
-                            duration: root.agent.voiceConnectionEnabled ? 700 : 1200
+                            to: voiceAgent.voiceConnectionEnabled ? 0.45 : 0.35
+                            duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
                             easing.type: Easing.InOutSine
                         }
                         NumberAnimation {
                             target: largeMicButtonFrame
                             property: "glowScale"
                             to: 1.0
-                            duration: root.agent.voiceConnectionEnabled ? 700 : 1200
+                            duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
                             easing.type: Easing.InOutSine
                         }
                     }
@@ -937,11 +886,11 @@ Kirigami.ApplicationWindow {
                         anchors.fill: parent
                         anchors.margins: 0
                         text: "\ud83c\udf99\ufe0f"
-                        enabled: root.agent.talkReady
+                        enabled: voiceAgent.talkReady
                         font.pixelSize: 34
                     scale: largeMicButtonFrame.glowScale
                     opacity: root.micPulseActive ? 1 : 0.92
-                    onClicked: root.agent.setVoiceConnectionEnabled(!root.agent.voiceConnectionEnabled)
+                    onClicked: voiceAgent.setVoiceConnectionEnabled(!voiceAgent.voiceConnectionEnabled)
 
                     background: Rectangle {
                         radius: height / 2

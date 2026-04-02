@@ -95,7 +95,7 @@ class MainWindow(QObject):
         self._apply_theme_mode(self.settings.value("theme_mode", "auto", str) or "auto")
 
         self.engine = QQmlApplicationEngine(self)
-        self.engine.rootContext().setContextProperty("voiceAgent", self)
+        self.engine.setInitialProperties({"voiceAgent": self})
         qml_path = Path(__file__).with_name("qml") / "MainWindow.qml"
         self.engine.load(QUrl.fromLocalFile(str(qml_path)))
         root_objects = self.engine.rootObjects()
