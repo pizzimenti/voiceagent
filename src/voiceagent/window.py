@@ -240,8 +240,8 @@ class MainWindow(QObject):
 
     @Property(str, notify=ui_changed)
     def llmConnectionButtonText(self) -> str:  # noqa: N802
-        if self._llm_connection_busy and self._llm_server_connected:
-            return "Connecting..." if not self._llm_server_connected else "Disconnecting..."
+        if self._llm_connection_busy:
+            return "Disconnecting..." if self._llm_server_connected else "Connecting..."
         return "Disconnect" if self._llm_server_connected else "Connect"
 
     @Property(bool, notify=ui_changed)
@@ -691,12 +691,14 @@ class MainWindow(QObject):
         ok = bool(result.get("ok"))
         if operation == "select_model":
             self._llm_model_busy = False
-            loaded_model = str(result.get("loaded_model", "")).strip()
+            loaded_model = str(result.get("loaded_model", "")).strip() if "loaded_model" in result else None
             if not ok:
-                self._populate_llm_model_selector(self._llm_models, loaded_model)
+                if loaded_model is not None:
+                    self._populate_llm_model_selector(self._llm_models, loaded_model)
                 self._show_llm_error("Unable to update LLM model", str(result.get("error", "")))
                 self.ui_changed.emit()
                 return
+            loaded_model = loaded_model or ""
             self._populate_llm_model_selector(self._llm_models, loaded_model)
             if loaded_model:
                 self._status_message = f"Loaded LLM model {loaded_model}."
@@ -800,7 +802,14 @@ class MainWindow(QObject):
         try:
             self.controller.chat_client.unload_all_models()
         except RuntimeError as exc:
-            return {"ok": False, "error": str(exc)}
+            try:
+                loaded_models = self.controller.chat_client.list_loaded_models()
+            except RuntimeError:
+                loaded_models = []
+            result: dict[str, object] = {"ok": False, "error": str(exc)}
+            if loaded_models:
+                result["loaded_model"] = loaded_models[0]
+            return result
         self.controller.chat_client.set_model("")
         return {"ok": True, "loaded_model": ""}
 
