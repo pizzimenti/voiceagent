@@ -142,6 +142,22 @@ class StubVoiceAgent(QObject):
         return "local-model"
 
     @Property(bool, notify=ui_changed)
+    def llmServerConnected(self):
+        return True
+
+    @Property(bool, notify=ui_changed)
+    def llmConnectionBusy(self):
+        return False
+
+    @Property(bool, notify=ui_changed)
+    def llmModelBusy(self):
+        return False
+
+    @Property(str, notify=ui_changed)
+    def llmConnectionButtonText(self):
+        return "Disconnect"
+
+    @Property(bool, notify=ui_changed)
     def talkReady(self):
         return True
 
@@ -214,6 +230,10 @@ class StubVoiceAgent(QObject):
 
     @Slot(bool)
     def refreshLlmModels(self, _show_error):
+        pass
+
+    @Slot(str)
+    def toggleLlmServerConnection(self, _value):
         pass
 
     @Slot(str)

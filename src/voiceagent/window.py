@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Property, QSettings, Qt, QUrl, QObject, Signal, Slot
+from PySide6.QtCore import Property, QSettings, Qt, QTimer, QUrl, QObject, Signal, Slot
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication
 
@@ -19,6 +20,7 @@ from voiceagent.tts_loader import TtsVoiceLoader
 class MainWindow(QObject):
     ui_changed = Signal()
     conversation_changed = Signal()
+    _llm_operation_finished = Signal(str, object)
 
     def __init__(
         self,
@@ -42,6 +44,11 @@ class MainWindow(QObject):
         self._conversation_messages: list[dict[str, object]] = []
         self._error_message = ""
         self._status_message = "Ready"
+        self._llm_server_connected = False
+        self._llm_connection_busy = False
+        self._llm_model_busy = False
+        self._llm_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceagent-llm")
+        self._startup_llm_connect_scheduled = False
         self._state = "idle"
         self._model_progress_value = 0.0
         self._model_progress_indeterminate = False
@@ -76,6 +83,7 @@ class MainWindow(QObject):
         self.tts_loader.selection_changed.connect(self._emit_ui_changed)
         self.tts_loader.load_completed.connect(self._handle_inventory_change)
         self.tts_loader.delete_completed.connect(self._handle_inventory_change)
+        self._llm_operation_finished.connect(self._handle_llm_operation_finished)
 
         self._populate_llm_urls()
         self._restore_initial_selections()
@@ -107,12 +115,16 @@ class MainWindow(QObject):
             getattr(self._window, "raise")()
         if hasattr(self._window, "requestActivate"):
             self._window.requestActivate()
+        if not self._startup_llm_connect_scheduled and self.currentLlmUrl:
+            self._startup_llm_connect_scheduled = True
+            QTimer.singleShot(0, self.autoconnectLlmServer)
 
     def shutdown(self) -> None:
         self.controller.shutdown()
         self.model_loader.shutdown()
         self.tts_loader.shutdown()
         self.replay_player.stop()
+        self._llm_executor.shutdown(wait=False, cancel_futures=True)
 
     @Property("QVariantList", notify=ui_changed)
     def sttOptions(self) -> list[str]:  # noqa: N802
@@ -216,6 +228,24 @@ class MainWindow(QObject):
         return self.controller.chat_client.model
 
     @Property(bool, notify=ui_changed)
+    def llmServerConnected(self) -> bool:  # noqa: N802
+        return self._llm_server_connected
+
+    @Property(bool, notify=ui_changed)
+    def llmConnectionBusy(self) -> bool:  # noqa: N802
+        return self._llm_connection_busy
+
+    @Property(str, notify=ui_changed)
+    def llmConnectionButtonText(self) -> str:  # noqa: N802
+        if self._llm_connection_busy:
+            return "Connecting..." if not self._llm_server_connected else "Disconnecting..."
+        return "Disconnect" if self._llm_server_connected else "Connect"
+
+    @Property(bool, notify=ui_changed)
+    def llmModelBusy(self) -> bool:  # noqa: N802
+        return self._llm_model_busy
+
+    @Property(bool, notify=ui_changed)
     def talkReady(self) -> bool:  # noqa: N802
         return bool(self.selectedSttModel and self.selectedTtsModel and self._llm_ready())
 
@@ -297,6 +327,7 @@ class MainWindow(QObject):
         self.controller.chat_client.set_base_url(value)
         self.controller.chat_client.set_model("")
         self._llm_models = []
+        self._llm_server_connected = False
         self.ui_changed.emit()
 
     @Slot()
@@ -313,61 +344,55 @@ class MainWindow(QObject):
 
     @Slot(bool)
     def refreshLlmModels(self, show_error: bool) -> None:  # noqa: N802
-        self.persistCurrentLlmUrl()
-        previous_models = list(self._llm_models)
-        previous_loaded_model = self.controller.chat_client.model
-        try:
-            models = self.controller.chat_client.list_models()
-        except RuntimeError as exc:
-            if show_error:
-                self._show_llm_error("Unable to load LLM models", str(exc))
-            self._llm_models = []
-            self.controller.chat_client.set_model("")
-            self.ui_changed.emit()
-            return
-        try:
-            loaded_models = self.controller.chat_client.list_loaded_models()
-        except RuntimeError:
-            loaded_models = []
-        loaded_model = loaded_models[0] if loaded_models else ""
-        self._populate_llm_model_selector(models, loaded_model)
-        added_models = [model for model in self._llm_models if model not in previous_models]
-        removed_models = [model for model in previous_models if model not in self._llm_models]
-        if added_models or removed_models:
-            parts: list[str] = []
-            if added_models:
-                parts.append(f"added {len(added_models)}")
-            if removed_models:
-                parts.append(f"removed {len(removed_models)}")
-            self._status_message = f"LLM models refreshed: {', '.join(parts)}."
-        elif loaded_model and loaded_model != previous_loaded_model:
-            self._status_message = f"LLM models refreshed. Loaded model is now {loaded_model}."
-        elif self._llm_models:
-            self._status_message = f"LLM models refreshed. {len(self._llm_models)} model(s) available."
-        else:
-            self._status_message = "LLM models refreshed. No models available."
-        self.ui_changed.emit()
+        self._start_llm_refresh(show_error=show_error)
 
     @Slot(str)
     def selectLlmModel(self, model_name: str) -> None:  # noqa: N802
+        if not self._llm_server_connected:
+            self._append_log_message("Connect to the LLM server before selecting a model.", "error")
+            return
+        if self._llm_connection_busy or self._llm_model_busy:
+            return
         selected_model = model_name.strip()
+        self._llm_model_busy = True
+        self.ui_changed.emit()
         if not selected_model:
-            try:
-                self.controller.chat_client.unload_all_models()
-            except RuntimeError as exc:
-                self._show_llm_error("Unable to unload LLM models", str(exc))
-                self.refreshLlmModels(False)
-                return
-            self.controller.chat_client.set_model("")
-            self.ui_changed.emit()
+            self._append_log_message("Unloading the active LLM model...", "status")
+            self._submit_llm_operation("select_model", self._unload_llm_model_task)
             return
-        try:
-            loaded_model = self.controller.chat_client.load_model(selected_model)
-        except RuntimeError as exc:
-            self._show_llm_error("Unable to load LLM model", str(exc))
-            self.refreshLlmModels(False)
+        self._append_log_message(f"Loading LLM model {selected_model}...", "status")
+        self._submit_llm_operation("select_model", lambda: self._load_llm_model_task(selected_model))
+
+    @Slot(str)
+    def toggleLlmServerConnection(self, value: str) -> None:  # noqa: N802
+        if self._llm_connection_busy:
             return
-        self._populate_llm_model_selector(self._llm_models, loaded_model)
+        if self._llm_server_connected:
+            self.disconnectLlmServer()
+            return
+        self.connectLlmServer(value, True)
+
+    @Slot(str, bool)
+    def connectLlmServer(self, value: str, show_error: bool = True) -> None:  # noqa: N802
+        if self._llm_connection_busy:
+            return
+        if value.strip():
+            self.setCurrentLlmUrl(value)
+        self._start_llm_refresh(show_error=show_error)
+
+    @Slot()
+    def disconnectLlmServer(self) -> None:  # noqa: N802
+        if self._llm_connection_busy or self._llm_model_busy:
+            return
+        if self.voiceConnectionEnabled:
+            self.controller.stop_recording()
+        self._llm_connection_busy = True
+        self.ui_changed.emit()
+        self._submit_llm_operation("disconnect", self._disconnect_llm_task)
+
+    @Slot()
+    def autoconnectLlmServer(self) -> None:
+        self._start_llm_refresh(show_error=False)
 
     @Slot(bool)
     def setVoiceConnectionEnabled(self, enabled: bool) -> None:  # noqa: N802
@@ -484,6 +509,31 @@ class MainWindow(QObject):
             )
         self.conversation_changed.emit()
 
+    def _append_log_message(self, text: str, level: str) -> None:
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        previous = self._conversation_messages[-1] if self._conversation_messages else None
+        if (
+            previous is not None
+            and previous.get("role") == "system"
+            and previous.get("level") == level
+            and previous.get("text") == cleaned
+        ):
+            return
+        self._conversation_messages.append(
+            {
+                "role": "system",
+                "level": level,
+                "text": cleaned,
+                "replayable": False,
+                "bubbleState": "plain",
+                "turnPending": False,
+                "timestampLabel": self._clock_time(),
+            }
+        )
+        self.conversation_changed.emit()
+
     def _apply_audio_mute_state(self, enabled: bool) -> None:
         self.controller.player.set_muted(enabled)
         self.replay_player.set_muted(enabled)
@@ -505,6 +555,7 @@ class MainWindow(QObject):
     def _apply_model_status(self, status: str) -> None:
         if self.model_loader.is_loading:
             self._status_message = status
+            self._append_log_message(status, "status")
         self.ui_changed.emit()
 
     def _apply_model_progress(self, progress) -> None:
@@ -516,6 +567,7 @@ class MainWindow(QObject):
     def _apply_tts_status(self, status: str) -> None:
         if self.tts_loader.is_loading:
             self._status_message = status
+            self._append_log_message(status, "status")
         self.ui_changed.emit()
 
     def _apply_tts_progress(self, progress) -> None:
@@ -541,6 +593,7 @@ class MainWindow(QObject):
 
     def _set_status_message(self, message: str) -> None:
         self._status_message = message
+        self._append_log_message(message, "status")
         self.ui_changed.emit()
 
     def _set_error_message(self, message: str) -> None:
@@ -548,6 +601,7 @@ class MainWindow(QObject):
         if message:
             self._discard_assistant_thinking_message()
             self._discard_draft_user_message()
+            self._append_log_message(message, "error")
         self.ui_changed.emit()
 
     def _handle_connection_changed(self, enabled: bool) -> None:
@@ -585,6 +639,8 @@ class MainWindow(QObject):
             normalized = model.strip()
             if normalized and normalized not in unique_models:
                 unique_models.append(normalized)
+        if loaded_model and loaded_model not in unique_models:
+            unique_models.insert(0, loaded_model)
         self._llm_models = unique_models
         self.controller.chat_client.set_model(loaded_model)
         self.ui_changed.emit()
@@ -600,6 +656,130 @@ class MainWindow(QObject):
 
     def _show_llm_error(self, title: str, message: str) -> None:
         self._set_error_message(f"{title}: {message}")
+
+    def _start_llm_refresh(self, show_error: bool) -> None:
+        if self._llm_connection_busy:
+            return
+        self.persistCurrentLlmUrl()
+        self._llm_connection_busy = True
+        self.ui_changed.emit()
+        self._submit_llm_operation(
+            "refresh",
+            lambda: self._refresh_llm_models_task(show_error=show_error),
+        )
+
+    def _submit_llm_operation(self, operation: str, task) -> None:
+        future = self._llm_executor.submit(task)
+        future.add_done_callback(lambda completed: self._emit_llm_operation_result(operation, completed))
+
+    def _emit_llm_operation_result(self, operation: str, future: Future[object]) -> None:
+        try:
+            payload = future.result()
+        except Exception as exc:  # pragma: no cover - defensive bridge
+            payload = {"ok": False, "error": str(exc)}
+        self._llm_operation_finished.emit(operation, payload)
+
+    @Slot(str, object)
+    def _handle_llm_operation_finished(self, operation: str, payload: object) -> None:
+        result = payload if isinstance(payload, dict) else {"ok": False, "error": "Unexpected LLM operation result."}
+        ok = bool(result.get("ok"))
+        if operation == "select_model":
+            self._llm_model_busy = False
+            if not ok:
+                self._show_llm_error("Unable to update LLM model", str(result.get("error", "")))
+                self.ui_changed.emit()
+                return
+            loaded_model = str(result.get("loaded_model", "")).strip()
+            self._populate_llm_model_selector(self._llm_models, loaded_model)
+            if loaded_model:
+                self._status_message = f"Loaded LLM model {loaded_model}."
+            else:
+                self._status_message = "No LLM model loaded."
+            self._append_log_message(self._status_message, "status")
+            self.ui_changed.emit()
+            return
+
+        self._llm_connection_busy = False
+        if operation == "disconnect":
+            if ok:
+                self._llm_server_connected = False
+                self._llm_models = []
+                self.controller.chat_client.set_model("")
+                self._status_message = "Disconnected from LLM server."
+                self._append_log_message(self._status_message, "status")
+            else:
+                self._show_llm_error("Unable to disconnect from LLM server", str(result.get("error", "")))
+            self.ui_changed.emit()
+            return
+
+        if not ok:
+            self._llm_server_connected = False
+            self._llm_models = []
+            self.controller.chat_client.set_model("")
+            if bool(result.get("show_error", True)):
+                self._show_llm_error("Unable to connect to LLM server", str(result.get("error", "")))
+            self.ui_changed.emit()
+            return
+
+        models = result.get("models", [])
+        loaded_model = str(result.get("loaded_model", "")).strip()
+        previous_models = list(self._llm_models)
+        previous_loaded_model = self.controller.chat_client.model
+        self._llm_server_connected = True
+        self._populate_llm_model_selector(list(models) if isinstance(models, list) else [], loaded_model)
+        self._append_log_message(f"Connected to LLM server at {self.currentLlmUrl}.", "status")
+
+        added_models = [model for model in self._llm_models if model not in previous_models]
+        removed_models = [model for model in previous_models if model not in self._llm_models]
+        if added_models or removed_models:
+            parts: list[str] = []
+            if added_models:
+                parts.append(f"added {len(added_models)}")
+            if removed_models:
+                parts.append(f"removed {len(removed_models)}")
+            self._status_message = f"LLM models refreshed: {', '.join(parts)}."
+        elif loaded_model and loaded_model != previous_loaded_model:
+            self._status_message = f"LLM models refreshed. Loaded model is now {loaded_model}."
+        elif self._llm_models:
+            self._status_message = f"LLM models refreshed. {len(self._llm_models)} model(s) available."
+        else:
+            self._status_message = "LLM models refreshed. No models loaded."
+        self._append_log_message(self._status_message, "status")
+        self.ui_changed.emit()
+
+    def _refresh_llm_models_task(self, show_error: bool) -> dict[str, object]:
+        try:
+            models = self.controller.chat_client.list_models()
+            try:
+                loaded_models = self.controller.chat_client.list_loaded_models()
+            except RuntimeError:
+                loaded_models = []
+            return {
+                "ok": True,
+                "models": models,
+                "loaded_model": loaded_models[0] if loaded_models else "",
+                "show_error": show_error,
+            }
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc), "show_error": show_error}
+
+    def _disconnect_llm_task(self) -> dict[str, object]:
+        return {"ok": True}
+
+    def _load_llm_model_task(self, model_name: str) -> dict[str, object]:
+        try:
+            loaded_model = self.controller.chat_client.load_model(model_name)
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "loaded_model": loaded_model}
+
+    def _unload_llm_model_task(self) -> dict[str, object]:
+        try:
+            self.controller.chat_client.unload_all_models()
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.controller.chat_client.set_model("")
+        return {"ok": True, "loaded_model": ""}
 
     def _sync_live_user_message(self, text: str) -> None:
         cleaned = text.strip()
