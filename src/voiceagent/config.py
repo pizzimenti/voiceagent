@@ -14,6 +14,7 @@ class AppConfig:
     lm_studio_base_url: str
     lm_studio_model: str
     lm_studio_system_prompt: str
+    lm_studio_timeout_seconds: int
     whisper_model: str
     whisper_device: str
     whisper_compute_type: str
@@ -34,6 +35,7 @@ class AppConfig:
         else:
             venv_piper = Path(sys.executable).with_name("piper")
             tts_command = [str(venv_piper)] if venv_piper.exists() else ["piper"]
+        lm_studio_timeout_seconds = int(os.environ.get("LM_STUDIO_TIMEOUT_SECONDS", "5"))
         return cls(
             lm_studio_base_url=os.environ.get("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1").rstrip("/"),
             lm_studio_model=os.environ.get("LM_STUDIO_MODEL", "").strip(),
@@ -41,6 +43,7 @@ class AppConfig:
                 "LM_STUDIO_SYSTEM_PROMPT",
                 "You are a concise local desktop voice assistant. Answer briefly and directly.",
             ).strip(),
+            lm_studio_timeout_seconds=max(1, lm_studio_timeout_seconds),
             whisper_model=os.environ.get("WHISPER_MODEL", "large-v3").strip(),
             whisper_device=os.environ.get("WHISPER_DEVICE", "auto").strip(),
             whisper_compute_type=os.environ.get("WHISPER_COMPUTE_TYPE", "auto").strip(),
