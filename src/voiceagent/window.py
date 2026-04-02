@@ -13,6 +13,7 @@ from voiceagent.controller import VoiceController
 from voiceagent.downloaders import format_bytes, format_transfer_rate
 from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.models import AppState
+from voiceagent.services.chat import LmStudioClient
 from voiceagent.services.playback import AudioPlayer
 from voiceagent.tts_loader import TtsVoiceLoader
 
@@ -47,7 +48,9 @@ class MainWindow(QObject):
         self._llm_server_connected = False
         self._llm_connection_busy = False
         self._llm_model_busy = False
-        self._llm_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceagent-llm")
+        self._llm_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="voiceagent-llm")
+        self._llm_refresh_request_id = 0
+        self._llm_active_refresh_request_id = 0
         self._startup_llm_connect_scheduled = False
         self._state = "idle"
         self._model_progress_value = 0.0
@@ -237,7 +240,7 @@ class MainWindow(QObject):
 
     @Property(str, notify=ui_changed)
     def llmConnectionButtonText(self) -> str:  # noqa: N802
-        if self._llm_connection_busy:
+        if self._llm_connection_busy and self._llm_server_connected:
             return "Connecting..." if not self._llm_server_connected else "Disconnecting..."
         return "Disconnect" if self._llm_server_connected else "Connect"
 
@@ -365,7 +368,7 @@ class MainWindow(QObject):
 
     @Slot(str)
     def toggleLlmServerConnection(self, value: str) -> None:  # noqa: N802
-        if self._llm_connection_busy:
+        if self._llm_connection_busy and self._llm_server_connected:
             return
         if self._llm_server_connected:
             self.disconnectLlmServer()
@@ -374,7 +377,7 @@ class MainWindow(QObject):
 
     @Slot(str, bool)
     def connectLlmServer(self, value: str, show_error: bool = True) -> None:  # noqa: N802
-        if self._llm_connection_busy:
+        if self._llm_connection_busy and self._llm_server_connected:
             return
         if value.strip():
             self.setCurrentLlmUrl(value)
@@ -658,14 +661,17 @@ class MainWindow(QObject):
         self._set_error_message(f"{title}: {message}")
 
     def _start_llm_refresh(self, show_error: bool) -> None:
-        if self._llm_connection_busy:
+        if self._llm_connection_busy and self._llm_server_connected:
             return
+        self._llm_refresh_request_id += 1
+        request_id = self._llm_refresh_request_id
+        self._llm_active_refresh_request_id = request_id
         self.persistCurrentLlmUrl()
         self._llm_connection_busy = True
         self.ui_changed.emit()
         self._submit_llm_operation(
             "refresh",
-            lambda: self._refresh_llm_models_task(show_error=show_error),
+            lambda: self._refresh_llm_models_task(request_id=request_id, show_error=show_error),
         )
 
     def _submit_llm_operation(self, operation: str, task) -> None:
@@ -685,11 +691,12 @@ class MainWindow(QObject):
         ok = bool(result.get("ok"))
         if operation == "select_model":
             self._llm_model_busy = False
+            loaded_model = str(result.get("loaded_model", "")).strip()
             if not ok:
+                self._populate_llm_model_selector(self._llm_models, loaded_model)
                 self._show_llm_error("Unable to update LLM model", str(result.get("error", "")))
                 self.ui_changed.emit()
                 return
-            loaded_model = str(result.get("loaded_model", "")).strip()
             self._populate_llm_model_selector(self._llm_models, loaded_model)
             if loaded_model:
                 self._status_message = f"Loaded LLM model {loaded_model}."
@@ -700,6 +707,10 @@ class MainWindow(QObject):
             return
 
         self._llm_connection_busy = False
+        if operation == "refresh":
+            request_id = int(result.get("request_id", 0) or 0)
+            if request_id and request_id != self._llm_active_refresh_request_id:
+                return
         if operation == "disconnect":
             if ok:
                 self._llm_server_connected = False
@@ -747,21 +758,29 @@ class MainWindow(QObject):
         self._append_log_message(self._status_message, "status")
         self.ui_changed.emit()
 
-    def _refresh_llm_models_task(self, show_error: bool) -> dict[str, object]:
+    def _refresh_llm_models_task(self, request_id: int, show_error: bool) -> dict[str, object]:
+        base_url = self.controller.chat_client.base_url
+        snapshot_client = LmStudioClient(
+            base_url=base_url,
+            model=self.controller.chat_client.model,
+            system_prompt=self.controller.chat_client.system_prompt,
+            timeout_seconds=self.controller.chat_client.timeout_seconds,
+        )
         try:
-            models = self.controller.chat_client.list_models()
+            models = snapshot_client.list_models()
             try:
-                loaded_models = self.controller.chat_client.list_loaded_models()
+                loaded_models = snapshot_client.list_loaded_models()
             except RuntimeError:
                 loaded_models = []
             return {
                 "ok": True,
                 "models": models,
                 "loaded_model": loaded_models[0] if loaded_models else "",
+                "request_id": request_id,
                 "show_error": show_error,
             }
         except RuntimeError as exc:
-            return {"ok": False, "error": str(exc), "show_error": show_error}
+            return {"ok": False, "error": str(exc), "request_id": request_id, "show_error": show_error}
 
     def _disconnect_llm_task(self) -> dict[str, object]:
         return {"ok": True}
@@ -770,7 +789,11 @@ class MainWindow(QObject):
         try:
             loaded_model = self.controller.chat_client.load_model(model_name)
         except RuntimeError as exc:
-            return {"ok": False, "error": str(exc)}
+            try:
+                loaded_models = self.controller.chat_client.list_loaded_models()
+            except RuntimeError:
+                loaded_models = []
+            return {"ok": False, "error": str(exc), "loaded_model": loaded_models[0] if loaded_models else ""}
         return {"ok": True, "loaded_model": loaded_model}
 
     def _unload_llm_model_task(self) -> dict[str, object]:

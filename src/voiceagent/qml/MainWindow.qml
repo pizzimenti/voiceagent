@@ -592,8 +592,8 @@ Kirigami.ApplicationWindow {
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 0
                                 Layout.preferredWidth: Kirigami.Units.gridUnit * 16
-                                editable: !voiceAgent.llmServerConnected && !voiceAgent.llmConnectionBusy && !voiceAgent.llmModelBusy
-                                enabled: !voiceAgent.llmServerConnected && !voiceAgent.llmConnectionBusy && !voiceAgent.llmModelBusy
+                                editable: !voiceAgent.llmServerConnected && !voiceAgent.llmModelBusy
+                                enabled: !voiceAgent.llmServerConnected && !voiceAgent.llmModelBusy
                                 model: voiceAgent.llmUrls
                                 currentIndex: root.stringIndex(voiceAgent.llmUrls, voiceAgent.currentLlmUrl)
                                 Component.onCompleted: editText = voiceAgent.currentLlmUrl
@@ -608,7 +608,8 @@ Kirigami.ApplicationWindow {
                                 Layout.minimumWidth: Kirigami.Units.gridUnit * 9
                                 Layout.preferredWidth: Kirigami.Units.gridUnit * 10
                                 text: voiceAgent.llmConnectionButtonText
-                                enabled: !!llmUrlBox.editText.trim() && !voiceAgent.llmConnectionBusy && !voiceAgent.llmModelBusy
+                                enabled: !!llmUrlBox.editText.trim() && !voiceAgent.llmModelBusy
+                                    && (!voiceAgent.llmServerConnected || !voiceAgent.llmConnectionBusy)
                                 onClicked: voiceAgent.toggleLlmServerConnection(llmUrlBox.editText)
                             }
                         }
