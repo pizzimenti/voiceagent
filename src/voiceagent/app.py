@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from voiceagent import __version__
 from voiceagent.backends import SpeechToTextBackend, TextToSpeechBackend
 from voiceagent.config import AppConfig
 from voiceagent.controller import VoiceController
@@ -86,7 +87,11 @@ def build_controller(
 
 def main() -> int:
     log_path = configure_logging()
-    logging.getLogger(__name__).info("Starting voiceagent")
+    logger = logging.getLogger(__name__)
+    console = logging.getLogger("voiceagent.console")
+    logger.info("Starting voiceagent")
+    console.info("Voice Agent %s", __version__)
+    console.info("Starting services...")
     app = QApplication(sys.argv)
     app.setApplicationName("voiceagent")
     app.setApplicationDisplayName("Voice Agent")
@@ -95,11 +100,12 @@ def main() -> int:
     app.setWindowIcon(QIcon.fromTheme("audio-input-microphone"))
     config = AppConfig.from_env()
     configure_model_environment(config.stt_model_root, config.tts_model_root)
-    logging.getLogger(__name__).info("Configured log file path=%s", log_path)
-    logging.getLogger(__name__).info("Configured STT model root path=%s", config.stt_model_root)
-    logging.getLogger(__name__).info("Configured TTS model root path=%s", config.tts_model_root)
+    logger.info("Configured log file path=%s", log_path)
+    logger.info("Configured STT model root path=%s", config.stt_model_root)
+    logger.info("Configured TTS model root path=%s", config.tts_model_root)
     transcriber, tts_service, model_loader, tts_loader = build_shared_services(config)
     controller = build_controller(config, transcriber=transcriber, tts_service=tts_service)
     window = MainWindow(controller, model_loader, tts_loader)
     window.show()
+    console.info("Ready.")
     return app.exec()
