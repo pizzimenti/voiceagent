@@ -47,10 +47,14 @@ export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
   "${ROOT_DIR}/src/voiceagent/audio_check.py" \
   "${ROOT_DIR}/src/voiceagent/controller.py"
 
+qmllint \
+  "${ROOT_DIR}/src/voiceagent/qml/MainWindow.qml" \
+  "${ROOT_DIR}/src/voiceagent/qml/WaveformMeter.qml"
+
 "${VENV_PYTHON}" -c '
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication
 
@@ -264,5 +268,21 @@ qml_path = Path("src/voiceagent/qml/MainWindow.qml").resolve()
 engine.load(QUrl.fromLocalFile(str(qml_path)))
 if not engine.rootObjects():
     raise SystemExit(f"Failed to load QML interface: {qml_path}")
+
+root = engine.rootObjects()[0]
+
+# Let deferred Loader/Window creation settle before teardown.
+QTimer.singleShot(0, app.quit)
+app.exec()
+
+if hasattr(root, "close"):
+    root.close()
+root.deleteLater()
+engine.collectGarbage()
+app.sendPostedEvents()
+app.processEvents()
+QTimer.singleShot(0, app.quit)
+app.exec()
+
 print(f"compile ok: {qml_path}")
 '
