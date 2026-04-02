@@ -18,6 +18,8 @@ class WhisperModelLoader(QObject):
     error_changed = Signal(str)
     load_completed = Signal()
     load_failed = Signal(str)
+    delete_completed = Signal()
+    delete_failed = Signal(str)
 
     def __init__(self, transcriber: SpeechToTextBackend, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -29,6 +31,8 @@ class WhisperModelLoader(QObject):
 
         self.load_completed.connect(self._finish_success)
         self.load_failed.connect(self._finish_failure)
+        self.delete_completed.connect(self._finish_delete_success)
+        self.delete_failed.connect(self._finish_delete_failure)
         self._emit_initial_state()
 
     @property
@@ -53,7 +57,13 @@ class WhisperModelLoader(QObject):
         self._emit_initial_state()
 
     def load_model(self) -> None:
-        if self._loading or self.is_ready:
+        if self._loading or not self.selected_model or self.transcriber.is_item_available(self.selected_model):
+            return
+
+        self.download_model(self.selected_model)
+
+    def download_model(self, model_name: str) -> None:
+        if self._loading or not model_name or self.transcriber.is_item_available(model_name):
             return
 
         self._loading = True
@@ -63,7 +73,21 @@ class WhisperModelLoader(QObject):
         self.status_changed.emit(f"Checking {self.transcriber.backend_name} {self.transcriber.selection_label.lower()} files")
         self.progress_changed.emit(self._last_progress)
 
-        future = self.executor.submit(self._load_model)
+        future = self.executor.submit(self._download_model, model_name)
+        future.add_done_callback(self._handle_done)
+
+    def delete_model(self, model_name: str) -> None:
+        if self._loading or not model_name or not self.transcriber.is_item_available(model_name):
+            return
+
+        self._loading = True
+        self._last_progress = DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0)
+        self.loading_changed.emit(True)
+        self.error_changed.emit("")
+        self.status_changed.emit(f"Removing {self.transcriber.backend_name} {self.transcriber.selection_label.lower()}")
+        self.progress_changed.emit(self._last_progress)
+
+        future = self.executor.submit(self._delete_model, model_name)
         future.add_done_callback(self._handle_done)
 
     def shutdown(self) -> None:
@@ -80,12 +104,12 @@ class WhisperModelLoader(QObject):
             )
         self.progress_changed.emit(self._last_progress)
 
-    def _load_model(self) -> None:
+    def _download_model(self, model_name: str) -> None:
         try:
             self.status_changed.emit(
                 f"Downloading {self.transcriber.backend_name} {self.transcriber.selection_label.lower()} with aria2"
             )
-            self.transcriber.download_and_load(progress_callback=self._emit_progress)
+            self.transcriber.download_item(model_name, progress_callback=self._emit_progress)
         except Exception as exc:
             self._logger.exception("Whisper model load failed")
             self.load_failed.emit(str(exc))
@@ -93,13 +117,23 @@ class WhisperModelLoader(QObject):
 
         self.load_completed.emit()
 
+    def _delete_model(self, model_name: str) -> None:
+        try:
+            self.transcriber.remove_item(model_name)
+        except Exception as exc:
+            self._logger.exception("Whisper model delete failed")
+            self.delete_failed.emit(str(exc))
+            return
+
+        self.delete_completed.emit()
+
     def _handle_done(self, future: Future[None]) -> None:
         future.result()
 
     def _finish_success(self) -> None:
         self._loading = False
         self.loading_changed.emit(False)
-        self.ready_changed.emit(True)
+        self.ready_changed.emit(self.is_ready)
         self.status_changed.emit(f"{self.transcriber.backend_name} {self.transcriber.selection_label.lower()} ready")
         self.progress_changed.emit(
             DownloadProgress(
@@ -112,8 +146,23 @@ class WhisperModelLoader(QObject):
     def _finish_failure(self, message: str) -> None:
         self._loading = False
         self.loading_changed.emit(False)
-        self.ready_changed.emit(False)
+        self.ready_changed.emit(self.is_ready)
         self.status_changed.emit(f"{self.transcriber.backend_name} load failed")
+        self.error_changed.emit(message)
+        self.progress_changed.emit(DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0))
+
+    def _finish_delete_success(self) -> None:
+        self._loading = False
+        self.loading_changed.emit(False)
+        self.ready_changed.emit(self.is_ready)
+        self.status_changed.emit(f"{self.transcriber.backend_name} model removed")
+        self.progress_changed.emit(DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0))
+
+    def _finish_delete_failure(self, message: str) -> None:
+        self._loading = False
+        self.loading_changed.emit(False)
+        self.ready_changed.emit(self.is_ready)
+        self.status_changed.emit(f"{self.transcriber.backend_name} remove failed")
         self.error_changed.emit(message)
         self.progress_changed.emit(DownloadProgress(completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0))
 

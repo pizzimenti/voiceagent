@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+import shutil
 from typing import Any
 
 from huggingface_hub import HfApi, hf_hub_url
@@ -111,8 +112,24 @@ class WhisperTranscriber(SpeechToTextBackend):
     def ensure_loaded(self) -> None:
         self._get_model()
 
+    def download_item(self, item_name: str, progress_callback=None) -> None:
+        self._prepare_model_source(item_name=item_name, progress_callback=progress_callback)
+
+    def remove_item(self, item_name: str) -> None:
+        repo_id = self.MODEL_REPOSITORIES.get(item_name)
+        if repo_id is None:
+            raise RuntimeError(f"Whisper model '{item_name}' cannot be removed because it is not a managed catalog item.")
+
+        local_dir = self.model_root / item_name
+        if not local_dir.exists():
+            return
+
+        shutil.rmtree(local_dir)
+        if self.model_name == item_name:
+            self._model = None
+
     def download_and_load(self, progress_callback=None) -> None:
-        model_source = self._prepare_model_source(progress_callback=progress_callback)
+        model_source = self._prepare_model_source(item_name=self.model_name, progress_callback=progress_callback)
         if self._model is None:
             from faster_whisper import WhisperModel
 
@@ -157,16 +174,16 @@ class WhisperTranscriber(SpeechToTextBackend):
 
         return self._model
 
-    def _prepare_model_source(self, progress_callback=None) -> str:
-        model_path = Path(self.model_name).expanduser()
+    def _prepare_model_source(self, item_name: str, progress_callback=None) -> str:
+        model_path = Path(item_name).expanduser()
         if model_path.exists():
             return str(model_path)
 
-        repo_id = self.MODEL_REPOSITORIES.get(self.model_name)
+        repo_id = self.MODEL_REPOSITORIES.get(item_name)
         if repo_id is None:
-            return self.model_name
+            return item_name
 
-        local_dir = self.model_root / self.model_name
+        local_dir = self.model_root / item_name
         local_dir.mkdir(parents=True, exist_ok=True)
 
         self._logger.info("Checking Whisper model repo=%s local_dir=%s", repo_id, local_dir)

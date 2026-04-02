@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import urllib.request
 import wave
@@ -135,6 +136,28 @@ class PiperTtsService(TextToSpeechBackend):
 
     def download_selected_item(self, progress_callback=None) -> None:
         self.download_voice(progress_callback=progress_callback)
+
+    def download_item(self, item_name: str, progress_callback=None) -> None:
+        self._download_voice(item_name, progress_callback=progress_callback)
+
+    def remove_item(self, item_name: str) -> None:
+        if not item_name:
+            return
+
+        candidate = self.model_root / f"{item_name}.onnx"
+        config_candidate = self.model_root / f"{item_name}.onnx.json"
+        nested_candidate = self.model_root / item_name
+
+        if candidate.exists():
+            candidate.unlink()
+        if config_candidate.exists():
+            config_candidate.unlink()
+        if nested_candidate.exists() and nested_candidate.is_dir():
+            shutil.rmtree(nested_candidate)
+
+        if self.model_path == item_name:
+            self._loaded_voice_path = None
+            self._voice = None
 
     def _resolve_existing_model_path(self) -> Path | None:
         assert self.model_path is not None

@@ -52,6 +52,14 @@ voiceagent
 
 The app assumes LM Studio's local server is already running.
 
+For a quick non-packaging smoke check of the desktop shell:
+
+```bash
+./voiceagent-compiletest
+```
+
+That verifies the key Python entrypoints compile and that the Kirigami QML window loads offscreen.
+
 ## Arch / Manjaro Packaging
 
 The repo includes two Arch packaging paths:

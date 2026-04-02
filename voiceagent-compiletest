@@ -1,0 +1,248 @@
+#!/bin/sh
+set -eu
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+VENV_PYTHON="${ROOT_DIR}/.venv/bin/python"
+
+if [ ! -x "${VENV_PYTHON}" ]; then
+  echo "Missing virtualenv python at ${VENV_PYTHON}" >&2
+  exit 1
+fi
+
+if [ -n "${PYTHONPATH:-}" ]; then
+  export PYTHONPATH="${ROOT_DIR}/src:${PYTHONPATH}"
+else
+  export PYTHONPATH="${ROOT_DIR}/src"
+fi
+
+QML_PATHS=""
+for candidate in /usr/lib/qt6/qml /usr/lib/qt/qml; do
+  if [ -d "${candidate}" ]; then
+    if [ -n "${QML_PATHS}" ]; then
+      QML_PATHS="${QML_PATHS}:${candidate}"
+    else
+      QML_PATHS="${candidate}"
+    fi
+  fi
+done
+
+if [ -n "${QML_PATHS}" ]; then
+  if [ -n "${QML_IMPORT_PATH:-}" ]; then
+    export QML_IMPORT_PATH="${QML_PATHS}:${QML_IMPORT_PATH}"
+  else
+    export QML_IMPORT_PATH="${QML_PATHS}"
+  fi
+  if [ -n "${QML2_IMPORT_PATH:-}" ]; then
+    export QML2_IMPORT_PATH="${QML_PATHS}:${QML2_IMPORT_PATH}"
+  else
+    export QML2_IMPORT_PATH="${QML_PATHS}"
+  fi
+fi
+
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
+
+"${VENV_PYTHON}" -m py_compile \
+  "${ROOT_DIR}/src/voiceagent/app.py" \
+  "${ROOT_DIR}/src/voiceagent/window.py" \
+  "${ROOT_DIR}/src/voiceagent/audio_check.py" \
+  "${ROOT_DIR}/src/voiceagent/controller.py"
+
+"${VENV_PYTHON}" -c '
+from pathlib import Path
+
+from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtWidgets import QApplication
+
+class StubVoiceAgent(QObject):
+    ui_changed = Signal()
+    conversation_changed = Signal()
+
+    @Property("QVariantList", notify=ui_changed)
+    def sttOptions(self):
+        return ["large-v3"]
+
+    @Property("QVariantList", notify=ui_changed)
+    def ttsOptions(self):
+        return ["en_US-lessac-medium"]
+
+    @Property("QVariantList", notify=ui_changed)
+    def sttCatalog(self):
+        return [{"name": "large-v3", "installed": True}, {"name": "small", "installed": False}]
+
+    @Property("QVariantList", notify=ui_changed)
+    def ttsCatalog(self):
+        return [
+            {"name": "en_US-lessac-medium", "installed": True},
+            {"name": "en_US-amy-medium", "installed": False},
+        ]
+
+    @Property(str, notify=ui_changed)
+    def selectedSttModel(self):
+        return "large-v3"
+
+    @Property(str, notify=ui_changed)
+    def selectedTtsModel(self):
+        return "en_US-lessac-medium"
+
+    @Property(str, notify=ui_changed)
+    def modelStatus(self):
+        return "Whisper model ready"
+
+    @Property(bool, notify=ui_changed)
+    def modelLoading(self):
+        return False
+
+    @Property(float, notify=ui_changed)
+    def modelProgressValue(self):
+        return 1.0
+
+    @Property(bool, notify=ui_changed)
+    def modelProgressIndeterminate(self):
+        return False
+
+    @Property(str, notify=ui_changed)
+    def modelProgressText(self):
+        return ""
+
+    @Property(str, notify=ui_changed)
+    def ttsStatus(self):
+        return "Piper voice ready"
+
+    @Property(bool, notify=ui_changed)
+    def ttsLoading(self):
+        return False
+
+    @Property(float, notify=ui_changed)
+    def ttsProgressValue(self):
+        return 1.0
+
+    @Property(bool, notify=ui_changed)
+    def ttsProgressIndeterminate(self):
+        return False
+
+    @Property(str, notify=ui_changed)
+    def ttsProgressText(self):
+        return ""
+
+    @Property("QVariantList", notify=ui_changed)
+    def llmUrls(self):
+        return ["http://127.0.0.1:1234/v1"]
+
+    @Property(str, notify=ui_changed)
+    def currentLlmUrl(self):
+        return "http://127.0.0.1:1234/v1"
+
+    @Property("QVariantList", notify=ui_changed)
+    def llmModelOptions(self):
+        return ["", "local-model"]
+
+    @Property(str, notify=ui_changed)
+    def selectedLlmModel(self):
+        return "local-model"
+
+    @Property(bool, notify=ui_changed)
+    def talkReady(self):
+        return True
+
+    @Property(bool, notify=ui_changed)
+    def voiceConnectionEnabled(self):
+        return False
+
+    @Property(str, notify=ui_changed)
+    def voiceConnectionLabel(self):
+        return "Voice Connection Off"
+
+    @Property(bool, notify=ui_changed)
+    def audioMuted(self):
+        return False
+
+    @Property(str, notify=ui_changed)
+    def themeMode(self):
+        return "auto"
+
+    @Property(str, notify=ui_changed)
+    def themeModeLabel(self):
+        return "Auto"
+
+    @Property("QVariantList", notify=conversation_changed)
+    def conversationMessages(self):
+        return [
+            {"role": "user", "text": "Test input", "replayable": False},
+            {"role": "assistant", "text": "Test response", "replayable": True},
+        ]
+
+    @Property(str, notify=ui_changed)
+    def errorMessage(self):
+        return ""
+
+    @Property(str, notify=ui_changed)
+    def statusMessage(self):
+        return "Compile test"
+
+    @Property(str, notify=ui_changed)
+    def state(self):
+        return "idle"
+
+    @Slot(str)
+    def selectSttModel(self, _value):
+        pass
+
+    @Slot()
+    def installSttModel(self, _value):
+        pass
+
+    @Slot(str)
+    def deleteSttModel(self, _value):
+        pass
+
+    @Slot(str)
+    def selectTtsModel(self, _value):
+        pass
+
+    @Slot(str)
+    def installTtsModel(self, _value):
+        pass
+
+    @Slot(str)
+    def deleteTtsModel(self, _value):
+        pass
+
+    @Slot(str)
+    def setCurrentLlmUrl(self, _value):
+        pass
+
+    @Slot(bool)
+    def refreshLlmModels(self, _show_error):
+        pass
+
+    @Slot(str)
+    def selectLlmModel(self, _value):
+        pass
+
+    @Slot(bool)
+    def setVoiceConnectionEnabled(self, _enabled):
+        pass
+
+    @Slot(bool)
+    def setAudioMuted(self, _enabled):
+        pass
+
+    @Slot(str)
+    def setThemeMode(self, _mode):
+        pass
+
+    @Slot()
+    def replayMessage(self, _index):
+        pass
+
+app = QApplication([])
+engine = QQmlApplicationEngine()
+stub = StubVoiceAgent()
+engine.rootContext().setContextProperty("voiceAgent", stub)
+qml_path = Path("src/voiceagent/qml/MainWindow.qml").resolve()
+engine.load(QUrl.fromLocalFile(str(qml_path)))
+if not engine.rootObjects():
+    raise SystemExit(f"Failed to load QML interface: {qml_path}")
+print(f"compile ok: {qml_path}")
+'
