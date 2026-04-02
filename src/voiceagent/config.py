@@ -35,7 +35,11 @@ class AppConfig:
         else:
             venv_piper = Path(sys.executable).with_name("piper")
             tts_command = [str(venv_piper)] if venv_piper.exists() else ["piper"]
-        lm_studio_timeout_seconds = int(os.environ.get("LM_STUDIO_TIMEOUT_SECONDS", "5"))
+        raw_timeout = (os.environ.get("LM_STUDIO_TIMEOUT_SECONDS", "") or "").strip()
+        try:
+            lm_studio_timeout_seconds = int(raw_timeout) if raw_timeout else 5
+        except ValueError:
+            lm_studio_timeout_seconds = 5
         return cls(
             lm_studio_base_url=os.environ.get("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1").rstrip("/"),
             lm_studio_model=os.environ.get("LM_STUDIO_MODEL", "").strip(),
