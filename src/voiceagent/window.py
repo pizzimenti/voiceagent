@@ -516,14 +516,6 @@ class MainWindow(QObject):
         cleaned = text.strip()
         if not cleaned:
             return
-        previous = self._conversation_messages[-1] if self._conversation_messages else None
-        if (
-            previous is not None
-            and previous.get("role") == "system"
-            and previous.get("level") == level
-            and previous.get("text") == cleaned
-        ):
-            return
         self._conversation_messages.append(
             {
                 "role": "system",
@@ -729,8 +721,11 @@ class MainWindow(QObject):
             self._llm_server_connected = False
             self._llm_models = []
             self.controller.chat_client.set_model("")
+            failure_message = f"Unable to connect to LLM server: {str(result.get('error', ''))}".strip()
             if bool(result.get("show_error", True)):
                 self._show_llm_error("Unable to connect to LLM server", str(result.get("error", "")))
+            elif failure_message:
+                self._append_log_message(failure_message, "error")
             self.ui_changed.emit()
             return
 
