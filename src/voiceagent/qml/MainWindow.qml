@@ -110,14 +110,6 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    Kirigami.Action {
-        id: refreshModelsAction
-        text: "Refresh LLM Models"
-        icon.name: "view-refresh"
-        visible: !root.compactMode
-        onTriggered: voiceAgent.refreshLlmModels(true)
-    }
-
     ActionGroup {
         id: themeActionGroup
     }
@@ -591,20 +583,35 @@ Kirigami.ApplicationWindow {
                             wrapMode: Text.WordWrap
                         }
 
-                        ComboBox {
-                            id: llmUrlBox
+                        RowLayout {
                             Layout.fillWidth: true
-                            Layout.minimumWidth: 0
-                            Layout.preferredWidth: Kirigami.Units.gridUnit * 16
-                            editable: true
-                            model: voiceAgent.llmUrls
-                            currentIndex: root.stringIndex(voiceAgent.llmUrls, voiceAgent.currentLlmUrl)
-                            Component.onCompleted: editText = voiceAgent.currentLlmUrl
-                            onAccepted: {
-                                voiceAgent.setCurrentLlmUrl(editText);
-                                voiceAgent.persistCurrentLlmUrl();
+                            spacing: Kirigami.Units.smallSpacing
+
+                            ComboBox {
+                                id: llmUrlBox
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                Layout.preferredWidth: Kirigami.Units.gridUnit * 16
+                                editable: !voiceAgent.llmServerConnected && !voiceAgent.llmModelBusy
+                                enabled: !voiceAgent.llmServerConnected && !voiceAgent.llmModelBusy
+                                model: voiceAgent.llmUrls
+                                currentIndex: root.stringIndex(voiceAgent.llmUrls, voiceAgent.currentLlmUrl)
+                                Component.onCompleted: editText = voiceAgent.currentLlmUrl
+                                onAccepted: {
+                                    voiceAgent.setCurrentLlmUrl(editText);
+                                    voiceAgent.persistCurrentLlmUrl();
+                                }
+                                onActivated: voiceAgent.setCurrentLlmUrl(currentText)
                             }
-                            onActivated: voiceAgent.setCurrentLlmUrl(currentText)
+
+                            Button {
+                                Layout.minimumWidth: Kirigami.Units.gridUnit * 9
+                                Layout.preferredWidth: Kirigami.Units.gridUnit * 10
+                                text: voiceAgent.llmConnectionButtonText
+                                enabled: !!llmUrlBox.editText.trim() && !voiceAgent.llmModelBusy
+                                    && (!voiceAgent.llmServerConnected || !voiceAgent.llmConnectionBusy)
+                                onClicked: voiceAgent.toggleLlmServerConnection(llmUrlBox.editText)
+                            }
                         }
 
                         Label {
@@ -618,6 +625,7 @@ Kirigami.ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.minimumWidth: 0
                             Layout.preferredWidth: Kirigami.Units.gridUnit * 16
+                            enabled: voiceAgent.llmServerConnected && !voiceAgent.llmConnectionBusy && !voiceAgent.llmModelBusy
                             model: voiceAgent.llmModelOptions
                             currentIndex: root.stringIndex(voiceAgent.llmModelOptions, voiceAgent.selectedLlmModel)
                             displayText: currentIndex <= 0 ? "Select a loaded model" : currentText
@@ -709,7 +717,8 @@ Kirigami.ApplicationWindow {
 
                     delegate: Item {
                         width: conversationView.width
-                        implicitHeight: messageRow.implicitHeight
+                        readonly property bool systemEntry: modelData.role === "system"
+                        implicitHeight: systemEntry ? systemMessage.implicitHeight : messageRow.implicitHeight
 
                         property bool assistant: modelData.role === "assistant"
                         readonly property string bubbleState: modelData.bubbleState || "sent"
@@ -717,14 +726,31 @@ Kirigami.ApplicationWindow {
                             ? "#ff5c8a"
                             : (assistant ? "#34c759" : "#4a4a4f")
                         readonly property color bubbleTextColor: "#ffffff"
+                        readonly property color systemTextColor: (modelData.level || "status") === "error"
+                            ? Kirigami.Theme.negativeTextColor
+                            : Kirigami.Theme.disabledTextColor
                         readonly property real maxBubbleWidth: Math.min(
                             conversationView.width * (root.compactMode ? 0.96 : (root.mediumMode ? 0.9 : 0.78)),
                             Kirigami.Units.gridUnit * (root.compactMode ? 18 : (root.mediumMode ? 28 : 34))
                         )
 
+                        Label {
+                            id: systemMessage
+                            visible: parent.systemEntry
+                            width: parent.width
+                            text: (modelData.timestampLabel || "") + ((modelData.timestampLabel || "") ? "  " : "") + root.bubbleText(modelData.text)
+                            wrapMode: Text.WordWrap
+                            color: parent.systemTextColor
+                            textFormat: Text.PlainText
+                            horizontalAlignment: Text.AlignLeft
+                            verticalAlignment: Text.AlignVCenter
+                            font.pixelSize: 12
+                        }
+
                         RowLayout {
                             id: messageRow
                             width: parent.width
+                            visible: !parent.systemEntry
                             spacing: Kirigami.Units.smallSpacing
                             layoutDirection: assistant ? Qt.LeftToRight : Qt.RightToLeft
 
@@ -882,8 +908,7 @@ Kirigami.ApplicationWindow {
         actions: [
             themeAction,
             muteAction,
-            modelManagerAction,
-            refreshModelsAction
+            modelManagerAction
         ]
 
         ColumnLayout {
@@ -894,22 +919,6 @@ Kirigami.ApplicationWindow {
             anchors.bottom: parent.bottom
             anchors.margins: root.pageContentMargin
             spacing: root.pageContentSpacing
-
-            Kirigami.InlineMessage {
-                id: errorMessageBanner
-                visible: !root.compactMode && voiceAgent.errorMessage.length > 0
-                Layout.fillWidth: true
-                text: voiceAgent.errorMessage
-                type: Kirigami.MessageType.Error
-            }
-
-            Kirigami.InlineMessage {
-                id: statusMessageBanner
-                visible: !root.compactMode && voiceAgent.statusMessage.length > 0
-                Layout.fillWidth: true
-                text: voiceAgent.statusMessage
-                type: Kirigami.MessageType.Information
-            }
 
             Item {
                 id: dashboardModes
