@@ -52,6 +52,7 @@ class MainWindow(QObject):
         self._llm_refresh_request_id = 0
         self._llm_active_refresh_request_id = 0
         self._startup_llm_connect_scheduled = False
+        self._shutting_down = False
         self._state = "idle"
         self._model_progress_value = 0.0
         self._model_progress_indeterminate = False
@@ -94,8 +95,8 @@ class MainWindow(QObject):
         self._apply_state(self.controller.state.value)
         self._apply_theme_mode(self.settings.value("theme_mode", "auto", str) or "auto")
 
-        self.engine = QQmlApplicationEngine(self)
-        self.engine.rootContext().setContextProperty("voiceAgent", self)
+        self.engine = QQmlApplicationEngine()
+        self.engine.setInitialProperties({"voiceAgent": self})
         qml_path = Path(__file__).with_name("qml") / "MainWindow.qml"
         self.engine.load(QUrl.fromLocalFile(str(qml_path)))
         root_objects = self.engine.rootObjects()
@@ -123,11 +124,31 @@ class MainWindow(QObject):
             QTimer.singleShot(0, self.autoconnectLlmServer)
 
     def shutdown(self) -> None:
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        if hasattr(self, "_window") and self._window is not None:
+            if hasattr(self._window, "setVisible"):
+                self._window.setVisible(False)
+            if hasattr(self._window, "close"):
+                self._window.close()
+            if hasattr(self._window, "deleteLater"):
+                self._window.deleteLater()
+            self._window = None
+        if hasattr(self, "engine") and self.engine is not None:
+            self.engine.collectGarbage()
+            if hasattr(self.engine, "clearComponentCache"):
+                self.engine.clearComponentCache()
+            self.engine.deleteLater()
         self.controller.shutdown()
         self.model_loader.shutdown()
         self.tts_loader.shutdown()
         self.replay_player.stop()
         self._llm_executor.shutdown(wait=False, cancel_futures=True)
+        app = QApplication.instance()
+        if app is not None:
+            app.sendPostedEvents()
+            app.processEvents()
 
     @Property("QVariantList", notify=ui_changed)
     def sttOptions(self) -> list[str]:  # noqa: N802
@@ -516,14 +537,6 @@ class MainWindow(QObject):
         cleaned = text.strip()
         if not cleaned:
             return
-        previous = self._conversation_messages[-1] if self._conversation_messages else None
-        if (
-            previous is not None
-            and previous.get("role") == "system"
-            and previous.get("level") == level
-            and previous.get("text") == cleaned
-        ):
-            return
         self._conversation_messages.append(
             {
                 "role": "system",
@@ -729,8 +742,11 @@ class MainWindow(QObject):
             self._llm_server_connected = False
             self._llm_models = []
             self.controller.chat_client.set_model("")
+            failure_message = f"Unable to connect to LLM server: {str(result.get('error', ''))}".strip()
             if bool(result.get("show_error", True)):
                 self._show_llm_error("Unable to connect to LLM server", str(result.get("error", "")))
+            elif failure_message:
+                self._append_log_message(failure_message, "error")
             self.ui_changed.emit()
             return
 

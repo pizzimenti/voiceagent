@@ -11,6 +11,7 @@ Kirigami.ApplicationWindow {
     height: 840
     visible: true
     title: "Voice Agent"
+    required property QtObject voiceAgent
 
     readonly property bool compactMode: width < Kirigami.Units.gridUnit * 25
     readonly property bool largeMode: width >= Kirigami.Units.gridUnit * 50

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from urllib import error, request
 
 
@@ -51,7 +52,13 @@ class LmStudioClient:
             details = exc.read().decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"{method} {url} failed: HTTP {exc.code}. {details}".strip()) from exc
         except error.URLError as exc:
-            raise RuntimeError(f"{method} {url} failed: {exc}") from exc
+            raise RuntimeError(f"{method} {url} failed: {self._format_url_error(exc)}") from exc
+
+    def _format_url_error(self, exc: error.URLError) -> str:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return f"timed out after {self.timeout_seconds} seconds"
+        return str(exc)
 
     def set_model(self, model: str) -> None:
         self.model = model.strip()
@@ -203,7 +210,7 @@ class LmStudioClient:
             with request.urlopen(req, timeout=self.timeout_seconds) as response:
                 data = json.load(response)
         except error.URLError as exc:
-            raise RuntimeError(f"LM Studio request failed: {exc}") from exc
+            raise RuntimeError(f"LM Studio request failed: {self._format_url_error(exc)}") from exc
 
         try:
             message = data["choices"][0]["message"]["content"]

@@ -28,8 +28,16 @@ def configure_logging() -> Path:
     root_logger.addHandler(file_handler)
 
     stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
+    stream_handler.setLevel(logging.WARNING)
+    stream_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     root_logger.addHandler(stream_handler)
 
     logging.getLogger(__name__).info("Logging initialized at %s", log_path)
+    console_logger = logging.getLogger("voiceagent.console")
+    console_logger.setLevel(logging.INFO)
+    console_logger.propagate = False
+    if not console_logger.handlers:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(logging.Formatter("%(message)s"))
+        console_logger.addHandler(console_handler)
     return log_path
