@@ -158,7 +158,7 @@ class WhisperTranscriber(SpeechToTextBackend):
         transcript = " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
         if not transcript:
             detected_language = getattr(info, "language", "unknown")
-            self._logger.warning(
+            self._logger.info(
                 "Whisper returned empty transcript path=%s detected_language=%s",
                 audio_path,
                 detected_language,

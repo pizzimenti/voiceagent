@@ -1,8 +1,8 @@
 # Maintainer: Bradley <bradley@gennakersystems.com>
 
 pkgname=voiceagent
-pkgver=0.1.0
-pkgrel=3
+pkgver=0.2.0
+pkgrel=1
 pkgdesc='Push-to-talk KDE-friendly desktop voice assistant'
 arch=('any')
 url='https://github.com/pizzimenti/voiceagent'
@@ -44,7 +44,7 @@ package() {
   cp -a "${srcdir}/vendor" "${pkgdir}/usr/lib/voiceagent/vendor"
   find "${pkgdir}/usr/lib/voiceagent/vendor" -name '*.pyc' -delete
 
-  install -Dm755 packaging/voiceagent-launcher "${pkgdir}/usr/bin/${pkgname}"
+  install -Dm755 packaging/voiceagent-launcher.sh "${pkgdir}/usr/bin/${pkgname}"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
   install -Dm644 packaging/voiceagent.desktop \
     "${pkgdir}/usr/share/applications/${pkgname}.desktop"

@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 from urllib import error, request
 from uuid import uuid4
@@ -29,6 +30,11 @@ class DownloadProgress:
 
 
 class AriaDownloader:
+    # Serializes the (reserve free port -> spawn aria2c -> aria2c binds port) window.
+    # Without this, concurrent downloads racing through _reserve_port can both be
+    # handed the same ephemeral port by the kernel, and the second aria2c's bind fails.
+    _spawn_lock = threading.Lock()
+
     def __init__(self, connections: int = 10) -> None:
         self.connections = connections
         self._logger = logging.getLogger(__name__)
@@ -51,41 +57,10 @@ class AriaDownloader:
 
         fd, input_file_raw = tempfile.mkstemp(prefix="voiceagent-aria2-", suffix=".txt")
         input_file = Path(input_file_raw)
-        rpc_port = self._reserve_port()
         rpc_secret = uuid4().hex
         try:
             os.close(fd)
             input_file.write_text(self._build_input_file(files), encoding="utf-8")
-            args = [
-                aria2c,
-                "--continue=true",
-                "--max-connection-per-server",
-                str(self.connections),
-                "--split",
-                str(self.connections),
-                "--min-split-size",
-                "1M",
-                "--file-allocation=none",
-                "--auto-file-renaming=false",
-                "--allow-overwrite=true",
-                "--disable-ipv6=true",
-                "--summary-interval=0",
-                "--console-log-level=warn",
-                "--enable-rpc=true",
-                "--rpc-listen-all=false",
-                "--rpc-listen-port",
-                str(rpc_port),
-                "--rpc-secret",
-                rpc_secret,
-                "--dir",
-                str(files[0].destination.parent),
-                "--input-file",
-                str(input_file),
-            ]
-
-            if headers:
-                for key, value in headers.items():
-                    args.extend(["--header", f"{key}: {value}"])
 
             total_bytes = sum(file.size_bytes for file in files)
             progress_callback = progress_callback or (lambda progress: None)
@@ -97,13 +72,29 @@ class AriaDownloader:
                 )
             )
 
-            self._logger.info("Starting aria2 download file_count=%s total_bytes=%s", len(files), total_bytes)
-            proc = subprocess.Popen(
-                args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            # Port reservation and aria2c spawn must be serialized across concurrent
+            # workers so two downloads can't both be handed the same ephemeral port by
+            # the kernel between _reserve_port closing its probe socket and aria2c
+            # binding. The lock is held only until aria2c is actually listening on the
+            # port — downloads themselves still run in parallel.
+            with AriaDownloader._spawn_lock:
+                rpc_port = self._reserve_port()
+                args = self._build_args(aria2c, rpc_port, rpc_secret, files, input_file, headers)
+                self._logger.info(
+                    "Starting aria2 download file_count=%s total_bytes=%s rpc_port=%s",
+                    len(files),
+                    total_bytes,
+                    rpc_port,
+                )
+                proc = subprocess.Popen(
+                    args,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                self._wait_for_rpc_bound(proc, rpc_port)
+
+            shutdown_sent_at: float | None = None
             try:
                 while proc.poll() is None:
                     progress = self._poll_progress(rpc_port, rpc_secret, total_bytes)
@@ -114,9 +105,38 @@ class AriaDownloader:
                             download_speed_bytes_per_second=0,
                         )
                     progress_callback(progress)
+                    # aria2c with --enable-rpc keeps running after completion, waiting for
+                    # further RPC calls. Send shutdown ourselves once everything is downloaded
+                    # so proc.poll() will return non-None and we exit the loop.
+                    if (
+                        shutdown_sent_at is None
+                        and progress.total_bytes > 0
+                        and progress.completed_bytes >= progress.total_bytes
+                    ):
+                        self._rpc_call(rpc_port, rpc_secret, "aria2.shutdown", [])
+                        shutdown_sent_at = time.monotonic()
+                    elif (
+                        shutdown_sent_at is not None
+                        and time.monotonic() - shutdown_sent_at > 5
+                    ):
+                        # _rpc_call swallows errors and returns None, so a failed shutdown
+                        # RPC wouldn't surface. Break out after a grace period and let the
+                        # terminate/kill cascade in `finally` do its job.
+                        self._logger.warning(
+                            "aria2c did not exit 5s after shutdown RPC; forcing teardown"
+                        )
+                        break
                     time.sleep(0.2)
             finally:
-                stdout, stderr = proc.communicate()
+                try:
+                    stdout, stderr = proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.terminate()
+                    try:
+                        stdout, stderr = proc.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        stdout, stderr = proc.communicate()
 
             progress_callback(
                 DownloadProgress(
@@ -202,6 +222,62 @@ class AriaDownloader:
             sock.bind(("127.0.0.1", 0))
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             return int(sock.getsockname()[1])
+
+    def _build_args(
+        self,
+        aria2c: str,
+        rpc_port: int,
+        rpc_secret: str,
+        files: list[DownloadFile],
+        input_file: Path,
+        headers: dict[str, str] | None,
+    ) -> list[str]:
+        args = [
+            aria2c,
+            "--continue=true",
+            "--max-connection-per-server",
+            str(self.connections),
+            "--split",
+            str(self.connections),
+            "--min-split-size",
+            "1M",
+            "--file-allocation=none",
+            "--auto-file-renaming=false",
+            "--allow-overwrite=true",
+            "--disable-ipv6=true",
+            "--summary-interval=0",
+            "--console-log-level=warn",
+            "--enable-rpc=true",
+            "--rpc-listen-all=false",
+            "--rpc-listen-port",
+            str(rpc_port),
+            "--rpc-secret",
+            rpc_secret,
+            "--dir",
+            str(files[0].destination.parent),
+            "--input-file",
+            str(input_file),
+        ]
+        if headers:
+            for key, value in headers.items():
+                args.extend(["--header", f"{key}: {value}"])
+        return args
+
+    def _wait_for_rpc_bound(self, proc: subprocess.Popen, rpc_port: int, timeout: float = 3.0) -> None:
+        """Block until aria2c has bound its RPC port, or the process exits, or timeout elapses.
+
+        Holding _spawn_lock until aria2c is actually listening prevents the next worker
+        from reserving the same ephemeral port from the kernel.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                return  # aria2c exited early — port no longer an issue
+            try:
+                with socket.create_connection(("127.0.0.1", rpc_port), timeout=0.2):
+                    return  # bind confirmed
+            except OSError:
+                time.sleep(0.05)
 
 
 def format_bytes(num_bytes: int) -> str:

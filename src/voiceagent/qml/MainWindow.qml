@@ -7,8 +7,8 @@ import org.kde.kirigami 2.20 as Kirigami
 Kirigami.ApplicationWindow {
     id: root
 
-    width: 1180
-    height: 840
+    width: 512
+    height: 512
     visible: true
     title: "Voice Agent"
     required property QtObject voiceAgent
@@ -84,11 +84,14 @@ Kirigami.ApplicationWindow {
         if (!listView) {
             return;
         }
-        const delta = wheel.pixelDelta.y !== 0
-            ? wheel.pixelDelta.y * 2.5
-            : (wheel.angleDelta.y / 120) * Kirigami.Units.gridUnit * 10;
-        const maxY = Math.max(0, listView.contentHeight - listView.height);
-        listView.contentY = Math.max(0, Math.min(maxY, listView.contentY - delta));
+        const pdy = wheel.pixelDelta ? wheel.pixelDelta.y : 0;
+        const ady = wheel.angleDelta ? wheel.angleDelta.y : 0;
+        const delta = pdy !== 0
+            ? pdy * 8
+            : (ady / 120) * Kirigami.Units.gridUnit * 12;
+        const minY = listView.originY || 0;
+        const maxY = minY + Math.max(0, listView.contentHeight - listView.height);
+        listView.contentY = Math.max(minY, Math.min(maxY, listView.contentY - delta));
         wheel.accepted = true;
     }
 
@@ -266,33 +269,36 @@ Kirigami.ApplicationWindow {
                             Layout.fillHeight: true
                             clip: true
                             spacing: 0
-                            model: voiceAgent.sttCatalog
+                            model: voiceAgent.sttCatalogModel
                             boundsBehavior: Flickable.StopAtBounds
                             flickDeceleration: 1800
                             maximumFlickVelocity: 24000
                             ScrollBar.vertical: ScrollBar {}
 
-                            WheelHandler {
-                                target: null
-                                onWheel: function(event) {
-                                    root.scrollList(sttCatalogView, event);
+                            MouseArea {
+                                anchors.fill: parent
+                                acceptedButtons: Qt.NoButton
+                                propagateComposedEvents: true
+                                z: 2
+                                onWheel: function(wheel) {
+                                    root.scrollList(sttCatalogView, wheel);
                                 }
                             }
 
-                            delegate: ItemDelegate {
+                            delegate: Item {
+                                id: sttDelegate
                                 width: ListView.view ? ListView.view.width : 0
-                                visible: root.catalogMatches(modelData.name, modelManagerWindow.sttFilter)
-                                height: visible ? implicitHeight : 0
-                                padding: Kirigami.Units.mediumSpacing
-                                onClicked: {
-                                    if (modelData.installed) {
-                                        voiceAgent.selectSttModel(modelData.name);
-                                    }
-                                }
-                                background: Rectangle {
-                                    color: parent.down || parent.hovered ? Kirigami.Theme.hoverColor : "transparent"
-                                }
-                                contentItem: RowLayout {
+                                visible: root.catalogMatches(model.name, modelManagerWindow.sttFilter)
+                                height: visible ? sttRow.implicitHeight + Kirigami.Units.mediumSpacing * 2 : 0
+                                readonly property bool downloading: voiceAgent.sttDownloadingList.indexOf(model.name) >= 0
+                                readonly property real downloadProgress: voiceAgent.sttProgressMap[model.name] || 0
+
+                                RowLayout {
+                                    id: sttRow
+                                    anchors.top: parent.top
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.margins: Kirigami.Units.mediumSpacing
                                     spacing: Kirigami.Units.mediumSpacing
 
                                     ColumnLayout {
@@ -301,14 +307,14 @@ Kirigami.ApplicationWindow {
 
                                         Label {
                                             Layout.fillWidth: true
-                                            text: modelData.name
-                                            font.weight: voiceAgent.selectedSttModel === modelData.name ? Font.DemiBold : Font.Normal
+                                            text: model.name
+                                            font.weight: voiceAgent.selectedSttModel === model.name ? Font.DemiBold : Font.Normal
                                             wrapMode: Text.WordWrap
                                         }
 
                                         Label {
                                             Layout.fillWidth: true
-                                            text: root.modelStatusSummary(modelData)
+                                            text: root.modelStatusSummary(model)
                                             color: Kirigami.Theme.disabledTextColor
                                             wrapMode: Text.WordWrap
                                         }
@@ -318,23 +324,40 @@ Kirigami.ApplicationWindow {
                                         spacing: Kirigami.Units.smallSpacing
 
                                         ToolButton {
-                                            visible: modelData.installed
-                                            text: voiceAgent.selectedSttModel === modelData.name ? "Current" : "Use"
-                                            enabled: voiceAgent.selectedSttModel !== modelData.name
-                                            onClicked: voiceAgent.selectSttModel(modelData.name)
+                                            visible: model.installed
+                                            text: voiceAgent.selectedSttModel === model.name ? "Current" : "Use"
+                                            enabled: voiceAgent.selectedSttModel !== model.name
+                                            onClicked: voiceAgent.selectSttModel(model.name)
                                         }
 
                                         ToolButton {
-                                            text: root.modelActionLabel(modelData)
-                                            enabled: !voiceAgent.modelLoading
+                                            text: sttDelegate.downloading ? "Installing…" : root.modelActionLabel(model)
+                                            enabled: !sttDelegate.downloading
                                             onClicked: {
-                                                if (modelData.installed) {
-                                                    voiceAgent.deleteSttModel(modelData.name);
+                                                if (model.installed) {
+                                                    voiceAgent.deleteSttModel(model.name);
                                                 } else {
-                                                    voiceAgent.installSttModel(modelData.name);
+                                                    voiceAgent.installSttModel(model.name);
                                                 }
                                             }
                                         }
+                                    }
+                                }
+
+                                Rectangle {
+                                    id: sttProgressTrack
+                                    visible: sttDelegate.downloading
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    height: 2
+                                    color: Kirigami.Theme.alternateBackgroundColor
+                                    Rectangle {
+                                        anchors.left: parent.left
+                                        anchors.top: parent.top
+                                        anchors.bottom: parent.bottom
+                                        width: parent.width * sttDelegate.downloadProgress
+                                        color: Kirigami.Theme.highlightColor
                                     }
                                 }
                             }
@@ -361,33 +384,36 @@ Kirigami.ApplicationWindow {
                             Layout.fillHeight: true
                             clip: true
                             spacing: 0
-                            model: voiceAgent.ttsCatalog
+                            model: voiceAgent.ttsCatalogModel
                             boundsBehavior: Flickable.StopAtBounds
                             flickDeceleration: 1800
                             maximumFlickVelocity: 24000
                             ScrollBar.vertical: ScrollBar {}
 
-                            WheelHandler {
-                                target: null
-                                onWheel: function(event) {
-                                    root.scrollList(ttsCatalogView, event);
+                            MouseArea {
+                                anchors.fill: parent
+                                acceptedButtons: Qt.NoButton
+                                propagateComposedEvents: true
+                                z: 2
+                                onWheel: function(wheel) {
+                                    root.scrollList(ttsCatalogView, wheel);
                                 }
                             }
 
-                            delegate: ItemDelegate {
+                            delegate: Item {
+                                id: ttsDelegate
                                 width: ListView.view ? ListView.view.width : 0
-                                visible: root.catalogMatches(modelData.name, modelManagerWindow.ttsFilter)
-                                height: visible ? implicitHeight : 0
-                                padding: Kirigami.Units.mediumSpacing
-                                onClicked: {
-                                    if (modelData.installed) {
-                                        voiceAgent.selectTtsModel(modelData.name);
-                                    }
-                                }
-                                background: Rectangle {
-                                    color: parent.down || parent.hovered ? Kirigami.Theme.hoverColor : "transparent"
-                                }
-                                contentItem: RowLayout {
+                                visible: root.catalogMatches(model.name, modelManagerWindow.ttsFilter)
+                                height: visible ? ttsRow.implicitHeight + Kirigami.Units.mediumSpacing * 2 : 0
+                                readonly property bool downloading: voiceAgent.ttsDownloadingList.indexOf(model.name) >= 0
+                                readonly property real downloadProgress: voiceAgent.ttsProgressMap[model.name] || 0
+
+                                RowLayout {
+                                    id: ttsRow
+                                    anchors.top: parent.top
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.margins: Kirigami.Units.mediumSpacing
                                     spacing: Kirigami.Units.mediumSpacing
 
                                     ColumnLayout {
@@ -396,14 +422,14 @@ Kirigami.ApplicationWindow {
 
                                         Label {
                                             Layout.fillWidth: true
-                                            text: modelData.name
-                                            font.weight: voiceAgent.selectedTtsModel === modelData.name ? Font.DemiBold : Font.Normal
+                                            text: model.name
+                                            font.weight: voiceAgent.selectedTtsModel === model.name ? Font.DemiBold : Font.Normal
                                             wrapMode: Text.WordWrap
                                         }
 
                                         Label {
                                             Layout.fillWidth: true
-                                            text: root.modelStatusSummary(modelData)
+                                            text: root.modelStatusSummary(model)
                                             color: Kirigami.Theme.disabledTextColor
                                             wrapMode: Text.WordWrap
                                         }
@@ -413,23 +439,40 @@ Kirigami.ApplicationWindow {
                                         spacing: Kirigami.Units.smallSpacing
 
                                         ToolButton {
-                                            visible: modelData.installed
-                                            text: voiceAgent.selectedTtsModel === modelData.name ? "Current" : "Use"
-                                            enabled: voiceAgent.selectedTtsModel !== modelData.name
-                                            onClicked: voiceAgent.selectTtsModel(modelData.name)
+                                            visible: model.installed
+                                            text: voiceAgent.selectedTtsModel === model.name ? "Current" : "Use"
+                                            enabled: voiceAgent.selectedTtsModel !== model.name
+                                            onClicked: voiceAgent.selectTtsModel(model.name)
                                         }
 
                                         ToolButton {
-                                            text: root.modelActionLabel(modelData)
-                                            enabled: !voiceAgent.ttsLoading
+                                            text: ttsDelegate.downloading ? "Installing…" : root.modelActionLabel(model)
+                                            enabled: !ttsDelegate.downloading
                                             onClicked: {
-                                                if (modelData.installed) {
-                                                    voiceAgent.deleteTtsModel(modelData.name);
+                                                if (model.installed) {
+                                                    voiceAgent.deleteTtsModel(model.name);
                                                 } else {
-                                                    voiceAgent.installTtsModel(modelData.name);
+                                                    voiceAgent.installTtsModel(model.name);
                                                 }
                                             }
                                         }
+                                    }
+                                }
+
+                                Rectangle {
+                                    id: ttsProgressTrack
+                                    visible: ttsDelegate.downloading
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    height: 2
+                                    color: Kirigami.Theme.alternateBackgroundColor
+                                    Rectangle {
+                                        anchors.left: parent.left
+                                        anchors.top: parent.top
+                                        anchors.bottom: parent.bottom
+                                        width: parent.width * ttsDelegate.downloadProgress
+                                        color: Kirigami.Theme.highlightColor
                                     }
                                 }
                             }
@@ -543,12 +586,19 @@ Kirigami.ApplicationWindow {
                             Button {
                                 anchors.fill: parent
                                 anchors.margins: 0
-                                text: "\ud83c\udf99\ufe0f"
                                 enabled: voiceAgent.talkReady
-                                font.pixelSize: 38
                                 scale: mediumMicButtonFrame.glowScale
                                 opacity: root.micPulseActive ? 1 : 0.92
                                 onClicked: voiceAgent.setVoiceConnectionEnabled(!voiceAgent.voiceConnectionEnabled)
+
+                                display: AbstractButton.TextUnderIcon
+                                text: voiceAgent.micStatusLabel
+                                font.pixelSize: 11
+                                icon.name: "audio-input-microphone"
+                                icon.width: 34
+                                icon.height: 34
+                                icon.color: "white"
+                                palette.buttonText: "white"
 
                                 background: Rectangle {
                                     radius: height / 2
@@ -708,26 +758,113 @@ Kirigami.ApplicationWindow {
                     }
                 }
 
-                ListView {
-                    id: conversationView
+                Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    clip: true
-                    spacing: Kirigami.Units.smallSpacing
-                    model: voiceAgent.conversationMessages
+
+                    ListView {
+                        id: conversationView
+                        anchors.fill: parent
+                        clip: true
+                        spacing: Kirigami.Units.smallSpacing
+                        model: voiceAgent.conversationModel
+                        boundsBehavior: Flickable.StopAtBounds
+                        flickDeceleration: 1800
+                        maximumFlickVelocity: 24000
+                        ScrollBar.vertical: ScrollBar {}
+
+                        // The model is stable; only rows mutate. Keep scrolling deterministic:
+                        // stick to the true bottom until the user intentionally leaves it.
+                        property bool stickToBottom: true
+                        property bool adjustingScroll: false
+                        readonly property real bottomEpsilon: 3
+
+                        function bottomContentY() {
+                            return originY + Math.max(0, contentHeight - height);
+                        }
+
+                        function isAtBottom() {
+                            return contentY >= bottomContentY() - bottomEpsilon;
+                        }
+
+                        function forceBottom() {
+                            adjustingScroll = true;
+                            contentY = bottomContentY();
+                            adjustingScroll = false;
+                        }
+
+                        function scheduleBottomStick() {
+                            if (!stickToBottom) {
+                                return;
+                            }
+                            forceBottom();
+                            bottomStickTimer.restart();
+                        }
+
+                        function scrollToBottom() {
+                            stickToBottom = true;
+                            scheduleBottomStick();
+                        }
+
+                        function updateStickinessFromPosition() {
+                            if (!adjustingScroll) {
+                                stickToBottom = isAtBottom();
+                            }
+                        }
+
+                        onCountChanged: scheduleBottomStick()
+                        onContentHeightChanged: scheduleBottomStick()
+                        onHeightChanged: scheduleBottomStick()
+                        onWidthChanged: scheduleBottomStick()
+                        onContentYChanged: updateStickinessFromPosition()
+                        onMovementStarted: {
+                            if (!adjustingScroll) {
+                                stickToBottom = false;
+                            }
+                        }
+                        onMovementEnded: {
+                            if (!adjustingScroll) {
+                                stickToBottom = isAtBottom();
+                                scheduleBottomStick();
+                            }
+                        }
+
+                        Timer {
+                            id: bottomStickTimer
+                            interval: 0
+                            repeat: false
+                            onTriggered: {
+                                if (conversationView.stickToBottom) {
+                                    conversationView.forceBottom();
+                                }
+                            }
+                        }
+
+                        // MouseArea overlay captures wheel before the Flickable does.
+                        // acceptedButtons: Qt.NoButton lets mouse presses pass through to delegates.
+                        MouseArea {
+                            anchors.fill: parent
+                            acceptedButtons: Qt.NoButton
+                            propagateComposedEvents: true
+                            z: 2
+                            onWheel: function(wheel) {
+                                root.scrollList(conversationView, wheel);
+                                conversationView.updateStickinessFromPosition();
+                            }
+                        }
 
                     delegate: Item {
                         width: conversationView.width
-                        readonly property bool systemEntry: modelData.role === "system"
+                        readonly property bool systemEntry: model.messageRole === "system"
                         implicitHeight: systemEntry ? systemMessage.implicitHeight : messageRow.implicitHeight
 
-                        property bool assistant: modelData.role === "assistant"
-                        readonly property string bubbleState: modelData.bubbleState || "sent"
-                        readonly property color bubbleColor: bubbleState === "thinking" || bubbleState === "draft"
+                        property bool assistant: model.messageRole === "assistant"
+                        readonly property string bubbleState: model.bubbleState || "sent"
+                        readonly property color bubbleColor: bubbleState === "draft"
                             ? "#ff5c8a"
                             : (assistant ? "#34c759" : "#4a4a4f")
                         readonly property color bubbleTextColor: "#ffffff"
-                        readonly property color systemTextColor: (modelData.level || "status") === "error"
+                        readonly property color systemTextColor: (model.level || "status") === "error"
                             ? Kirigami.Theme.negativeTextColor
                             : Kirigami.Theme.disabledTextColor
                         readonly property real maxBubbleWidth: Math.min(
@@ -739,7 +876,7 @@ Kirigami.ApplicationWindow {
                             id: systemMessage
                             visible: parent.systemEntry
                             width: parent.width
-                            text: (modelData.timestampLabel || "") + ((modelData.timestampLabel || "") ? "  " : "") + root.bubbleText(modelData.text)
+                            text: (model.timestampLabel || "") + ((model.timestampLabel || "") ? "  " : "") + root.bubbleText(model.text)
                             wrapMode: Text.WordWrap
                             color: parent.systemTextColor
                             textFormat: Text.PlainText
@@ -756,7 +893,7 @@ Kirigami.ApplicationWindow {
                             layoutDirection: assistant ? Qt.LeftToRight : Qt.RightToLeft
 
                             Frame {
-                                Layout.preferredWidth: maxBubbleWidth
+                                Layout.fillWidth: true
                                 Layout.maximumWidth: maxBubbleWidth
 
                                 background: Rectangle {
@@ -778,16 +915,16 @@ Kirigami.ApplicationWindow {
 
                                     Label {
                                         Layout.fillWidth: true
-                                        text: root.bubbleText(modelData.text)
+                                        text: root.bubbleText(model.text)
                                         wrapMode: Text.WordWrap
                                         color: bubbleTextColor
                                         textFormat: Text.PlainText
                                     }
 
                                     Label {
-                                        visible: !!(modelData.timestampLabel || "")
+                                        visible: !!(model.timestampLabel || "")
                                         Layout.fillWidth: true
-                                        text: modelData.timestampLabel || ""
+                                        text: model.timestampLabel || ""
                                         color: Qt.rgba(1, 1, 1, 0.72)
                                         font.pixelSize: 10
                                         horizontalAlignment: Text.AlignLeft
@@ -796,7 +933,7 @@ Kirigami.ApplicationWindow {
                             }
 
                             Button {
-                                visible: !root.compactMode && modelData.replayable
+                                visible: !root.compactMode && model.replayable
                                 text: "Replay"
                                 Layout.alignment: Qt.AlignBottom
                                 onClicked: voiceAgent.replayMessage(index)
@@ -804,10 +941,44 @@ Kirigami.ApplicationWindow {
                         }
                     }
 
-                    footer: Kirigami.PlaceholderMessage {
-                        width: conversationView.width
-                        visible: voiceAgent.conversationMessages.length === 0
-                        text: "Spoken turns will appear here once voice mode is active."
+                        footer: Kirigami.PlaceholderMessage {
+                            width: conversationView.width
+                            visible: conversationView.count === 0
+                            text: "Spoken turns will appear here once voice mode is active."
+                        }
+                    }
+
+                    Button {
+                        id: scrollToBottomButton
+                        visible: conversationView.contentHeight > conversationView.height && !conversationView.isAtBottom()
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.rightMargin: Kirigami.Units.largeSpacing
+                        anchors.bottomMargin: Kirigami.Units.largeSpacing
+                        text: "↓"
+                        font.pixelSize: 16
+                        padding: Kirigami.Units.smallSpacing
+                        width: Kirigami.Units.gridUnit * 2
+                        height: Kirigami.Units.gridUnit * 2
+                        opacity: 0.85
+                        z: 10
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Scroll to bottom"
+                        onClicked: {
+                            conversationView.scrollToBottom();
+                        }
+                        background: Rectangle {
+                            radius: height / 2
+                            color: Kirigami.Theme.highlightColor
+                            border.width: 1
+                            border.color: Qt.rgba(0, 0, 0, 0.3)
+                        }
+                        contentItem: Label {
+                            text: scrollToBottomButton.text
+                            color: Kirigami.Theme.highlightedTextColor
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
                     }
                 }
 
@@ -815,10 +986,18 @@ Kirigami.ApplicationWindow {
                     visible: root.compactMode
                     Layout.fillWidth: true
                     Layout.preferredHeight: Kirigami.Units.gridUnit * 5
-                    text: "\ud83c\udf99\ufe0f"
                     enabled: voiceAgent.talkReady
-                    font.pixelSize: 32
                     onClicked: voiceAgent.setVoiceConnectionEnabled(!voiceAgent.voiceConnectionEnabled)
+
+                    display: AbstractButton.TextUnderIcon
+                    text: voiceAgent.micStatusLabel
+                    font.pixelSize: 13
+                    icon.name: "audio-input-microphone"
+                    icon.width: 30
+                    icon.height: 30
+                    icon.color: "white"
+                    palette.buttonText: "white"
+
                     background: Rectangle {
                         radius: height / 2
                         color: root.micButtonColor
@@ -885,20 +1064,27 @@ Kirigami.ApplicationWindow {
                     Button {
                         anchors.fill: parent
                         anchors.margins: 0
-                        text: "\ud83c\udf99\ufe0f"
                         enabled: voiceAgent.talkReady
-                        font.pixelSize: 34
-                    scale: largeMicButtonFrame.glowScale
-                    opacity: root.micPulseActive ? 1 : 0.92
-                    onClicked: voiceAgent.setVoiceConnectionEnabled(!voiceAgent.voiceConnectionEnabled)
+                        scale: largeMicButtonFrame.glowScale
+                        opacity: root.micPulseActive ? 1 : 0.92
+                        onClicked: voiceAgent.setVoiceConnectionEnabled(!voiceAgent.voiceConnectionEnabled)
 
-                    background: Rectangle {
-                        radius: height / 2
-                        color: root.micButtonColor
-                        border.width: 3
-                        border.color: Qt.rgba(root.micPulseColor.r, root.micPulseColor.g, root.micPulseColor.b, Math.max(0.7, largeMicButtonFrame.glowOpacity))
+                        display: AbstractButton.TextUnderIcon
+                        text: voiceAgent.micStatusLabel
+                        font.pixelSize: 12
+                        icon.name: "audio-input-microphone"
+                        icon.width: 32
+                        icon.height: 32
+                        icon.color: "white"
+                        palette.buttonText: "white"
+
+                        background: Rectangle {
+                            radius: height / 2
+                            color: root.micButtonColor
+                            border.width: 3
+                            border.color: Qt.rgba(root.micPulseColor.r, root.micPulseColor.g, root.micPulseColor.b, Math.max(0.7, largeMicButtonFrame.glowOpacity))
+                        }
                     }
-                }
             }
         }
     }

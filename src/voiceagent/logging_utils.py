@@ -4,7 +4,22 @@ from logging.handlers import RotatingFileHandler
 import logging
 from pathlib import Path
 
+from PySide6.QtCore import QtMsgType, qInstallMessageHandler
+
 from voiceagent.paths import default_log_dir
+
+
+_QT_LEVEL_MAP = {
+    QtMsgType.QtDebugMsg: logging.INFO,  # QML console.log arrives as QtDebugMsg
+    QtMsgType.QtInfoMsg: logging.INFO,
+    QtMsgType.QtWarningMsg: logging.WARNING,
+    QtMsgType.QtCriticalMsg: logging.ERROR,
+    QtMsgType.QtFatalMsg: logging.CRITICAL,
+}
+
+
+def _qt_message_handler(mode, context, message):  # noqa: ANN001 - Qt signature
+    logging.getLogger("voiceagent.qml").log(_QT_LEVEL_MAP.get(mode, logging.INFO), message)
 
 
 def configure_logging() -> Path:
@@ -17,6 +32,8 @@ def configure_logging() -> Path:
         return log_path
 
     root_logger.setLevel(logging.INFO)
+
+    qInstallMessageHandler(_qt_message_handler)
 
     formatter = logging.Formatter(
         "%(asctime)s %(levelname)s [%(name)s] %(message)s",

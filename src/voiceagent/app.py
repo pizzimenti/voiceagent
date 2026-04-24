@@ -18,6 +18,7 @@ from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.services.audio import MicrophoneRecorder
 from voiceagent.services.chat import LmStudioClient
 from voiceagent.services.playback import AudioPlayer
+from voiceagent.single_instance import acquire_or_activate
 from voiceagent.tts_loader import TtsVoiceLoader
 from voiceagent.window import MainWindow
 
@@ -98,6 +99,10 @@ def main() -> int:
     app.setDesktopFileName("voiceagent")
     app.setOrganizationName("voiceagent")
     app.setWindowIcon(QIcon.fromTheme("audio-input-microphone"))
+    instance = acquire_or_activate()
+    if instance is None:
+        console.info("Another Voice Agent instance is already running; activating it.")
+        return 0
     config = AppConfig.from_env()
     configure_model_environment(config.stt_model_root, config.tts_model_root)
     logger.info("Configured log file path=%s", log_path)
@@ -106,6 +111,10 @@ def main() -> int:
     transcriber, tts_service, model_loader, tts_loader = build_shared_services(config)
     controller = build_controller(config, transcriber=transcriber, tts_service=tts_service)
     window = MainWindow(controller, model_loader, tts_loader)
+    instance.activated.connect(window.show)
+    # Release the lock file + QLocalServer deterministically on graceful shutdown,
+    # not via Python GC of `instance` (which SystemExit or hard interrupt can bypass).
+    app.aboutToQuit.connect(instance.release)
     window.show()
     console.info("Ready.")
     return app.exec()
