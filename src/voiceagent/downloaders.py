@@ -94,7 +94,7 @@ class AriaDownloader:
                 )
                 self._wait_for_rpc_bound(proc, rpc_port)
 
-            shutdown_sent = False
+            shutdown_sent_at: float | None = None
             try:
                 while proc.poll() is None:
                     progress = self._poll_progress(rpc_port, rpc_secret, total_bytes)
@@ -109,12 +109,23 @@ class AriaDownloader:
                     # further RPC calls. Send shutdown ourselves once everything is downloaded
                     # so proc.poll() will return non-None and we exit the loop.
                     if (
-                        not shutdown_sent
+                        shutdown_sent_at is None
                         and progress.total_bytes > 0
                         and progress.completed_bytes >= progress.total_bytes
                     ):
                         self._rpc_call(rpc_port, rpc_secret, "aria2.shutdown", [])
-                        shutdown_sent = True
+                        shutdown_sent_at = time.monotonic()
+                    elif (
+                        shutdown_sent_at is not None
+                        and time.monotonic() - shutdown_sent_at > 5
+                    ):
+                        # _rpc_call swallows errors and returns None, so a failed shutdown
+                        # RPC wouldn't surface. Break out after a grace period and let the
+                        # terminate/kill cascade in `finally` do its job.
+                        self._logger.warning(
+                            "aria2c did not exit 5s after shutdown RPC; forcing teardown"
+                        )
+                        break
                     time.sleep(0.2)
             finally:
                 try:

@@ -112,6 +112,9 @@ def main() -> int:
     controller = build_controller(config, transcriber=transcriber, tts_service=tts_service)
     window = MainWindow(controller, model_loader, tts_loader)
     instance.activated.connect(window.show)
+    # Release the lock file + QLocalServer deterministically on graceful shutdown,
+    # not via Python GC of `instance` (which SystemExit or hard interrupt can bypass).
+    app.aboutToQuit.connect(instance.release)
     window.show()
     console.info("Ready.")
     return app.exec()
