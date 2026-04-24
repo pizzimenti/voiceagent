@@ -55,7 +55,7 @@ The app assumes LM Studio's local server is already running.
 For a quick non-packaging smoke check of the desktop shell:
 
 ```bash
-./voiceagent-compiletest
+./voiceagent-compiletest.sh
 ```
 
 That verifies the key Python entrypoints compile and that the Kirigami QML window loads offscreen.
