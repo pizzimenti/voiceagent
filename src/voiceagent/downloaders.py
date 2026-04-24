@@ -128,6 +128,7 @@ class AriaDownloader:
                         break
                     time.sleep(0.2)
             finally:
+                stdout, stderr = "", ""
                 try:
                     stdout, stderr = proc.communicate(timeout=5)
                 except subprocess.TimeoutExpired:
