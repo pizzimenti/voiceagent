@@ -28,6 +28,12 @@ dependencies = [
   "piper-tts>=1.4,<2",
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest>=8",
+  "pytest-qt>=4",
+]
+
 [project.scripts]
 voiceagent = "voiceagent.__main__:main"
 
@@ -42,3 +48,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 voiceagent = ["qml/*.qml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"

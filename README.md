@@ -94,6 +94,14 @@ When additional STT or TTS backends are introduced, prefer this packaging policy
 - keep first-run setup limited to user data and downloadable models
 - keep backend imports behind adapter boundaries so large optional engines can still be introduced intentionally
 
+## Tests
+
+Run the test suite from the project venv:
+
+```bash
+./.venv/bin/python -m pytest -q tests/
+```
+
 ## AUR Release Checklist
 
 Before publishing or updating the AUR package:
