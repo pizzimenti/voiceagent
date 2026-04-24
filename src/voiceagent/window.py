@@ -5,7 +5,19 @@ from datetime import datetime
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Property, QSettings, Qt, QTimer, QUrl, QObject, Signal, Slot
+from PySide6.QtCore import (
+    QAbstractListModel,
+    QByteArray,
+    QModelIndex,
+    Property,
+    QSettings,
+    Qt,
+    QTimer,
+    QUrl,
+    QObject,
+    Signal,
+    Slot,
+)
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication
 
@@ -18,9 +30,172 @@ from voiceagent.services.playback import AudioPlayer
 from voiceagent.tts_loader import TtsVoiceLoader
 
 
+class ConversationModel(QAbstractListModel):
+    MessageRole = Qt.ItemDataRole.UserRole + 1
+    LevelRole = Qt.ItemDataRole.UserRole + 2
+    TextRole = Qt.ItemDataRole.UserRole + 3
+    ReplayableRole = Qt.ItemDataRole.UserRole + 4
+    BubbleStateRole = Qt.ItemDataRole.UserRole + 5
+    TurnPendingRole = Qt.ItemDataRole.UserRole + 6
+    TimestampLabelRole = Qt.ItemDataRole.UserRole + 7
+
+    _ROLE_NAMES = {
+        MessageRole: QByteArray(b"messageRole"),
+        LevelRole: QByteArray(b"level"),
+        TextRole: QByteArray(b"text"),
+        ReplayableRole: QByteArray(b"replayable"),
+        BubbleStateRole: QByteArray(b"bubbleState"),
+        TurnPendingRole: QByteArray(b"turnPending"),
+        TimestampLabelRole: QByteArray(b"timestampLabel"),
+    }
+    _ROLE_KEYS = {
+        MessageRole: "role",
+        LevelRole: "level",
+        TextRole: "text",
+        ReplayableRole: "replayable",
+        BubbleStateRole: "bubbleState",
+        TurnPendingRole: "turnPending",
+        TimestampLabelRole: "timestampLabel",
+    }
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._messages: list[dict[str, object]] = []
+
+    def rowCount(self, parent: QModelIndex | None = None) -> int:  # noqa: N802
+        if parent is not None and parent.isValid():
+            return 0
+        return len(self._messages)
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> object:
+        if not index.isValid() or index.row() < 0 or index.row() >= len(self._messages):
+            return None
+        if role == Qt.ItemDataRole.DisplayRole:
+            role = self.TextRole
+        key = self._ROLE_KEYS.get(role)
+        if key is None:
+            return None
+        return self._messages[index.row()].get(key)
+
+    def roleNames(self) -> dict[int, QByteArray]:  # noqa: N802
+        return self._ROLE_NAMES
+
+    def message(self, index: int) -> dict[str, object] | None:
+        if index < 0 or index >= len(self._messages):
+            return None
+        return self._messages[index]
+
+    def append_message(self, message: dict[str, object]) -> int:
+        index = len(self._messages)
+        self.beginInsertRows(QModelIndex(), index, index)
+        self._messages.append(message)
+        self.endInsertRows()
+        return index
+
+    def update_message(self, index: int, **updates: object) -> None:
+        if index < 0 or index >= len(self._messages):
+            return
+        message = self._messages[index]
+        changed_roles: list[int] = []
+        for key, value in updates.items():
+            if message.get(key) == value:
+                continue
+            message[key] = value
+            for role, role_key in self._ROLE_KEYS.items():
+                if role_key == key:
+                    changed_roles.append(role)
+                    break
+        if changed_roles:
+            model_index = self.index(index, 0)
+            self.dataChanged.emit(model_index, model_index, changed_roles)
+
+    def remove_message(self, index: int) -> None:
+        if index < 0 or index >= len(self._messages):
+            return
+        self.beginRemoveRows(QModelIndex(), index, index)
+        self._messages.pop(index)
+        self.endRemoveRows()
+
+    def find_message_index(
+        self,
+        role: str,
+        bubble_state: str | None = None,
+        turn_pending: bool | None = None,
+    ) -> int:
+        for index in range(len(self._messages) - 1, -1, -1):
+            message = self._messages[index]
+            if message.get("role") != role:
+                continue
+            if bubble_state is not None and message.get("bubbleState") != bubble_state:
+                continue
+            if turn_pending is not None and bool(message.get("turnPending")) != turn_pending:
+                continue
+            return index
+        return -1
+
+
+class CatalogModel(QAbstractListModel):
+    """Stable list of model names. Only the per-row `installed` flag ever changes."""
+
+    NameRole = Qt.ItemDataRole.UserRole + 1
+    InstalledRole = Qt.ItemDataRole.UserRole + 2
+
+    _ROLE_NAMES = {
+        NameRole: QByteArray(b"name"),
+        InstalledRole: QByteArray(b"installed"),
+    }
+
+    def __init__(self, names, is_installed, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._names: list[str] = list(names)
+        self._is_installed = is_installed
+
+    def rowCount(self, parent: QModelIndex | None = None) -> int:  # noqa: N802
+        if parent is not None and parent.isValid():
+            return 0
+        return len(self._names)
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> object:
+        if not index.isValid() or index.row() < 0 or index.row() >= len(self._names):
+            return None
+        if role == Qt.ItemDataRole.DisplayRole:
+            role = self.NameRole
+        name = self._names[index.row()]
+        if role == self.NameRole:
+            return name
+        if role == self.InstalledRole:
+            return bool(self._is_installed(name))
+        return None
+
+    def roleNames(self) -> dict[int, QByteArray]:  # noqa: N802
+        return self._ROLE_NAMES
+
+    def refresh_installed(self, model_name: str) -> None:
+        try:
+            row = self._names.index(model_name)
+        except ValueError:
+            return
+        idx = self.index(row, 0)
+        self.dataChanged.emit(idx, idx, [self.InstalledRole])
+
+    def refresh_all(self) -> None:
+        if not self._names:
+            return
+        self.dataChanged.emit(
+            self.index(0, 0),
+            self.index(len(self._names) - 1, 0),
+            [self.InstalledRole],
+        )
+
+
 class MainWindow(QObject):
     ui_changed = Signal()
+    progress_changed = Signal()
     conversation_changed = Signal()
+    # Per-row download visibility (active set membership). Fires only on start/end.
+    downloads_changed = Signal()
+    # Per-row download progress (fraction 0..1). Fires on every progress tick.
+    downloads_progress_changed = Signal()
     _llm_operation_finished = Signal(str, object)
 
     def __init__(
@@ -42,7 +217,7 @@ class MainWindow(QObject):
         self._stt_catalog = self.model_loader.transcriber.available_items()
         self._tts_catalog = self.tts_loader.tts_service.available_items()
         self._llm_models: list[str] = []
-        self._conversation_messages: list[dict[str, object]] = []
+        self._conversation_model = ConversationModel(self)
         self._error_message = ""
         self._status_message = "Ready"
         self._llm_server_connected = False
@@ -60,6 +235,19 @@ class MainWindow(QObject):
         self._tts_progress_value = 0.0
         self._tts_progress_indeterminate = False
         self._tts_progress_text = ""
+        # Per-model in-flight tracking for parallel installs and per-row progress bars.
+        self._stt_active_items: set[str] = set()
+        self._tts_active_items: set[str] = set()
+        self._stt_progress_by_item: dict[str, float] = {}
+        self._tts_progress_by_item: dict[str, float] = {}
+        # Incremental list models so per-row "installed" flips don't rebuild the whole
+        # ListView (which would reset contentY and jump to top).
+        self._stt_catalog_model = CatalogModel(
+            self._stt_catalog, lambda name: self._is_stt_downloaded(name), self
+        )
+        self._tts_catalog_model = CatalogModel(
+            self._tts_catalog, lambda name: self._is_tts_downloaded(name), self
+        )
 
         self.controller.status_changed.connect(self._set_status_message)
         self.controller.connection_changed.connect(self._handle_connection_changed)
@@ -75,6 +263,8 @@ class MainWindow(QObject):
         self.model_loader.loading_changed.connect(self._emit_ui_changed)
         self.model_loader.status_changed.connect(self._apply_model_status)
         self.model_loader.progress_changed.connect(self._apply_model_progress)
+        self.model_loader.item_loading_changed.connect(self._on_stt_item_loading_changed)
+        self.model_loader.item_progress_changed.connect(self._on_stt_item_progress_changed)
         self.model_loader.error_changed.connect(self._set_error_message)
         self.model_loader.selection_changed.connect(self._emit_ui_changed)
         self.model_loader.load_completed.connect(self._handle_inventory_change)
@@ -83,6 +273,8 @@ class MainWindow(QObject):
         self.tts_loader.loading_changed.connect(self._emit_ui_changed)
         self.tts_loader.status_changed.connect(self._apply_tts_status)
         self.tts_loader.progress_changed.connect(self._apply_tts_progress)
+        self.tts_loader.item_loading_changed.connect(self._on_tts_item_loading_changed)
+        self.tts_loader.item_progress_changed.connect(self._on_tts_item_progress_changed)
         self.tts_loader.error_changed.connect(self._set_error_message)
         self.tts_loader.selection_changed.connect(self._emit_ui_changed)
         self.tts_loader.load_completed.connect(self._handle_inventory_change)
@@ -166,6 +358,30 @@ class MainWindow(QObject):
     def ttsCatalog(self) -> list[dict[str, object]]:  # noqa: N802
         return [{"name": name, "installed": self._is_tts_downloaded(name)} for name in self._tts_catalog]
 
+    @Property(QObject, constant=True)
+    def sttCatalogModel(self) -> CatalogModel:  # noqa: N802
+        return self._stt_catalog_model
+
+    @Property(QObject, constant=True)
+    def ttsCatalogModel(self) -> CatalogModel:  # noqa: N802
+        return self._tts_catalog_model
+
+    @Property("QVariantList", notify=downloads_changed)
+    def sttDownloadingList(self) -> list[str]:  # noqa: N802
+        return sorted(self._stt_active_items)
+
+    @Property("QVariantList", notify=downloads_changed)
+    def ttsDownloadingList(self) -> list[str]:  # noqa: N802
+        return sorted(self._tts_active_items)
+
+    @Property("QVariantMap", notify=downloads_progress_changed)
+    def sttProgressMap(self) -> dict[str, float]:  # noqa: N802
+        return dict(self._stt_progress_by_item)
+
+    @Property("QVariantMap", notify=downloads_progress_changed)
+    def ttsProgressMap(self) -> dict[str, float]:  # noqa: N802
+        return dict(self._tts_progress_by_item)
+
     @Property(str, notify=ui_changed)
     def selectedSttModel(self) -> str:  # noqa: N802
         current = self.model_loader.selected_model
@@ -188,15 +404,15 @@ class MainWindow(QObject):
     def modelLoading(self) -> bool:  # noqa: N802
         return self.model_loader.is_loading
 
-    @Property(float, notify=ui_changed)
+    @Property(float, notify=progress_changed)
     def modelProgressValue(self) -> float:  # noqa: N802
         return self._model_progress_value
 
-    @Property(bool, notify=ui_changed)
+    @Property(bool, notify=progress_changed)
     def modelProgressIndeterminate(self) -> bool:  # noqa: N802
         return self._model_progress_indeterminate
 
-    @Property(str, notify=ui_changed)
+    @Property(str, notify=progress_changed)
     def modelProgressText(self) -> str:  # noqa: N802
         return self._model_progress_text
 
@@ -212,15 +428,15 @@ class MainWindow(QObject):
     def ttsLoading(self) -> bool:  # noqa: N802
         return self.tts_loader.is_loading
 
-    @Property(float, notify=ui_changed)
+    @Property(float, notify=progress_changed)
     def ttsProgressValue(self) -> float:  # noqa: N802
         return self._tts_progress_value
 
-    @Property(bool, notify=ui_changed)
+    @Property(bool, notify=progress_changed)
     def ttsProgressIndeterminate(self) -> bool:  # noqa: N802
         return self._tts_progress_indeterminate
 
-    @Property(str, notify=ui_changed)
+    @Property(str, notify=progress_changed)
     def ttsProgressText(self) -> str:  # noqa: N802
         return self._tts_progress_text
 
@@ -273,6 +489,41 @@ class MainWindow(QObject):
     def talkReady(self) -> bool:  # noqa: N802
         return bool(self.selectedSttModel and self.selectedTtsModel and self._llm_ready())
 
+    @Property(str, notify=ui_changed)
+    def micStatusLabel(self) -> str:  # noqa: N802
+        # Blocking conditions first, ordered from most-likely-to-resolve-first.
+        if self.model_loader.is_loading:
+            return "Loading speech model…"
+        if self.tts_loader.is_loading:
+            return "Loading voice…"
+        if not self.selectedSttModel:
+            return "No speech model"
+        if not self.selectedTtsModel:
+            return "No voice model"
+        if not self.controller.chat_client.base_url:
+            return "No LLM URL"
+        if self._llm_connection_busy and not self._llm_server_connected:
+            return "Connecting…"
+        if not self._llm_server_connected:
+            return "LLM disconnected"
+        if not self.controller.chat_client.model:
+            return "No model loaded"
+        # Ready to talk — reflect what the pipeline is doing.
+        if not self.voiceConnectionEnabled:
+            return "Ready — tap to talk"
+        state = self._state
+        if state == AppState.RECORDING.value:
+            return "Listening…"
+        if state == AppState.TRANSCRIBING.value:
+            return "Transcribing…"
+        if state == AppState.THINKING.value:
+            return "Thinking…"
+        if state == AppState.SYNTHESIZING.value:
+            return "Generating voice…"
+        if state == AppState.SPEAKING.value:
+            return "Speaking…"
+        return "Connected and listening"
+
     @Property(bool, notify=ui_changed)
     def voiceConnectionEnabled(self) -> bool:  # noqa: N802
         return self.controller.voice_connection_enabled
@@ -295,9 +546,13 @@ class MainWindow(QObject):
     def themeModeLabel(self) -> str:  # noqa: N802
         return {"auto": "Auto", "light": "Light", "dark": "Dark"}.get(self.themeMode, "Auto")
 
-    @Property("QVariantList", notify=conversation_changed)
-    def conversationMessages(self) -> list[dict[str, object]]:  # noqa: N802
-        return list(self._conversation_messages)
+    @Property(QObject, constant=True)
+    def conversationModel(self) -> ConversationModel:  # noqa: N802
+        return self._conversation_model
+
+    @Property(int, notify=conversation_changed)
+    def conversationMessageCount(self) -> int:  # noqa: N802
+        return self._conversation_model.rowCount()
 
     @Property(str, notify=ui_changed)
     def errorMessage(self) -> str:  # noqa: N802
@@ -444,9 +699,9 @@ class MainWindow(QObject):
 
     @Slot(int)
     def replayMessage(self, index: int) -> None:  # noqa: N802
-        if index < 0 or index >= len(self._conversation_messages):
+        message = self._conversation_model.message(index)
+        if message is None:
             return
-        message = self._conversation_messages[index]
         if message.get("role") != "assistant":
             return
         text = str(message.get("text", "")).strip()
@@ -492,12 +747,15 @@ class MainWindow(QObject):
             return
         pending_index = self._find_message_index(role="user", turn_pending=True)
         if pending_index >= 0:
-            self._conversation_messages[pending_index]["text"] = cleaned
-            self._conversation_messages[pending_index]["bubbleState"] = "sent"
-            self._conversation_messages[pending_index]["turnPending"] = False
-            self._conversation_messages[pending_index]["timestampLabel"] = f"Sent {self._clock_time()}"
+            self._conversation_model.update_message(
+                pending_index,
+                text=cleaned,
+                bubbleState="sent",
+                turnPending=False,
+                timestampLabel=f"Sent {self._clock_time()}",
+            )
         else:
-            self._conversation_messages.append(
+            self._conversation_model.append_message(
                 {
                     "role": "user",
                     "text": cleaned,
@@ -513,31 +771,23 @@ class MainWindow(QObject):
         cleaned = text.strip()
         if not cleaned:
             return
-        thinking_index = self._find_message_index(role="assistant", bubble_state="thinking")
-        if thinking_index >= 0:
-            self._conversation_messages[thinking_index]["text"] = cleaned
-            self._conversation_messages[thinking_index]["bubbleState"] = "sent"
-            self._conversation_messages[thinking_index]["replayable"] = True
-            self._conversation_messages[thinking_index]["turnPending"] = False
-            self._conversation_messages[thinking_index]["timestampLabel"] = f"Received {self._clock_time()}"
-        else:
-            self._conversation_messages.append(
-                {
-                    "role": "assistant",
-                    "text": cleaned,
-                    "replayable": True,
-                    "bubbleState": "sent",
-                    "turnPending": False,
-                    "timestampLabel": f"Received {self._clock_time()}",
-                }
-            )
+        self._conversation_model.append_message(
+            {
+                "role": "assistant",
+                "text": cleaned,
+                "replayable": True,
+                "bubbleState": "sent",
+                "turnPending": False,
+                "timestampLabel": f"Received {self._clock_time()}",
+            }
+        )
         self.conversation_changed.emit()
 
     def _append_log_message(self, text: str, level: str) -> None:
         cleaned = text.strip()
         if not cleaned:
             return
-        self._conversation_messages.append(
+        self._conversation_model.append_message(
             {
                 "role": "system",
                 "level": level,
@@ -578,7 +828,7 @@ class MainWindow(QObject):
         self._model_progress_value, self._model_progress_indeterminate, self._model_progress_text = self._format_progress(
             progress
         )
-        self.ui_changed.emit()
+        self.progress_changed.emit()
 
     def _apply_tts_status(self, status: str) -> None:
         if self.tts_loader.is_loading:
@@ -590,7 +840,43 @@ class MainWindow(QObject):
         self._tts_progress_value, self._tts_progress_indeterminate, self._tts_progress_text = self._format_progress(
             progress
         )
-        self.ui_changed.emit()
+        self.progress_changed.emit()
+
+    def _on_stt_item_loading_changed(self, model_name: str, is_loading: bool) -> None:
+        if is_loading:
+            self._stt_active_items.add(model_name)
+        else:
+            self._stt_active_items.discard(model_name)
+            self._stt_progress_by_item.pop(model_name, None)
+            # File may have just appeared/disappeared on disk; update only this row
+            # instead of invalidating the whole catalog.
+            self._stt_catalog_model.refresh_installed(model_name)
+        self.downloads_changed.emit()
+        self.downloads_progress_changed.emit()
+
+    def _on_stt_item_progress_changed(self, model_name: str, progress) -> None:
+        total = getattr(progress, "total_bytes", 0) or 0
+        completed = getattr(progress, "completed_bytes", 0) or 0
+        fraction = (completed / total) if total > 0 else 0.0
+        self._stt_progress_by_item[model_name] = max(0.0, min(1.0, fraction))
+        self.downloads_progress_changed.emit()
+
+    def _on_tts_item_loading_changed(self, model_name: str, is_loading: bool) -> None:
+        if is_loading:
+            self._tts_active_items.add(model_name)
+        else:
+            self._tts_active_items.discard(model_name)
+            self._tts_progress_by_item.pop(model_name, None)
+            self._tts_catalog_model.refresh_installed(model_name)
+        self.downloads_changed.emit()
+        self.downloads_progress_changed.emit()
+
+    def _on_tts_item_progress_changed(self, model_name: str, progress) -> None:
+        total = getattr(progress, "total_bytes", 0) or 0
+        completed = getattr(progress, "completed_bytes", 0) or 0
+        fraction = (completed / total) if total > 0 else 0.0
+        self._tts_progress_by_item[model_name] = max(0.0, min(1.0, fraction))
+        self.downloads_progress_changed.emit()
 
     def _apply_state(self, state: str) -> None:
         self._state = state
@@ -601,10 +887,6 @@ class MainWindow(QObject):
             AppState.SPEAKING.value,
         }:
             self._promote_live_user_message()
-        if state == AppState.THINKING.value:
-            self._ensure_assistant_thinking_message()
-        elif state in {AppState.RECORDING.value, AppState.IDLE.value}:
-            self._discard_assistant_thinking_message()
         self.ui_changed.emit()
 
     def _set_status_message(self, message: str) -> None:
@@ -615,7 +897,6 @@ class MainWindow(QObject):
     def _set_error_message(self, message: str) -> None:
         self._error_message = message
         if message:
-            self._discard_assistant_thinking_message()
             self._discard_draft_user_message()
             self._append_log_message(message, "error")
         self.ui_changed.emit()
@@ -833,14 +1114,15 @@ class MainWindow(QObject):
         cleaned = text.strip()
         draft_index = self._find_message_index(role="user", bubble_state="draft")
         if not cleaned:
-            if draft_index >= 0 and not bool(self._conversation_messages[draft_index].get("turnPending")):
-                self._conversation_messages.pop(draft_index)
+            draft_message = self._conversation_model.message(draft_index)
+            if draft_message is not None and not bool(draft_message.get("turnPending")):
+                self._conversation_model.remove_message(draft_index)
                 self.conversation_changed.emit()
             return
         if draft_index >= 0:
-            self._conversation_messages[draft_index]["text"] = cleaned
+            self._conversation_model.update_message(draft_index, text=cleaned)
         else:
-            self._conversation_messages.append(
+            self._conversation_model.append_message(
                 {
                     "role": "user",
                     "text": cleaned,
@@ -856,49 +1138,17 @@ class MainWindow(QObject):
         draft_index = self._find_message_index(role="user", bubble_state="draft")
         if draft_index < 0:
             return
-        self._conversation_messages[draft_index]["bubbleState"] = "sent"
-        self._conversation_messages[draft_index]["turnPending"] = True
-        self.conversation_changed.emit()
-
-    def _ensure_assistant_thinking_message(self) -> None:
-        if self._find_message_index(role="assistant", bubble_state="thinking") >= 0:
-            return
-        self._conversation_messages.append(
-            {
-                "role": "assistant",
-                "text": "Thinking...",
-                "replayable": False,
-                "bubbleState": "thinking",
-                "turnPending": True,
-                "timestampLabel": "",
-            }
-        )
-        self.conversation_changed.emit()
-
-    def _discard_assistant_thinking_message(self) -> None:
-        thinking_index = self._find_message_index(role="assistant", bubble_state="thinking")
-        if thinking_index < 0:
-            return
-        self._conversation_messages.pop(thinking_index)
+        self._conversation_model.update_message(draft_index, bubbleState="sent", turnPending=True)
         self.conversation_changed.emit()
 
     def _find_message_index(self, role: str, bubble_state: str | None = None, turn_pending: bool | None = None) -> int:
-        for index in range(len(self._conversation_messages) - 1, -1, -1):
-            message = self._conversation_messages[index]
-            if message.get("role") != role:
-                continue
-            if bubble_state is not None and message.get("bubbleState") != bubble_state:
-                continue
-            if turn_pending is not None and bool(message.get("turnPending")) != turn_pending:
-                continue
-            return index
-        return -1
+        return self._conversation_model.find_message_index(role, bubble_state, turn_pending)
 
     def _discard_draft_user_message(self) -> None:
         draft_index = self._find_message_index(role="user", bubble_state="draft")
         if draft_index < 0:
             return
-        self._conversation_messages.pop(draft_index)
+        self._conversation_model.remove_message(draft_index)
         self.conversation_changed.emit()
 
     def _clock_time(self) -> str:
