@@ -104,6 +104,7 @@ class AriaDownloader:
                 stderr=subprocess.PIPE,
                 text=True,
             )
+            shutdown_sent = False
             try:
                 while proc.poll() is None:
                     progress = self._poll_progress(rpc_port, rpc_secret, total_bytes)
@@ -114,9 +115,27 @@ class AriaDownloader:
                             download_speed_bytes_per_second=0,
                         )
                     progress_callback(progress)
+                    # aria2c with --enable-rpc keeps running after completion, waiting for
+                    # further RPC calls. Send shutdown ourselves once everything is downloaded
+                    # so proc.poll() will return non-None and we exit the loop.
+                    if (
+                        not shutdown_sent
+                        and progress.total_bytes > 0
+                        and progress.completed_bytes >= progress.total_bytes
+                    ):
+                        self._rpc_call(rpc_port, rpc_secret, "aria2.shutdown", [])
+                        shutdown_sent = True
                     time.sleep(0.2)
             finally:
-                stdout, stderr = proc.communicate()
+                try:
+                    stdout, stderr = proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.terminate()
+                    try:
+                        stdout, stderr = proc.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        stdout, stderr = proc.communicate()
 
             progress_callback(
                 DownloadProgress(
