@@ -6,9 +6,6 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QAbstractListModel,
-    QByteArray,
-    QModelIndex,
     Property,
     QSettings,
     Qt,
@@ -21,171 +18,15 @@ from PySide6.QtCore import (
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication
 
+from voiceagent.catalog_model import CatalogModel
 from voiceagent.controller import VoiceController
+from voiceagent.conversation_model import ConversationModel
 from voiceagent.downloaders import format_bytes, format_transfer_rate
 from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.models import AppState
 from voiceagent.services.chat import LmStudioClient
 from voiceagent.services.playback import AudioPlayer
 from voiceagent.tts_loader import TtsVoiceLoader
-
-
-class ConversationModel(QAbstractListModel):
-    MessageRole = Qt.ItemDataRole.UserRole + 1
-    LevelRole = Qt.ItemDataRole.UserRole + 2
-    TextRole = Qt.ItemDataRole.UserRole + 3
-    ReplayableRole = Qt.ItemDataRole.UserRole + 4
-    BubbleStateRole = Qt.ItemDataRole.UserRole + 5
-    TurnPendingRole = Qt.ItemDataRole.UserRole + 6
-    TimestampLabelRole = Qt.ItemDataRole.UserRole + 7
-
-    _ROLE_NAMES = {
-        MessageRole: QByteArray(b"messageRole"),
-        LevelRole: QByteArray(b"level"),
-        TextRole: QByteArray(b"text"),
-        ReplayableRole: QByteArray(b"replayable"),
-        BubbleStateRole: QByteArray(b"bubbleState"),
-        TurnPendingRole: QByteArray(b"turnPending"),
-        TimestampLabelRole: QByteArray(b"timestampLabel"),
-    }
-    _ROLE_KEYS = {
-        MessageRole: "role",
-        LevelRole: "level",
-        TextRole: "text",
-        ReplayableRole: "replayable",
-        BubbleStateRole: "bubbleState",
-        TurnPendingRole: "turnPending",
-        TimestampLabelRole: "timestampLabel",
-    }
-
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._messages: list[dict[str, object]] = []
-
-    def rowCount(self, parent: QModelIndex | None = None) -> int:  # noqa: N802
-        if parent is not None and parent.isValid():
-            return 0
-        return len(self._messages)
-
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> object:
-        if not index.isValid() or index.row() < 0 or index.row() >= len(self._messages):
-            return None
-        if role == Qt.ItemDataRole.DisplayRole:
-            role = self.TextRole
-        key = self._ROLE_KEYS.get(role)
-        if key is None:
-            return None
-        return self._messages[index.row()].get(key)
-
-    def roleNames(self) -> dict[int, QByteArray]:  # noqa: N802
-        return self._ROLE_NAMES
-
-    def message(self, index: int) -> dict[str, object] | None:
-        if index < 0 or index >= len(self._messages):
-            return None
-        return self._messages[index]
-
-    def append_message(self, message: dict[str, object]) -> int:
-        index = len(self._messages)
-        self.beginInsertRows(QModelIndex(), index, index)
-        self._messages.append(message)
-        self.endInsertRows()
-        return index
-
-    def update_message(self, index: int, **updates: object) -> None:
-        if index < 0 or index >= len(self._messages):
-            return
-        message = self._messages[index]
-        changed_roles: list[int] = []
-        for key, value in updates.items():
-            if message.get(key) == value:
-                continue
-            message[key] = value
-            for role, role_key in self._ROLE_KEYS.items():
-                if role_key == key:
-                    changed_roles.append(role)
-                    break
-        if changed_roles:
-            model_index = self.index(index, 0)
-            self.dataChanged.emit(model_index, model_index, changed_roles)
-
-    def remove_message(self, index: int) -> None:
-        if index < 0 or index >= len(self._messages):
-            return
-        self.beginRemoveRows(QModelIndex(), index, index)
-        self._messages.pop(index)
-        self.endRemoveRows()
-
-    def find_message_index(
-        self,
-        role: str,
-        bubble_state: str | None = None,
-        turn_pending: bool | None = None,
-    ) -> int:
-        for index in range(len(self._messages) - 1, -1, -1):
-            message = self._messages[index]
-            if message.get("role") != role:
-                continue
-            if bubble_state is not None and message.get("bubbleState") != bubble_state:
-                continue
-            if turn_pending is not None and bool(message.get("turnPending")) != turn_pending:
-                continue
-            return index
-        return -1
-
-
-class CatalogModel(QAbstractListModel):
-    """Stable list of model names. Only the per-row `installed` flag ever changes."""
-
-    NameRole = Qt.ItemDataRole.UserRole + 1
-    InstalledRole = Qt.ItemDataRole.UserRole + 2
-
-    _ROLE_NAMES = {
-        NameRole: QByteArray(b"name"),
-        InstalledRole: QByteArray(b"installed"),
-    }
-
-    def __init__(self, names, is_installed, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._names: list[str] = list(names)
-        self._is_installed = is_installed
-
-    def rowCount(self, parent: QModelIndex | None = None) -> int:  # noqa: N802
-        if parent is not None and parent.isValid():
-            return 0
-        return len(self._names)
-
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> object:
-        if not index.isValid() or index.row() < 0 or index.row() >= len(self._names):
-            return None
-        if role == Qt.ItemDataRole.DisplayRole:
-            role = self.NameRole
-        name = self._names[index.row()]
-        if role == self.NameRole:
-            return name
-        if role == self.InstalledRole:
-            return bool(self._is_installed(name))
-        return None
-
-    def roleNames(self) -> dict[int, QByteArray]:  # noqa: N802
-        return self._ROLE_NAMES
-
-    def refresh_installed(self, model_name: str) -> None:
-        try:
-            row = self._names.index(model_name)
-        except ValueError:
-            return
-        idx = self.index(row, 0)
-        self.dataChanged.emit(idx, idx, [self.InstalledRole])
-
-    def refresh_all(self) -> None:
-        if not self._names:
-            return
-        self.dataChanged.emit(
-            self.index(0, 0),
-            self.index(len(self._names) - 1, 0),
-            [self.InstalledRole],
-        )
 
 
 class MainWindow(QObject):
@@ -243,10 +84,10 @@ class MainWindow(QObject):
         # Incremental list models so per-row "installed" flips don't rebuild the whole
         # ListView (which would reset contentY and jump to top).
         self._stt_catalog_model = CatalogModel(
-            self._stt_catalog, lambda name: self._is_stt_downloaded(name), self
+            self._stt_catalog, self._is_stt_downloaded, self
         )
         self._tts_catalog_model = CatalogModel(
-            self._tts_catalog, lambda name: self._is_tts_downloaded(name), self
+            self._tts_catalog, self._is_tts_downloaded, self
         )
 
         self.controller.status_changed.connect(self._set_status_message)
