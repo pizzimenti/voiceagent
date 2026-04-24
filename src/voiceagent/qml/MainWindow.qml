@@ -290,7 +290,7 @@ Kirigami.ApplicationWindow {
                                 width: ListView.view ? ListView.view.width : 0
                                 visible: root.catalogMatches(model.name, modelManagerWindow.sttFilter)
                                 height: visible ? sttRow.implicitHeight + Kirigami.Units.mediumSpacing * 2 : 0
-                                readonly property bool downloading: voiceAgent.sttDownloadingList.indexOf(model.name) >= 0
+                                readonly property bool downloading: voiceAgent.sttProgressMap[model.name] !== undefined
                                 readonly property real downloadProgress: voiceAgent.sttProgressMap[model.name] || 0
 
                                 RowLayout {
@@ -405,7 +405,7 @@ Kirigami.ApplicationWindow {
                                 width: ListView.view ? ListView.view.width : 0
                                 visible: root.catalogMatches(model.name, modelManagerWindow.ttsFilter)
                                 height: visible ? ttsRow.implicitHeight + Kirigami.Units.mediumSpacing * 2 : 0
-                                readonly property bool downloading: voiceAgent.ttsDownloadingList.indexOf(model.name) >= 0
+                                readonly property bool downloading: voiceAgent.ttsProgressMap[model.name] !== undefined
                                 readonly property real downloadProgress: voiceAgent.ttsProgressMap[model.name] || 0
 
                                 RowLayout {
