@@ -54,9 +54,57 @@ qmllint \
 "${VENV_PYTHON}" -c '
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QAbstractListModel, QByteArray, QModelIndex, Property, QObject, QTimer, QUrl, Qt, Signal, Slot
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication
+
+class StubConversationModel(QAbstractListModel):
+    MessageRole = Qt.ItemDataRole.UserRole + 1
+    LevelRole = Qt.ItemDataRole.UserRole + 2
+    TextRole = Qt.ItemDataRole.UserRole + 3
+    ReplayableRole = Qt.ItemDataRole.UserRole + 4
+    BubbleStateRole = Qt.ItemDataRole.UserRole + 5
+    TurnPendingRole = Qt.ItemDataRole.UserRole + 6
+    TimestampLabelRole = Qt.ItemDataRole.UserRole + 7
+    _roles = {
+        MessageRole: QByteArray(b"messageRole"),
+        LevelRole: QByteArray(b"level"),
+        TextRole: QByteArray(b"text"),
+        ReplayableRole: QByteArray(b"replayable"),
+        BubbleStateRole: QByteArray(b"bubbleState"),
+        TurnPendingRole: QByteArray(b"turnPending"),
+        TimestampLabelRole: QByteArray(b"timestampLabel"),
+    }
+    _keys = {
+        MessageRole: "role",
+        LevelRole: "level",
+        TextRole: "text",
+        ReplayableRole: "replayable",
+        BubbleStateRole: "bubbleState",
+        TurnPendingRole: "turnPending",
+        TimestampLabelRole: "timestampLabel",
+    }
+
+    def __init__(self):
+        super().__init__()
+        self._messages = [
+            {"role": "user", "text": "Test input", "replayable": False, "bubbleState": "sent", "timestampLabel": "Sent 10:00"},
+            {"role": "assistant", "text": "Test response", "replayable": True, "bubbleState": "sent", "timestampLabel": "Received 10:00"},
+        ]
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self._messages)
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or index.row() < 0 or index.row() >= len(self._messages):
+            return None
+        if role == Qt.ItemDataRole.DisplayRole:
+            role = self.TextRole
+        key = self._keys.get(role)
+        return self._messages[index.row()].get(key) if key else None
+
+    def roleNames(self):
+        return self._roles
 
 class StubVoiceAgent(QObject):
     ui_changed = Signal()
@@ -165,6 +213,26 @@ class StubVoiceAgent(QObject):
     def talkReady(self):
         return True
 
+    @Property(str, notify=ui_changed)
+    def micStatusLabel(self):
+        return "Connected"
+
+    @Property("QVariantList", notify=ui_changed)
+    def sttDownloadingList(self):
+        return []
+
+    @Property("QVariantList", notify=ui_changed)
+    def ttsDownloadingList(self):
+        return []
+
+    @Property("QVariantMap", notify=ui_changed)
+    def sttProgressMap(self):
+        return {}
+
+    @Property("QVariantMap", notify=ui_changed)
+    def ttsProgressMap(self):
+        return {}
+
     @Property(bool, notify=ui_changed)
     def voiceConnectionEnabled(self):
         return False
@@ -185,12 +253,17 @@ class StubVoiceAgent(QObject):
     def themeModeLabel(self):
         return "Auto"
 
-    @Property("QVariantList", notify=conversation_changed)
-    def conversationMessages(self):
-        return [
-            {"role": "user", "text": "Test input", "replayable": False},
-            {"role": "assistant", "text": "Test response", "replayable": True},
-        ]
+    def __init__(self):
+        super().__init__()
+        self._conversation_model = StubConversationModel()
+
+    @Property(QObject, constant=True)
+    def conversationModel(self):
+        return self._conversation_model
+
+    @Property(int, notify=conversation_changed)
+    def conversationMessageCount(self):
+        return self._conversation_model.rowCount()
 
     @Property(str, notify=ui_changed)
     def errorMessage(self):
