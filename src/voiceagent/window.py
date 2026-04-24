@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import logging
 from pathlib import Path
+from typing import Callable
 
 from PySide6.QtCore import (
     Property,
@@ -316,37 +317,33 @@ class MainWindow(QObject):
 
     @Property(str, notify=ui_changed)
     def micStatusLabel(self) -> str:  # noqa: N802
-        # Blocking conditions first, ordered from most-likely-to-resolve-first.
-        if self.model_loader.is_loading:
-            return "Loading speech model…"
-        if self.tts_loader.is_loading:
-            return "Loading voice…"
-        if not self.selectedSttModel:
-            return "No speech model"
-        if not self.selectedTtsModel:
-            return "No voice model"
-        if not self.controller.chat_client.base_url:
-            return "No LLM URL"
-        if self._llm.connection_busy and not self._llm.server_connected:
-            return "Connecting…"
-        if not self._llm.server_connected:
-            return "LLM disconnected"
-        if not self.controller.chat_client.model:
-            return "No model loaded"
-        # Ready to talk — reflect what the pipeline is doing.
-        if not self.voiceConnectionEnabled:
-            return "Ready — tap to talk"
-        state = self._state
-        if state == AppState.RECORDING.value:
-            return "Listening…"
-        if state == AppState.TRANSCRIBING.value:
-            return "Transcribing…"
-        if state == AppState.THINKING.value:
-            return "Thinking…"
-        if state == AppState.SYNTHESIZING.value:
-            return "Generating voice…"
-        if state == AppState.SPEAKING.value:
-            return "Speaking…"
+        # Priority table: first matching predicate wins. Blocking conditions
+        # come first (ordered most-likely-to-resolve-first), then pipeline
+        # state. To add a new state, insert a (predicate, label) tuple at the
+        # appropriate priority — no need to walk an if/elif ladder.
+        rules: list[tuple[Callable[[], bool], str]] = [
+            (lambda: self.model_loader.is_loading, "Loading speech model…"),
+            (lambda: self.tts_loader.is_loading, "Loading voice…"),
+            (lambda: not self.selectedSttModel, "No speech model"),
+            (lambda: not self.selectedTtsModel, "No voice model"),
+            (lambda: not self.controller.chat_client.base_url, "No LLM URL"),
+            (
+                lambda: self._llm.connection_busy and not self._llm.server_connected,
+                "Connecting…",
+            ),
+            (lambda: not self._llm.server_connected, "LLM disconnected"),
+            (lambda: not self.controller.chat_client.model, "No model loaded"),
+            # Ready to talk — reflect what the pipeline is doing.
+            (lambda: not self.voiceConnectionEnabled, "Ready — tap to talk"),
+            (lambda: self._state == AppState.RECORDING.value, "Listening…"),
+            (lambda: self._state == AppState.TRANSCRIBING.value, "Transcribing…"),
+            (lambda: self._state == AppState.THINKING.value, "Thinking…"),
+            (lambda: self._state == AppState.SYNTHESIZING.value, "Generating voice…"),
+            (lambda: self._state == AppState.SPEAKING.value, "Speaking…"),
+        ]
+        for predicate, label in rules:
+            if predicate():
+                return label
         return "Connected and listening"
 
     @Property(bool, notify=ui_changed)
