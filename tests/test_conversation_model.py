@@ -126,3 +126,13 @@ def test_row_count_with_valid_parent_is_zero(model):
     model.append_message(_make_message("user", "hi"))
     parent = model.index(0, 0)
     assert model.rowCount(parent) == 0
+
+
+def test_message_returns_shallow_copy_not_internal_dict(model):
+    model.append_message(_make_message("user", "hi"))
+    snapshot = model.message(0)
+    assert snapshot is not None
+    snapshot["text"] = "MUTATED"
+    fresh = model.message(0)
+    assert fresh is not None
+    assert fresh["text"] == "hi"

@@ -62,7 +62,9 @@ class ConversationModel(QAbstractListModel):
     def message(self, index: int) -> dict[str, object] | None:
         if index < 0 or index >= len(self._messages):
             return None
-        return self._messages[index]
+        # Shallow copy: callers must go through update_message/remove_message
+        # to mutate. Values are primitives, so a shallow copy is sufficient.
+        return dict(self._messages[index])
 
     def append_message(self, message: dict[str, object]) -> int:
         index = len(self._messages)
