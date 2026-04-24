@@ -583,29 +583,17 @@ Kirigami.ApplicationWindow {
                                 }
                             }
 
-                            Button {
+                            MicButton {
                                 anchors.fill: parent
                                 anchors.margins: 0
-                                enabled: voiceAgent.talkReady
-                                scale: mediumMicButtonFrame.glowScale
-                                opacity: root.micPulseActive ? 1 : 0.92
-                                onClicked: voiceAgent.setVoiceConnectionEnabled(!voiceAgent.voiceConnectionEnabled)
-
-                                display: AbstractButton.TextUnderIcon
-                                text: voiceAgent.micStatusLabel
-                                font.pixelSize: 11
-                                icon.name: "audio-input-microphone"
-                                icon.width: 34
-                                icon.height: 34
-                                icon.color: "white"
-                                palette.buttonText: "white"
-
-                                background: Rectangle {
-                                    radius: height / 2
-                                    color: root.micButtonColor
-                                    border.width: 3
-                                    border.color: Qt.rgba(root.micPulseColor.r, root.micPulseColor.g, root.micPulseColor.b, Math.max(0.7, mediumMicButtonFrame.glowOpacity))
-                                }
+                                iconSize: 34
+                                fontPixel: 11
+                                borderWidth: 3
+                                glowOpacity: mediumMicButtonFrame.glowOpacity
+                                glowScaleSource: mediumMicButtonFrame.glowScale
+                                buttonColor: root.micButtonColor
+                                pulseColor: root.micPulseColor
+                                pulseActive: root.micPulseActive
                             }
                         }
 
@@ -982,28 +970,20 @@ Kirigami.ApplicationWindow {
                     }
                 }
 
-                Button {
+                MicButton {
                     visible: root.compactMode
                     Layout.fillWidth: true
                     Layout.preferredHeight: Kirigami.Units.gridUnit * 5
-                    enabled: voiceAgent.talkReady
-                    onClicked: voiceAgent.setVoiceConnectionEnabled(!voiceAgent.voiceConnectionEnabled)
-
-                    display: AbstractButton.TextUnderIcon
-                    text: voiceAgent.micStatusLabel
-                    font.pixelSize: 13
-                    icon.name: "audio-input-microphone"
-                    icon.width: 30
-                    icon.height: 30
-                    icon.color: "white"
-                    palette.buttonText: "white"
-
-                    background: Rectangle {
-                        radius: height / 2
-                        color: root.micButtonColor
-                        border.width: root.compactMode ? 3 : 0
-                        border.color: Qt.rgba(root.micPulseColor.r, root.micPulseColor.g, root.micPulseColor.b, 0.85)
-                    }
+                    iconSize: 30
+                    fontPixel: 13
+                    borderWidth: root.compactMode ? 3 : 0
+                    buttonColor: root.micButtonColor
+                    pulseColor: root.micPulseColor
+                    // No surrounding animation frame in compact mode; pin
+                    // glow inputs to a fixed, opaque-looking state.
+                    glowOpacity: 0.85
+                    glowScaleSource: 1.0
+                    pulseActive: true
                 }
             }
         }
@@ -1061,29 +1041,17 @@ Kirigami.ApplicationWindow {
                     }
                 }
 
-                    Button {
+                    MicButton {
                         anchors.fill: parent
                         anchors.margins: 0
-                        enabled: voiceAgent.talkReady
-                        scale: largeMicButtonFrame.glowScale
-                        opacity: root.micPulseActive ? 1 : 0.92
-                        onClicked: voiceAgent.setVoiceConnectionEnabled(!voiceAgent.voiceConnectionEnabled)
-
-                        display: AbstractButton.TextUnderIcon
-                        text: voiceAgent.micStatusLabel
-                        font.pixelSize: 12
-                        icon.name: "audio-input-microphone"
-                        icon.width: 32
-                        icon.height: 32
-                        icon.color: "white"
-                        palette.buttonText: "white"
-
-                        background: Rectangle {
-                            radius: height / 2
-                            color: root.micButtonColor
-                            border.width: 3
-                            border.color: Qt.rgba(root.micPulseColor.r, root.micPulseColor.g, root.micPulseColor.b, Math.max(0.7, largeMicButtonFrame.glowOpacity))
-                        }
+                        iconSize: 32
+                        fontPixel: 12
+                        borderWidth: 3
+                        glowOpacity: largeMicButtonFrame.glowOpacity
+                        glowScaleSource: largeMicButtonFrame.glowScale
+                        buttonColor: root.micButtonColor
+                        pulseColor: root.micPulseColor
+                        pulseActive: root.micPulseActive
                     }
             }
         }
