@@ -22,7 +22,7 @@ class DownloadFile:
     size_bytes: int
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class DownloadProgress:
     completed_bytes: int
     total_bytes: int
