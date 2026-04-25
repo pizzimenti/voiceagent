@@ -77,6 +77,15 @@ class MainWindow(QObject):
         # then starts a new turn) does not get its first marker
         # suppressed by the immediate-predecessor dedupe.
         self._last_logged_status_state: str | None = None
+        # Verbose-mode turn-anchoring: status rows must not appear before
+        # the user bubble for the current turn. If TRANSCRIBING/THINKING
+        # fires while no user bubble has been created yet (short turn
+        # without a partial transcript), queue the state and flush after
+        # the user bubble materializes via _sync_live_user_message or
+        # _append_user_message. Both reset on RECORDING/IDLE turn
+        # boundaries.
+        self._current_turn_user_bubble_present: bool = False
+        self._pending_status_log_states: list[str] = []
         self._llm = LlmController(self.controller.chat_client, self.settings, parent=self)
         self._shutting_down = False
         self._state = "idle"
@@ -618,6 +627,8 @@ class MainWindow(QObject):
                     "timestampLabel": f"Sent {self._clock_time()}",
                 }
             )
+        self._current_turn_user_bubble_present = True
+        self._flush_pending_status_log_entries()
         self.conversation_changed.emit()
 
     def _append_assistant_message(self, text: str) -> None:
@@ -750,22 +761,39 @@ class MainWindow(QObject):
         }:
             self._promote_live_user_message()
         if state in {AppState.RECORDING.value, AppState.IDLE.value}:
-            # Turn boundary — reset the verbose-log dedupe so the next
-            # turn's first phase marker fires even if it matches the
-            # state the previous turn ended on.
+            # Turn boundary — reset the verbose-log dedupe AND the
+            # user-bubble-anchor flag so a new turn starts clean.
             self._last_logged_status_state = None
+            self._current_turn_user_bubble_present = False
+            self._pending_status_log_states.clear()
         if self.logVerboseMode and state in _STATUS_LOG_LABELS:
             if state != self._last_logged_status_state:
-                self._conversation_model.append_message(
-                    {
-                        "role": "status",
-                        "text": _STATUS_LOG_LABELS[state],
-                        "stateName": state,
-                    }
-                )
                 self._last_logged_status_state = state
-                self.conversation_changed.emit()
+                if self._current_turn_user_bubble_present:
+                    self._append_status_log_entry(state)
+                else:
+                    # Defer until the user bubble materializes, so the
+                    # status row never lands before the user turn it
+                    # belongs to.
+                    self._pending_status_log_states.append(state)
         self.ui_changed.emit()
+
+    def _append_status_log_entry(self, state: str) -> None:
+        self._conversation_model.append_message(
+            {
+                "role": "status",
+                "text": _STATUS_LOG_LABELS[state],
+                "stateName": state,
+            }
+        )
+        self.conversation_changed.emit()
+
+    def _flush_pending_status_log_entries(self) -> None:
+        if not self._pending_status_log_states:
+            return
+        for state in self._pending_status_log_states:
+            self._append_status_log_entry(state)
+        self._pending_status_log_states.clear()
 
     def _set_status_message(self, message: str) -> None:
         # Status text drives the mic-button label only. Pipeline activity
@@ -863,6 +891,8 @@ class MainWindow(QObject):
                     "timestampLabel": "",
                 }
             )
+            self._current_turn_user_bubble_present = True
+            self._flush_pending_status_log_entries()
         self.conversation_changed.emit()
 
     def _promote_live_user_message(self) -> None:
