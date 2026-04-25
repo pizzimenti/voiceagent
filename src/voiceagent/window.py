@@ -556,7 +556,10 @@ class MainWindow(QObject):
             audio_path = self.tts_loader.tts_service.synthesize(text)
         except Exception as exc:
             self._logger.exception("Replay synthesis failed")
-            self._set_error_message(f"Replay failed: {exc}")
+            # Replay failures are unrelated to any active draft turn;
+            # don't let the error surface tear down a user bubble the
+            # user is currently dictating.
+            self._set_error_message(f"Replay failed: {exc}", discard_draft=False)
             return
         if audio_path is not None:
             self.replay_player.play_file(audio_path)
@@ -804,10 +807,16 @@ class MainWindow(QObject):
         self._status_message = message
         self.ui_changed.emit()
 
-    def _set_error_message(self, message: str) -> None:
+    def _set_error_message(self, message: str, *, discard_draft: bool = True) -> None:
+        # discard_draft defaults to True because most error sources
+        # (STT failure, transcription failure, connection drop) signal
+        # that the in-flight user turn is dead. Replay-of-prior-message
+        # failures are the exception — they're unrelated to the active
+        # turn — and pass discard_draft=False.
         self._error_message = message
         if message:
-            self._discard_draft_user_message()
+            if discard_draft:
+                self._discard_draft_user_message()
             self._append_log_message(message, "error")
         self.ui_changed.emit()
 
