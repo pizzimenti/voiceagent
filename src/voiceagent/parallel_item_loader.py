@@ -189,6 +189,11 @@ class ParallelItemLoader(QObject):
         self._active_items.add(name)
         self._progress_by_item[name] = _EMPTY_PROGRESS
         self.item_loading_changed.emit(name, True)
+        # Symmetric with download_item: emit the initial empty progress so
+        # window.py's slot populates {stt,tts}ProgressMap, keeping the QML
+        # delegate's "busy" predicate honest during deletes (which never
+        # produce real progress ticks).
+        self.item_progress_changed.emit(name, _EMPTY_PROGRESS)
         if was_idle:
             self.loading_changed.emit(True)
         self.error_changed.emit("")
