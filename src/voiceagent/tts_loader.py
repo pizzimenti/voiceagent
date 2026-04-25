@@ -64,7 +64,18 @@ class TtsVoiceLoader(ParallelItemLoader):
         # after the worker would always match the post-fetch list and
         # the change check would miss real additions.
         pre_refresh = list(self.tts_service.available_items())
-        future = self.executor.submit(self._refresh_catalog_worker)
+        try:
+            future = self.executor.submit(self._refresh_catalog_worker)
+        except RuntimeError:
+            # Executor has been shut down — typically because MainWindow.show()
+            # scheduled this via QTimer.singleShot(0, …) and shutdown ran
+            # before the timer fired. Reset the flag so a future re-init
+            # could still attempt a refresh.
+            self._catalog_refresh_scheduled = False
+            self._logger.debug(
+                "TTS catalog refresh skipped: executor already shut down"
+            )
+            return
         future.add_done_callback(
             lambda f, snapshot=pre_refresh: self._dispatch_catalog_refresh_result(
                 f, snapshot

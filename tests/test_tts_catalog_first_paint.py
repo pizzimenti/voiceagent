@@ -269,3 +269,25 @@ def test_refresh_catalog_async_no_emit_when_nothing_changed(tmp_path, monkeypatc
 
     assert received == []
     loader.shutdown()
+
+
+def test_refresh_catalog_async_after_shutdown_is_safe(tmp_path):
+    """Shutdown can land before a queued QTimer.singleShot(0, ...) fires.
+
+    `MainWindow.show()` schedules a 0 ms timer for `refresh_catalog_async`.
+    `MainWindow.shutdown()` tears down the loader executor before draining
+    posted events. If the timer's callback then runs, the unguarded
+    `executor.submit(...)` would raise RuntimeError. The handler must
+    swallow the post-shutdown case and reset its scheduled flag.
+    """
+    service = _make_service(tmp_path)
+    loader = TtsVoiceLoader(service)
+    loader.shutdown()
+
+    # Should not raise.
+    loader.refresh_catalog_async()
+
+    # Flag must reset so a subsequent (post-recovery) call could try again
+    # — this also documents that the early-return is the post-shutdown
+    # branch, not the already-scheduled branch.
+    assert loader._catalog_refresh_scheduled is False
