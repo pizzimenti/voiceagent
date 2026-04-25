@@ -70,6 +70,13 @@ class MainWindow(QObject):
         self._conversation_model = ConversationModel(self)
         self._error_message = ""
         self._status_message = "Ready"
+        # Tracks the most recent verbose-mode pipeline status state we
+        # logged. Reset on turn-boundary states (RECORDING, IDLE) so a
+        # new turn that re-enters the same first-phase state as the
+        # previous turn ended on (e.g., user cancelled mid-Transcribing
+        # then starts a new turn) does not get its first marker
+        # suppressed by the immediate-predecessor dedupe.
+        self._last_logged_status_state: str | None = None
         self._llm = LlmController(self.controller.chat_client, self.settings, parent=self)
         self._shutting_down = False
         self._state = "idle"
@@ -742,10 +749,13 @@ class MainWindow(QObject):
             AppState.SPEAKING.value,
         }:
             self._promote_live_user_message()
+        if state in {AppState.RECORDING.value, AppState.IDLE.value}:
+            # Turn boundary — reset the verbose-log dedupe so the next
+            # turn's first phase marker fires even if it matches the
+            # state the previous turn ended on.
+            self._last_logged_status_state = None
         if self.logVerboseMode and state in _STATUS_LOG_LABELS:
-            last_idx = self._conversation_model.rowCount() - 1
-            last = self._conversation_model.message(last_idx) if last_idx >= 0 else None
-            if not (last and last.get("role") == "status" and last.get("stateName") == state):
+            if state != self._last_logged_status_state:
                 self._conversation_model.append_message(
                     {
                         "role": "status",
@@ -753,6 +763,7 @@ class MainWindow(QObject):
                         "stateName": state,
                     }
                 )
+                self._last_logged_status_state = state
                 self.conversation_changed.emit()
         self.ui_changed.emit()
 

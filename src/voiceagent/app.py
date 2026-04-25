@@ -92,10 +92,9 @@ def _prewarm_sounddevice(logger: logging.Logger) -> None:
     The first import of sounddevice loads the PortAudio C library and
     can take 100-500 ms. If that cost is paid lazily inside
     MicrophoneRecorder.start(), it stretches the gap between mic
-    button click and visible UI response. We schedule this on the
-    event loop after window.show() so the QML window paints first and
-    the import cost overlaps with idle time rather than blocking
-    startup.
+    button click and visible UI response. We run this on a daemon
+    thread (see main()) so the import cost is genuinely off the main
+    Qt thread; the GUI keeps painting while PortAudio loads.
     """
     import time as _time
     started = _time.monotonic()

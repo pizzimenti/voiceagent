@@ -60,9 +60,8 @@ on the click path.
   import.** `MicrophoneRecorder.start()` lazy-imported `sounddevice`
   on first call, loading the PortAudio C library on the main Qt
   thread between the click and the next paint (100-500 ms). The
-  import is now pre-warmed after `window.show()` via
-  `QTimer.singleShot(0, ...)` so first paint runs first and the
-  import cost overlaps with idle time.
+  import is now pre-warmed after `window.show()` on a daemon thread,
+  so the GUI keeps painting while PortAudio loads.
 - **Simple log mode actually hides pipeline activity.**
   `_set_status_message` previously appended every controller status
   transition to the conversation log as a `role="system"` row,
