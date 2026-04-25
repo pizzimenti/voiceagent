@@ -29,6 +29,18 @@ from voiceagent.services.playback import AudioPlayer
 from voiceagent.tts_loader import TtsVoiceLoader
 
 
+# Pipeline states surfaced into the verbose conversation log.
+# Labels mirror the micStatusLabel vocabulary so the mic indicator
+# and the log read identically. RECORDING is intentionally omitted
+# because the draft user bubble already signals "listening".
+_STATUS_LOG_LABELS: dict[str, str] = {
+    AppState.TRANSCRIBING.value: "Transcribing…",
+    AppState.THINKING.value: "Thinking…",
+    AppState.SYNTHESIZING.value: "Generating voice…",
+    AppState.SPEAKING.value: "Speaking…",
+}
+
+
 class MainWindow(QObject):
     ui_changed = Signal()
     progress_changed = Signal()
@@ -375,6 +387,10 @@ class MainWindow(QObject):
     def themeModeLabel(self) -> str:  # noqa: N802
         return {"auto": "Auto", "light": "Light", "dark": "Dark"}.get(self.themeMode, "Auto")
 
+    @Property(bool, notify=ui_changed)
+    def logVerboseMode(self) -> bool:  # noqa: N802
+        return self.settings.value("log_verbose_mode", False, bool)
+
     @Property(QObject, constant=True)
     def conversationModel(self) -> ConversationModel:  # noqa: N802
         return self._conversation_model
@@ -480,6 +496,13 @@ class MainWindow(QObject):
     def setAudioMuted(self, enabled: bool) -> None:  # noqa: N802
         self.settings.setValue("audio_output_muted", enabled)
         self._apply_audio_mute_state(enabled)
+
+    @Slot(bool)
+    def setLogVerboseMode(self, enabled: bool) -> None:  # noqa: N802
+        if bool(enabled) == self.logVerboseMode:
+            return
+        self.settings.setValue("log_verbose_mode", bool(enabled))
+        self.ui_changed.emit()
 
     @Slot(str)
     def setThemeMode(self, mode: str) -> None:  # noqa: N802
@@ -703,6 +726,18 @@ class MainWindow(QObject):
             AppState.SPEAKING.value,
         }:
             self._promote_live_user_message()
+        if self.logVerboseMode and state in _STATUS_LOG_LABELS:
+            last_idx = self._conversation_model.rowCount() - 1
+            last = self._conversation_model.message(last_idx) if last_idx >= 0 else None
+            if not (last and last.get("role") == "status" and last.get("stateName") == state):
+                self._conversation_model.append_message(
+                    {
+                        "role": "status",
+                        "text": _STATUS_LOG_LABELS[state],
+                        "stateName": state,
+                    }
+                )
+                self.conversation_changed.emit()
         self.ui_changed.emit()
 
     def _set_status_message(self, message: str) -> None:
