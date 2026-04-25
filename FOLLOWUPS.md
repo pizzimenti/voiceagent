@@ -294,3 +294,84 @@ not user-visible.
   of the project's expected workflow. (Several CodeRabbit nitpicks
   reference Ruff rules that aren't being enforced locally because
   ruff isn't in the venv.)
+
+## Deferred from PR #7 round-2 review
+
+External round-2 review of PR #7 (the v0.4.0 ui-shaping branch)
+surfaced these architectural items. Each is its own cycle.
+
+- **`ConversationTurnCoordinator`.** A small object that owns the
+  draft → final → status row ordering for a conversation turn. Today
+  `_apply_state` only promotes an existing draft user bubble; if no
+  draft exists yet (the user finalized via VAD silence rather than a
+  click), pipeline status rows can land before the final user bubble.
+  The coordinator would gate status appends on the user-bubble
+  finalization being settled.
+
+- **`ConversationLogController` as the only writer to
+  `ConversationModel`.** Today `window.py` writes to the model from
+  `_apply_state`, `_set_status_message` (just unwound in this PR),
+  `_set_error_message`, `_apply_model_status`, `_apply_tts_status`,
+  `_on_llm_status_message`, `_append_user_message`, and
+  `_append_assistant_message`. Centralizing through a controller
+  would make simple/verbose mode policy testable in isolation and
+  remove the risk of the next caller re-introducing the same
+  duplicate-append regression we just fixed.
+
+- **Custom STT path support in `CatalogModel`.** Backend already
+  supports `WHISPER_MODEL=/path/to/model`, but
+  `WhisperTranscriber.available_items()`
+  (`src/voiceagent/services/stt.py:60`) only lists managed names, so
+  the UI catalog and `selectedSttModel`
+  (`src/voiceagent/window.py:243`, `:553`) cannot select a direct
+  custom path. The path either looks unavailable or gets silently
+  replaced by a fallback.
+
+- **`CatalogModel` role extension.** Add `installed`, `loading`,
+  `progress`, `downloadable`, and `managed`/`custom` as proper Qt
+  roles. Removes the QML-side `QVariantMap`/`Array.indexOf` lookup
+  maps and lets the model invalidate per-row instead of rebuilding
+  full `QVariantList`s on every `ui_changed`.
+
+- **Extract QML components.** `MainWindow.qml` is ~800 lines and
+  `window.py` is ~860 lines. Pull `CatalogList.qml` (replaces the
+  duplicated STT/TTS catalog ListViews), `SessionSetupPane.qml`,
+  `MicButtonFrame.qml` (the inline pulsing-frame Item), and consider
+  a Kirigami dialog/page for model management. Kirigami's
+  `FormLayout` is the documented pattern for the settings/control
+  groups inside `sessionSetupGrid`.
+
+- **Tighten QML component dependencies.** `MicButton.qml` and
+  `ConversationPane.qml` rely on ambient `voiceAgent` and
+  `ApplicationWindow.window`. Pass them as `required property` so
+  the components are testable in isolation (and the compiletest stub
+  doesn't have to be kept in sync separately).
+
+- **MainWindow-level integration tests.** Cover simple-vs-verbose
+  transcript content per mode, draft-to-final user-bubble ordering
+  with and without a draft, replay error handling
+  (`replayMessage` raise paths), custom STT path selection, and the
+  connect spam-click guard below.
+
+- **Connect spam-click guard.** `MainWindow.qml:681` allows the
+  Connect action when `!llmServerConnected`, even if
+  `llmConnectionBusy` is `true`. Each click queues another refresh
+  via `_start_refresh()`
+  (`src/voiceagent/services/llm_controller.py:271`). Gate the QML
+  `enabled` on `!llmConnectionBusy` too.
+
+- **`replayMessage` defensive layer.** Round-2 added a try/except
+  and an `is_available()` readiness check; a deeper pass should
+  surface synthesis errors via a transient toast or status rather
+  than silently logging.
+
+- **Test fixture normalization.** Existing pytest run emits a
+  `QApplication is not an instance of qapp_cls` warning because some
+  tests use bare `QCoreApplication` while others need
+  `QApplication`. Pick `QApplication` in `tests/conftest.py` and
+  route every test through a shared fixture.
+
+- **Add `ruff` to the dev extra in `pyproject.toml`.** Several
+  CodeRabbit nitpicks reference Ruff rules (BLE001, FBT001, FBT003)
+  that aren't enforced locally because ruff isn't in the venv.
+  Decide whether linting is part of the project workflow.

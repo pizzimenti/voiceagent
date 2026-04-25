@@ -60,8 +60,25 @@ on the click path.
   import.** `MicrophoneRecorder.start()` lazy-imported `sounddevice`
   on first call, loading the PortAudio C library on the main Qt
   thread between the click and the next paint (100-500 ms). The
-  import is now pre-warmed during `app.main()` so the splash period
-  absorbs the cost.
+  import is now pre-warmed after `window.show()` via
+  `QTimer.singleShot(0, ...)` so first paint runs first and the
+  import cost overlaps with idle time.
+- **Simple log mode actually hides pipeline activity.**
+  `_set_status_message` previously appended every controller status
+  transition to the conversation log as a `role="system"` row,
+  bypassing the new `logVerboseMode` gate added by `_apply_state`.
+  Simple mode looked identical to verbose, and verbose mode rendered
+  duplicate rows for the same state. The status text still drives
+  the mic-button label; the conversation-log status path now flows
+  exclusively through `_apply_state`'s `role="status"` write, gated
+  by `logVerboseMode`.
+- **`replayMessage` no longer raises into QML.** The replay slot
+  now uses `tts_service.is_available` (which requires both `.onnx`
+  and `.onnx.json` for the selected voice, matching
+  `is_item_available`) instead of `tts_service.enabled` (which
+  passes for half-installed voices), and wraps the synthesize call
+  in `try/except` that surfaces failures via the existing error
+  channel.
 
 ### Documentation
 - `AGENTS.md` updated. Review-guideline line that listed three

@@ -47,8 +47,7 @@ export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
   "${ROOT_DIR}/src/voiceagent/controller.py"
 
 qmllint \
-  "${ROOT_DIR}/src/voiceagent/qml/MainWindow.qml" \
-  "${ROOT_DIR}/src/voiceagent/qml/WaveformMeter.qml"
+  "${ROOT_DIR}/src/voiceagent/qml/MainWindow.qml"
 
 "${VENV_PYTHON}" -c '
 from pathlib import Path

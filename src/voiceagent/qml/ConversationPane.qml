@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import org.kde.kirigami 2.20 as Kirigami
 
-// Conversation pane shown by every responsive layout (large/medium/compact).
+// Conversation pane shown by every responsive layout (medium/compact).
 // Hosts the rolling transcript ListView, scroll-to-bottom button, and the
 // compact-mode mic button. Loaded via Loader from MainWindow.qml.
 //

@@ -528,9 +528,20 @@ class MainWindow(QObject):
         if message.get("role") != "assistant":
             return
         text = str(message.get("text", "")).strip()
-        if not text or not self.tts_loader.tts_service.enabled:
+        if not text:
             return
-        audio_path = self.tts_loader.tts_service.synthesize(text)
+        # is_available checks both .onnx and .onnx.json exist for the
+        # selected voice (tighter than `enabled`, which only checks
+        # command + path). Without it, replay can call into a
+        # half-installed voice and raise into the QML binding.
+        if not self.tts_loader.tts_service.is_available:
+            return
+        try:
+            audio_path = self.tts_loader.tts_service.synthesize(text)
+        except Exception as exc:
+            self._logger.exception("Replay synthesis failed")
+            self._set_error_message(f"Replay failed: {exc}")
+            return
         if audio_path is not None:
             self.replay_player.play_file(audio_path)
 
@@ -746,8 +757,12 @@ class MainWindow(QObject):
         self.ui_changed.emit()
 
     def _set_status_message(self, message: str) -> None:
+        # Status text drives the mic-button label only. Pipeline activity
+        # routed through the conversation log goes via _apply_state's
+        # role="status" path, gated on logVerboseMode. Appending here
+        # would (a) defeat simple mode and (b) duplicate the role="status"
+        # row in verbose mode.
         self._status_message = message
-        self._append_log_message(message, "status")
         self.ui_changed.emit()
 
     def _set_error_message(self, message: str) -> None:

@@ -83,26 +83,6 @@ Kirigami.ApplicationWindow {
         return name.toLowerCase().indexOf(filterText.toLowerCase()) !== -1;
     }
 
-    function sessionReadinessText() {
-        const missing = [];
-        if (!voiceAgent.selectedSttModel) {
-            missing.push("an STT model");
-        }
-        if (!voiceAgent.selectedTtsModel) {
-            missing.push("a TTS voice");
-        }
-        if (!voiceAgent.currentLlmUrl) {
-            missing.push("an LLM URL");
-        }
-        if (!voiceAgent.selectedLlmModel) {
-            missing.push("a loaded LLM");
-        }
-        if (missing.length === 0) {
-            return "Everything is ready for voice mode.";
-        }
-        return "Still needed: " + missing.join(", ") + ".";
-    }
-
     function modelStatusSummary(item) {
         return item.installed ? "Installed" : "Available to download";
     }

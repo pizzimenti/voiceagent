@@ -2,8 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import org.kde.kirigami 2.20 as Kirigami
 
-// Reusable microphone toggle button used by the medium, compact, and large
-// mic panes. The animated glow frame (Item + SequentialAnimation) stays at
+// Reusable microphone toggle button used by the medium and compact mic
+// panes. The animated glow frame (Item + SequentialAnimation) stays at
 // the callsite because each pane references its own `*Mode` predicate; this
 // component takes the resulting glow opacity / scale as bindable inputs.
 Button {
