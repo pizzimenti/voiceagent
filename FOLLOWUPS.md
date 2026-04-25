@@ -226,10 +226,11 @@ surrounding code.
 
 ### From CodeRabbit
 
-- **`conversation_model.py:60`** — `roleNames()` returns the
-  class-level `_ROLE_NAMES` dict directly. PySide6 doesn't guarantee
-  Qt treats the returned dict as read-only. Defensive: return a copy
-  or wrap with `MappingProxyType`.
+- **`conversation_model.py:60`, `catalog_model.py:45`** —
+  `roleNames()` returns the class-level `_ROLE_NAMES` dict directly.
+  PySide6 doesn't guarantee Qt treats the returned dict as read-only.
+  Same pattern in both files; same fix — return a copy or wrap with
+  `MappingProxyType`.
 - **`conversation_model.py:91`** — `update_message` does an O(R)
   reverse lookup over `_ROLE_KEYS` per updated key. Inverse map at
   class build time removes the inner loop.
@@ -283,7 +284,20 @@ not user-visible.
 - Add MainWindow-level integration tests covering: conversation
   ordering across STT→LLM→TTS, draft-to-final user-bubble promotion,
   and the "thinking is status, not bubble" invariant from AGENTS.md.
+- Normalize tests to use `QApplication` consistently. Test runs
+  currently emit a Qt warning about `QCoreApplication` vs
+  `QApplication` because some tests instantiate the bare core app
+  while others (or QML-touching code under test) need the full GUI
+  application. Pick one (`QApplication`, since QML/widgets are in
+  scope) and route every test through a shared fixture.
 - Add `ruff` to a `dev` extra in `pyproject.toml` if linting is part
   of the project's expected workflow. (Several CodeRabbit nitpicks
   reference Ruff rules that aren't being enforced locally because
   ruff isn't in the venv.)
+- **`packaging/release-local.sh:1`** — Untracked working-tree script
+  that builds voiceagent and publishes into `bradley-local`.
+  Decide whether to commit it (with a short header section in
+  AGENTS.md or `packaging/README.md` explaining the
+  `bradley-local` repo assumption and the `pacman -Rns` migration
+  step) or add to `.gitignore` as a local-only convenience. Either
+  way, stop leaving it untracked.
