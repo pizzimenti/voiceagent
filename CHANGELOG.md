@@ -2,6 +2,91 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.3.2 — 2026-04-25
+
+**Concurrency and download-integrity release.** No new user-facing
+features. Five real bugs that could bite the running app, plus the
+verification layer that catches the corrupt-download mode that hit
+v0.3.1's build test.
+
+### Fixed
+- **First paint no longer blocks on the network.** The Piper
+  `voices.json` fetch (5 s timeout when the local cache is missing)
+  used to run synchronously in `MainWindow.__init__`. On a cold-cache
+  + offline launch the QML window wouldn't paint until that timeout
+  resolved. The catalog now starts with the union of installed +
+  configured + cached voices, lets QML paint, and refreshes
+  asynchronously after first paint via `QTimer.singleShot(0, …)`. A
+  catalog-changed signal makes the dropdown rebind when the network
+  result lands. Refresh failure (HTTP 503, offline, malformed
+  response) is non-fatal and logged.
+- **VoiceController state mutations from worker callbacks now route
+  through queued signals** so only the owner thread writes
+  `_active_pipeline_count` and `_partial_inflight`. Same class of
+  bug `ParallelItemLoader` fixed in v0.3.1, but in a different file.
+  AutoConnection (default) is used so same-thread emits run inline —
+  important because `Future.add_done_callback` invokes its callback
+  synchronously on the caller's thread when the future is already
+  done at registration time, and an explicit `QueuedConnection` would
+  defer the count decrement until *after* the result-handler had
+  already read a stale count and skipped the resume/state-transition
+  logic.
+- **AudioPlayer is safe under back-to-back `play_file` calls.** Each
+  invocation now mints a fresh generation ID and per-worker
+  `threading.Event`. Stale workers exit cleanly, can't write into
+  the live playback's audio device, can't emit `playback_finished`
+  for the wrong path, and unlink only their own temp WAV (a stale
+  worker that didn't unlink its own file accumulated orphans on
+  rapid replay/supersede). Bounded 0.25 s join replaces the prior
+  1 s wait so the calling thread doesn't stall on a stuck worker.
+- **LlmController's `connection_busy` flag clears only on the live
+  refresh.** Previously the busy-clear ran *before* the
+  stale-discard check, so an earlier completion could clear busy
+  while a newer refresh was still in flight; the newer completion's
+  clear was a no-op. Symptom: a brief "connected, idle" UI flash
+  during rapid Connect-then-switch-URL sequences.
+- **Downloads are verified before the loader marks them ready.** A
+  partial Piper voice download in v0.3.1's build test left an
+  `.onnx` plus a `.aria2` aria2 control sidecar on disk; the loader
+  emitted `load_completed`, the user selected the voice, and first
+  TTS attempt crashed with `onnxruntime InvalidProtobuf` →
+  `wave.Error: # channels not specified`. New `_verify_download(name)`
+  hook on `ParallelItemLoader` runs after `download_item` returns,
+  before `load_completed`. Base layer 1 walks
+  `backend.artifact_paths(name)` and rejects any artifact with a
+  surviving `.aria2` sidecar; verification failure deletes the
+  partial files and emits `load_failed` instead. Piper backend
+  overrides with a layer-4 smoke-load
+  (`onnxruntime.InferenceSession`) that catches the corrupt-bytes
+  case the sidecar check misses. Layer 4 fails closed if the
+  `onnxruntime` import itself is broken. Whisper backend uses base
+  layer 1 only (smoke-load is too slow for it). Whisper's
+  `artifact_paths` includes vocabulary candidates so partial vocab
+  downloads are also caught.
+- **`PiperTtsService.is_available` matches `is_item_available`** —
+  it now requires both `.onnx` and `.onnx.json` to exist for the
+  selected voice. Previously `is_available` reported True with only
+  `.onnx`, contradicting the predicate `is_item_available` used at
+  every other callsite.
+- **TTS catalog refresh recovers from transient failures.** The
+  `_catalog_refresh_scheduled` flag now resets on worker resolution
+  (success, exception, or no-op delta), so a one-time HTTP 503 on
+  first paint no longer locks out future re-fetches for the rest of
+  the session. The flag is now strictly a do-not-stack guard.
+- **`refresh_catalog_async` survives MainWindow shutdown.** A 0 ms
+  `QTimer.singleShot` posted by `MainWindow.show()` could fire after
+  `MainWindow.shutdown()` had torn down the loader executor, raising
+  `RuntimeError` on the unguarded `executor.submit`. Now caught and
+  logged at debug level.
+
+### Documentation
+- `FOLLOWUPS.md` curated to remove items that landed in this release;
+  remaining deferrals from PR #6 review (CodeRabbit nitpicks: empty
+  cleanup-subdir best-effort `rmdir`, `_verify_download` doc-clarity,
+  `voices.json` atomic-rename guard, ONNX `SessionOptions` perf tweak,
+  test-helper duplication, `_wait_for` test-flow improvement) are
+  now tracked in the deferred-review section.
+
 ## 0.3.1 — 2026-04-25
 
 **Internal cleanup release.** No new user-facing features. Substantial

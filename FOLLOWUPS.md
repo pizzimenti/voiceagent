@@ -1,119 +1,13 @@
 # Voice Agent — forward worklist
 
-Tracked, forward-looking worklist for VoiceAgent. This file replaces the
-PR #4 review tracker that lived here previously — every P2/P3 item from
-that tracker landed in PR #5 (the cleanup PR). What remains is split by
-priority. **Delete entries as they ship.**
+Tracked, forward-looking worklist for VoiceAgent. **Delete entries as
+they ship.**
 
-## Higher priority
-
-These are real bugs surfaced during PR #5 review, not in scope for that
-PR but worth tackling early in the next cycle.
-
-### P1 — TTS catalog fetch blocks first paint
-
-`src/voiceagent/window.py` builds the TTS catalog before QML loads, and
-`src/voiceagent/services/tts.py` (around line 279) fetches `voices.json`
-over the network with a 5 s timeout when the local cache is missing. On
-a cold launch with no cache, the QML window doesn't paint until that
-timeout resolves.
-
-**Fix shape:** start with whatever's already on disk (cached / installed
-/ configured), let QML paint, then refresh the catalog asynchronously
-and emit a catalog-changed signal when the network fetch lands. This
-also satisfies AGENTS.md's "keep network/model refreshes off the first
-paint path" rule.
-
-### P2 — VoiceController mutates owner-thread state from worker callbacks
-
-Same class of bug `ParallelItemLoader` just fixed in PR #5, but in a
-different file. `src/voiceagent/controller.py:190` mutates
-`_active_pipeline_count` from an executor callback;
-`src/voiceagent/controller.py:403` mutates `_partial_inflight`
-similarly. Wrap both in the queued-signal bridge pattern that
-`LlmController` (also landed in PR #5) already uses: an internal
-`Signal` connected with `Qt.QueuedConnection`, sole writer on the
-owner thread.
-
-### P2 — AudioPlayer can race old/new playback
-
-`src/voiceagent/services/playback.py:47` stops then reuses one
-`_stop_event` between playbacks; `:93` only joins for 1 s. A slow
-worker from a prior playback can overlap a new one or emit stale
-`finished` signals that confuse the controller.
-
-**Fix shape:** per-playback generation IDs and per-worker stop events.
-Each `play_file` call mints a new generation; the old worker's
-`finished` signal handler checks generation before mutating state.
-
-### P2 — Verify model/voice downloads before marking ready
-
-Observed during the PR #5 build test: a partial Piper voice download
-left an `.onnx` on disk alongside an aria2 `.aria2` control sidecar.
-The loader emitted `load_completed`, the user selected the voice, and
-the first TTS attempt blew up at runtime with
-`onnxruntime InvalidProtobuf` → `wave.Error: # channels not specified`.
-
-The loader currently trusts whatever the backend's `download_item`
-returns. Add layered verification in the loader's success path,
-ordered cheap → expensive:
-
-1. **Reject `.aria2` leftovers.** If `<file>.aria2` exists next to the
-   target after `download_item` returns, the download did not finish.
-   Treat as failure; clean up partials before any retry. This alone
-   would have caught the observed bug.
-2. **Compare file size to manifest.** Piper voices ship a `voice.json`
-   sidecar; Whisper/CT2 models have a `config.json` and HF metadata.
-   Where an authoritative expected size is available, mismatch is a
-   hard fail.
-3. **SHA-256 verification** when the source publishes checksums (HF
-   model files have `sha256` in the LFS pointer; piper-tts repo has
-   hashes per voice). Compute on disk, compare, fail closed.
-4. **Smoke-load the artifact** before marking ready: for Piper,
-   `onnxruntime.InferenceSession(path)` in a try/except; for Whisper,
-   instantiating `WhisperModel(path)` briefly. Most expensive layer
-   but the most authoritative.
-
-Where to wire it in:
-
-- `src/voiceagent/parallel_item_loader.py` — add a `_verify_download(name)`
-  hook called between `download_item` returning and `load_completed`
-  being emitted. Default implementation runs layer 1 only.
-- `src/voiceagent/services/tts.py` (Piper backend) — override the hook
-  to add layers 2–4.
-- The Whisper backend — same.
-
-On verification failure: delete the partial files (model + `.aria2`),
-emit `load_failed(name, message)` with a useful message, and refresh
-the catalog row so the UI shows it as not installed.
-
-Tests:
-
-- Synthetic test in `tests/test_parallel_item_loader.py`: backend
-  stub's `download_item` "succeeds" but leaves a `.aria2` sidecar in
-  a tmpdir → loader emits `load_failed`, not `load_completed`.
-- Backend-level test for the smoke-load layer: write a 100-byte
-  garbage-bytes file to a tmpdir and confirm the verifier rejects it.
-
-### P2 — LlmController stale refresh prematurely clears `connection_busy`
-
-`src/voiceagent/services/llm_controller.py:332` calls
-`_set_connection_busy(False)` *before* the stale-refresh return at
-:333–336. With two rapid connect/refresh attempts, the earlier
-(stale) completion's `clear → False` emission lands while the newer
-refresh is still running, and the newer completion's clear is a
-no-op. UI sees a brief "connected, idle" state during the gap.
-
-**Fix shape:** gate the busy-clear on whether the resolving request
-ID is still the active one. Move the busy-clear into the same branch
-as the actual update (after the stale-discard return).
-
-### P3 — TTS `is_available` inconsistent with `is_item_available`
-
-`src/voiceagent/services/tts.py:40` reports `is_available=True` when
-only `.onnx` exists; `:79` correctly requires both `.onnx` and
-`.onnx.json`. Pairs naturally with the corrupt-download verification
-work above — fix both in one pass.
+The high-priority bug list that previously lived here — TTS first-paint
+blocking, VoiceController thread-safety, AudioPlayer race, LlmController
+stale-refresh ordering, download verification (layers 1 + 4), TTS
+`is_available` inconsistency — all landed in PR #6 (v0.3.2). What
+remains is feature-shaped work plus lower-severity review nits.
 
 ## Future feature work
 
@@ -146,17 +40,79 @@ Concrete shape:
 ### Implement true inertial scrolling
 
 `MainWindow.qml:83 scrollList()` currently does direct `contentY`
-assignment with bounds-checking. CHANGELOG previously claimed
-"inertial scrolling" — that claim was corrected in PR #5. Designing a
-real inertial implementation that preserves sticky-bottom behavior is
-non-trivial (per AGENTS.md, native `Flickable.flick()` can detach the
-sticky-bottom state machine). Worth scoping if user feedback asks for
-it.
+assignment with bounds-checking. CHANGELOG was corrected accordingly
+in PR #5. Designing a real inertial implementation that preserves
+sticky-bottom behavior is non-trivial (per AGENTS.md, native
+`Flickable.flick()` can detach the sticky-bottom state machine).
+Worth scoping if user feedback asks for it.
+
+### Download verification — layers 2 and 3
+
+PR #6 landed layer 1 (`.aria2` sidecar rejection) and layer 4
+(Piper smoke-load via `onnxruntime.InferenceSession`). The middle
+layers are still TODO:
+
+- **Layer 2 — file size vs manifest.** Piper voices have a
+  `voice.json` sidecar with expected size; HF model files have
+  `.json` metadata. Where authoritative size is available, mismatch
+  is a hard fail before the smoke-load even runs.
+- **Layer 3 — SHA-256 verification.** HF model files have `sha256` in
+  the LFS pointer; piper-tts repo has hashes per voice. Compute on
+  disk, compare, fail closed.
+
+Wire-in points: `ParallelItemLoader._verify_download` already exists
+as the layered hook; subclasses would extend it. Keep the cheap
+layers (1, 2) in the default impl and the expensive layers (3, 4) in
+backend overrides.
+
+## Deferred review findings (PR #6)
+
+CodeRabbit's first pass on PR #6 surfaced 11 inline comments; five
+landed in the PR itself (vocabulary in `artifact_paths`, fail-closed
+onnxruntime smoke-load, refresh-flag reset on worker error,
+flag-set ordering vs eager snapshot, Ruff E712). The rest are
+deferred:
+
+- **`parallel_item_loader.py:321`** — `_cleanup_failed_download`
+  unlinks each artifact path, but for nested-layout backends (like
+  Whisper, where artifacts live under
+  `<model_root>/<item_name>/`) the now-empty directory is left
+  behind. Best-effort `rmdir` on parents that became empty after
+  unlink. Not catastrophic — the next pass treats the directory as
+  empty — but cleaner.
+- **`parallel_item_loader.py:360`** — Documentation: clarify in a
+  comment near the `_verify_download` callsite that this hook is
+  *post-download*, not a generic readiness check. Subclass
+  overrides like Piper's smoke-load run a one-shot
+  `onnxruntime.InferenceSession` (~50–100 ms) and shouldn't be
+  invoked from any general "is this ready?" path.
+- **`services/tts.py:94`** — `_fetch_and_cache_voice_names` writes
+  `voices.json` directly via `cache_path.write_text(...)`. If the
+  process is killed mid-write, the cache can end up truncated and
+  the next `available_voice_names` call silently loses the entire
+  cached catalog (the JSON-parse fallback returns an empty set).
+  Tmp-write-then-rename for atomic replacement.
+- **`tts_loader.py:210`** — Optional perf tweak: pass a
+  pre-configured `onnxruntime.SessionOptions` with
+  `graph_optimization_level=ORT_DISABLE_ALL` to the smoke-load
+  `InferenceSession`. Verification only checks that the file
+  parses and produces a valid graph; full optimization isn't
+  needed and wastes 20–50 ms per voice install.
+- **`tests/test_tts_catalog_first_paint.py:132`** — Helper
+  duplication: `_FakeResponse` is redefined three times,
+  `_boom` twice. Hoist into a module-level fixture.
+- **`tests/test_tts_catalog_first_paint.py:232`** — `_wait_for(qtbot,
+  lambda: loader.catalog_refresh_scheduled, ...)` is essentially a
+  no-op because the flag is set synchronously before submit (the
+  `processEvents()` loop below is what actually drains the work).
+  Replace with a wait on a post-completion sentinel signal once
+  one is exposed.
 
 ## Deferred review findings (PR #5)
 
 Lower-severity items from the PR #5 review that were out of scope for
-that PR. Apply opportunistically when touching the surrounding code.
+that PR. Still valid; apply opportunistically when touching the
+surrounding code.
 
 ### From Codex
 
@@ -171,9 +127,6 @@ that PR. Apply opportunistically when touching the surrounding code.
   `WaveformMeter.qml`) directly — only via `MainWindow.qml`. Make the
   stub generation programmatic or at minimum add explicit qmllint
   invocations.
-- **Defer Piper remote voice-catalog refresh** until after QML first
-  paint — cached/installed/configured first, network fetch
-  asynchronous (overlaps with the P1 above).
 
 ### From CodeRabbit
 
@@ -222,8 +175,8 @@ that PR. Apply opportunistically when touching the surrounding code.
 
 ## Forward-looking refactors (not bugs)
 
-Lower-priority code-organization improvements that would have been
-nice to bundle into PR #5 but aren't load-bearing.
+Lower-priority code-organization improvements — not load-bearing,
+not user-visible.
 
 - Extract a reusable `qml/CatalogList.qml` to replace the duplicated
   STT/TTS catalog ListView delegates inside the Model Manager.
