@@ -294,10 +294,3 @@ not user-visible.
   of the project's expected workflow. (Several CodeRabbit nitpicks
   reference Ruff rules that aren't being enforced locally because
   ruff isn't in the venv.)
-- **`packaging/release-local.sh:1`** — Untracked working-tree script
-  that builds voiceagent and publishes into `bradley-local`.
-  Decide whether to commit it (with a short header section in
-  AGENTS.md or `packaging/README.md` explaining the
-  `bradley-local` repo assumption and the `pacman -Rns` migration
-  step) or add to `.gitignore` as a local-only convenience. Either
-  way, stop leaving it untracked.
