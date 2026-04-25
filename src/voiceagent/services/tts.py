@@ -98,13 +98,17 @@ class PiperTtsService(TextToSpeechBackend):
         if not model_path:
             return False
 
+        # Synthesis (`_get_voice`) loads `<resolved>.json` alongside the
+        # `.onnx`. Reporting "available" without that sidecar lets a
+        # bare `custom.onnx` masquerade as ready and crash on first
+        # synthesis. Require both files for every resolved branch.
         candidate = Path(model_path).expanduser()
         if candidate.exists():
-            return True
+            return Path(f"{candidate}.json").exists()
 
         local_candidate = model_root / model_path
         if local_candidate.exists():
-            return True
+            return Path(f"{local_candidate}.json").exists()
 
         onnx_candidate = model_root / f"{model_path}.onnx"
         json_candidate = model_root / f"{model_path}.onnx.json"

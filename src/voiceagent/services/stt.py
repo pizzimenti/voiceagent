@@ -75,6 +75,16 @@ class WhisperTranscriber(SpeechToTextBackend):
     def is_model_available(cls, model_root: Path, model_name: str) -> bool:
         model_path = Path(model_name).expanduser()
         if model_path.exists():
+            # Mirror the TTS sidecar-aware fix: a custom Whisper model
+            # path that points at a directory must contain the required
+            # faster-whisper artifacts before we report "available", or
+            # `WhisperModel(...)` will fail at load time and the user
+            # sees a healthy-looking voice that crashes on first use.
+            # A non-directory path (e.g. a packed model file) is left to
+            # faster-whisper's own validation — there is no canonical
+            # layout to assert against.
+            if model_path.is_dir():
+                return cls._directory_has_model_files(model_path)
             return True
 
         repo_id = cls.MODEL_REPOSITORIES.get(model_name)
@@ -82,6 +92,10 @@ class WhisperTranscriber(SpeechToTextBackend):
             return False
 
         local_dir = model_root / model_name
+        return cls._directory_has_model_files(local_dir)
+
+    @classmethod
+    def _directory_has_model_files(cls, local_dir: Path) -> bool:
         has_required_files = all(
             (local_dir / filename).exists() and (local_dir / filename).stat().st_size > 0
             for filename in cls.REQUIRED_MODEL_FILES
