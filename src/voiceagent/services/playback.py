@@ -340,6 +340,18 @@ class AudioPlayer(QObject):
                 self._set_recent_output(b"", 0)
                 self._cleanup_current_file_if(path)
                 self._paused = False
+            else:
+                # Stale worker: a newer play_file() has superseded us. The
+                # new generation owns `_current_file`, but `path` is the
+                # file *this* worker was playing — nobody else will unlink
+                # it, so we must. Touch nothing else (controller-visible
+                # state belongs to the live generation).
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    self._logger.exception(
+                        "Failed to unlink stale playback file path=%s", path
+                    )
             # Whether or not we were current, drop the reference to this
             # thread if it's still pointing at us, so `is_playing`
             # eventually reports False.

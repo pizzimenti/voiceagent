@@ -402,3 +402,60 @@ def test_stale_worker_does_not_clobber_current_file(qapp, tmp_path):
     # The strongest assertion we can make is that no exception was
     # raised and the player settled. If we got here, we're good.
     player.stop()
+
+
+def test_superseded_worker_unlinks_its_own_file(qapp, tmp_path):
+    """Regression for a leak introduced with the per-generation worker
+    refactor: a stale worker used to skip cleanup entirely, leaving its
+    temp WAV on disk. It must unlink the file it was playing (since
+    `_current_file` has moved on to the new generation, nobody else
+    will). Codex P2 round 2 on PR #6.
+    """
+
+    file_a = tmp_path / "stale.wav"
+    file_b = tmp_path / "live.wav"
+    _write_wav(file_a, frames=4_000, marker=1)
+    _write_wav(file_b, frames=4_000, marker=2)
+
+    gate_a = threading.Event()
+    writes: List[tuple] = []
+    streams: List[_StubStream] = []
+
+    @contextmanager
+    def _open(self, *, sample_rate, channels, dtype):
+        if not streams:
+            stream = _StubStream(marker=1, writes=writes, block_until=gate_a)
+            streams.append(stream)
+        else:
+            stream = _StubStream(marker=2, writes=writes)
+            streams.append(stream)
+        yield stream
+
+    player = AudioPlayer()
+    player._open_output_stream = _open.__get__(player, AudioPlayer)
+
+    assert player.play_file(file_a)
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not streams:
+        _process_events(2)
+        time.sleep(0.01)
+
+    # Supersede; file_a's worker is now stale.
+    assert player.play_file(file_b)
+    # Let the stale worker complete its in-flight write loop and
+    # finalize.
+    gate_a.set()
+
+    # Wait until both workers finish.
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and player.is_playing:
+        _process_events(2)
+        time.sleep(0.01)
+
+    # The stale worker's finalizer must have unlinked its own file.
+    assert not file_a.exists(), (
+        "stale worker must unlink its own playback file; otherwise "
+        "rapid replay/supersede leaks temp WAVs"
+    )
+
+    player.stop()
