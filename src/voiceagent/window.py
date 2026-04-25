@@ -794,8 +794,15 @@ class MainWindow(QObject):
     def _flush_pending_status_log_entries(self) -> None:
         if not self._pending_status_log_states:
             return
-        for state in self._pending_status_log_states:
-            self._append_status_log_entry(state)
+        # Honor a mid-turn verbose -> simple toggle. The queued states
+        # are deferred entries from when verbose was on; if the user
+        # has since switched to simple, drop them silently rather than
+        # leaking pipeline rows into a transcript the user just chose
+        # to keep clean. Always clear the queue since these states are
+        # stale anyway (we've moved past them).
+        if self.logVerboseMode:
+            for state in self._pending_status_log_states:
+                self._append_status_log_entry(state)
         self._pending_status_log_states.clear()
 
     def _set_status_message(self, message: str) -> None:
