@@ -65,6 +65,102 @@ as the layered hook; subclasses would extend it. Keep the cheap
 layers (1, 2) in the default impl and the expensive layers (3, 4) in
 backend overrides.
 
+### Conversation log: verbose vs simple modes, with status entries
+
+Currently the conversation log shows only user/assistant/system turns;
+pipeline statuses ("Thinking…", "Transcribing…", "Synthesizing…",
+"Speaking…") are surfaced only as text inside the mic button.
+AGENTS.md codified that as the design rule in v0.3.0 ("Keep
+status/progress separate from conversation bubbles … only final
+assistant responses should appear as assistant bubbles").
+
+User intent: surface pipeline statuses **back into the conversation
+log as inline entries**, but styled distinctly from real turns so
+they read as activity rather than content. Add a verbose ↔ simple
+toggle at the top of the conversation pane so users can hide the
+activity feed when they want a clean transcript.
+
+Concrete shape:
+
+- New `ConversationModel` level value: `"status"` (alongside the
+  existing `"user"` / `"assistant"` / `"system"`). Status entries
+  carry a state name (`"thinking"`, `"transcribing"`,
+  `"synthesizing"`, `"speaking"`) and a timestamp. They may persist
+  for the session or be ephemeral — see open question below.
+- Pipeline state transitions in `controller.py` /
+  `window.py:_apply_state` push status entries into the
+  `ConversationModel` when verbose mode is enabled. In simple mode,
+  do not push (status entries are derived from state, not the source
+  of truth).
+- New role styling in `qml/ConversationPane.qml`: status entries
+  render as **purple text** (no bubble background) so they're
+  visually distinct from user/assistant bubbles. Pick a Kirigami
+  theme color or a hardcoded color that reads well in both light and
+  dark themes.
+- New toggle button at the top of `ConversationPane.qml`: an
+  eye-on / eye-off icon (or "Verbose" / "Simple" labels) that flips
+  between modes. Persist user choice via QSettings.
+- AGENTS.md update: soften the v0.3.0 "operational states belong in
+  status rows or the microphone control" rule — verbose mode is an
+  explicit user opt-in. Status entries must remain visually distinct
+  from real bubbles; the rule's spirit is preserved by styling, not
+  by exclusion.
+
+Open design questions for the implementing engineer to resolve with
+the user before coding:
+
+- **Persistence**: are status entries kept across the session
+  (scrollable activity timeline) or removed when the state exits
+  (ephemeral)? Persistence makes the log a fuller record; ephemeral
+  keeps it cleaner.
+- **Per-state coloring**: same purple for all status types, or
+  different shades per state (`thinking` = purple, `transcribing` =
+  another, etc.)?
+- **Simple-mode error handling**: does simple mode also strip
+  `system` (error) messages, or only `status` entries? Default
+  recommendation: keep system errors visible regardless.
+- **Interaction with the existing mic-button status text**: keep
+  both surfaces (button + log) so the user always sees current
+  state in one place even when log is in simple mode? Yes,
+  recommended.
+
+### Toolbar polish: dark-mode icons, icon-only theme button
+
+The header toolbar (`Kirigami.Action`s defined in `MainWindow.qml`:
+`themeAction`, `muteAction`, `modelManagerAction`) has three
+usability issues currently visible in dark mode (per user
+screenshot 2026-04-24):
+
+- **Mute icon**: not theme-aware. Renders washed-out in dark mode
+  because the icon name in use isn't a symbolic Kirigami glyph that
+  picks up the palette automatically.
+- **Voice Models icon**: same problem. The current `folder-cloud`
+  icon is colored, not symbolic.
+- **Theme button**: presents as a rainbow square plus the text
+  `"Theme: " + voiceAgent.themeModeLabel` (e.g. `"Theme: Auto"`).
+  Reads as bulky and unmodern. Replace with an icon-only sleek
+  button that cycles Auto → Light → Dark on click and uses the
+  Kirigami theme glyph so it inherits the toolbar palette.
+
+Concrete shape:
+
+- `MainWindow.qml`: drop the `text:` on `themeAction`, switch
+  `icon.name` to a Kirigami monochrome theme glyph (candidates:
+  `preferences-desktop-theme`, `view-preview`, or a custom symbolic
+  cycle icon). Keep the click-to-cycle behavior; surface current
+  mode via the icon variant, not text. Keep the existing Auto /
+  Light / Dark sub-actions (the dropdown menu) so users can also
+  pick directly.
+- Switch `muteAction.icon.name` to symbolic variants (e.g.
+  `audio-volume-muted-symbolic` / `audio-volume-high-symbolic`).
+  Symbolic icons are flat masks that pick up the palette.
+- Switch `modelManagerAction.icon.name` to a symbolic equivalent
+  (e.g. `folder-cloud-symbolic` if it exists, or
+  `application-x-addon-symbolic`).
+- Verify in both themes — `./voiceagent-compiletest.sh` catches
+  missing icons; visual check is a manual launch in light + dark
+  mode (the existing theme cycler makes this fast).
+
 ## Deferred review findings (PR #6)
 
 CodeRabbit's first pass on PR #6 surfaced 11 inline comments; five
