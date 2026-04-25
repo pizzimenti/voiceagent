@@ -2,6 +2,91 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.4.0 — 2026-04-26
+
+**UI shaping release.** Toolbar tightens up with symbolic icons, the
+conversation log gains an opt-in verbose mode that surfaces pipeline
+activity inline, and the window now caps below the previous large
+two-column dashboard width. First-click mic latency drops because
+`sounddevice` is pre-warmed at startup instead of being lazy-imported
+on the click path.
+
+### Added
+- **Verbose conversation log.** New eye-icon toggle in the
+  Conversation pane header switches the log between simple (final
+  user/assistant turns only) and verbose (also shows pipeline status:
+  Transcribing, Thinking, Generating voice, Speaking). Verbose
+  entries render as plain italic purple text inline with the
+  transcript — no bubble — so they read as background activity
+  rather than conversation. Persists across sessions via the
+  `log_verbose_mode` QSettings key. Filter is applied at capture, so
+  toggling on records only forward; existing entries remain. RECORDING
+  is intentionally excluded from the log because the draft user
+  bubble already signals it.
+- **`StateNameRole` on `ConversationModel`** — exposes the raw
+  `AppState.value` for `role="status"` rows so QML can style or
+  filter on the underlying state without parsing the label text. The
+  new `"status"` role is reserved for verbose-mode pipeline activity;
+  existing `"system"` rows for model/voice loading and operational
+  errors are unaffected.
+- **`VOICEAGENT_VERBOSE_UI` environment variable** — when set
+  (`1`/`true`/`yes`/`on`), bumps the rotating file log to DEBUG so
+  monotonic-timing entries from the click chain land in
+  `voiceagent.log`. Format is `ui-timing label=<name> ms=<float>`.
+  Useful for diagnosing UI lag without spamming the console (the
+  stream handler stays at WARNING regardless).
+
+### Changed
+- **Toolbar uses symbolic icons.** Voice Models action uses
+  `folder-cloud-symbolic`; the theme menu loses its visible text
+  label and renders icon-only via `Kirigami.DisplayHint.IconOnly`
+  with `preferences-desktop-theme-symbolic`; mute toggles between
+  `audio-volume-muted-symbolic` and `audio-volume-high-symbolic`.
+  Symbolic icons pick up the palette so the toolbar reads cleanly
+  in both Breeze Light and Dark. Auto/Light/Dark sub-actions stay
+  text-and-checkable as before.
+- **Window caps at `Kirigami.Units.gridUnit * 49` and the maximize
+  button is disabled.** Voice Agent is a small-window app; the
+  large two-column dashboard layout (`largeMode`,
+  `dashboardColumns`, `largeMicPaneComponent`, `largeDashboardRow`,
+  `largeMicPriorityMode`) has been removed entirely. Two responsive
+  views remain: medium (stacked, up to the cap) and compact (under
+  250 px). The session-setup grid simplifies from a three-way
+  column count to a binary one. `MainWindow.qml` shrank from 882 to
+  778 lines.
+
+### Fixed
+- **First mic-button click no longer blocks on `sounddevice`
+  import.** `MicrophoneRecorder.start()` lazy-imported `sounddevice`
+  on first call, loading the PortAudio C library on the main Qt
+  thread between the click and the next paint (100-500 ms). The
+  import is now pre-warmed after `window.show()` on a daemon thread,
+  so the GUI keeps painting while PortAudio loads.
+- **Simple log mode actually hides pipeline activity.**
+  `_set_status_message` previously appended every controller status
+  transition to the conversation log as a `role="system"` row,
+  bypassing the new `logVerboseMode` gate added by `_apply_state`.
+  Simple mode looked identical to verbose, and verbose mode rendered
+  duplicate rows for the same state. The status text still drives
+  the mic-button label; the conversation-log status path now flows
+  exclusively through `_apply_state`'s `role="status"` write, gated
+  by `logVerboseMode`.
+- **`replayMessage` no longer raises into QML.** The replay slot
+  now uses `tts_service.is_available` (which requires both `.onnx`
+  and `.onnx.json` for the selected voice, matching
+  `is_item_available`) instead of `tts_service.enabled` (which
+  passes for half-installed voices), and wraps the synthesize call
+  in `try/except` that surfaces failures via the existing error
+  channel.
+
+### Documentation
+- `AGENTS.md` updated. Review-guideline line that listed three
+  responsive layouts now lists two (the large layout was removed).
+  The "no statuses in bubbles" rule is softened to acknowledge that
+  verbose log mode surfaces pipeline statuses as plain styled text
+  in the transcript; bubbles remain reserved for final user and
+  assistant content.
+
 ## 0.3.3 — 2026-04-26
 
 **Local-repo packaging helper.** No app changes. New script that

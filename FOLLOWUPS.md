@@ -11,32 +11,6 @@ remains is feature-shaped work plus lower-severity review nits.
 
 ## Future feature work
 
-### Cap horizontal width and drop the large two-column layout
-
-This is meant to be a small-window app. Cap
-`Kirigami.ApplicationWindow`'s horizontal size at the medium-mode
-upper bound so the window cannot be dragged or maximized into the
-existing two-column dashboard layout. Two of the three responsive
-views survive (medium, compact); the large two-column dashboard view
-is removed entirely.
-
-Concrete shape:
-
-- `MainWindow.qml:7` — add `maximumWidth: Kirigami.Units.gridUnit * 49`
-  (just below the current `largeMode` threshold at `gridUnit * 50`).
-- Disable the maximize button via the window's `flags:` so the WM
-  doesn't let the user expand past the cap.
-- Delete `largeMode` (`MainWindow.qml:17`), `dashboardColumns:20`, the
-  three-way ternary at `:512`, the entire `largeMicPaneComponent`
-  block, the `largeDashboardRow` RowLayout and its three Loaders, and
-  the `largeMicPriorityMode` predicate.
-- **Coupled doc edit:** `AGENTS.md:6` currently treats regressions in
-  the large layout as P1. When this feature lands, drop the
-  large-layout clause from that line so AGENTS.md stays aligned with
-  the actual product surface.
-- Verify the medium and compact layouts still render — the QML should
-  shrink meaningfully (~150 lines).
-
 ### Implement true inertial scrolling
 
 `MainWindow.qml:83 scrollList()` currently does direct `contentY`
@@ -64,102 +38,6 @@ Wire-in points: `ParallelItemLoader._verify_download` already exists
 as the layered hook; subclasses would extend it. Keep the cheap
 layers (1, 2) in the default impl and the expensive layers (3, 4) in
 backend overrides.
-
-### Conversation log: verbose vs simple modes, with status entries
-
-Currently the conversation log shows only user/assistant/system turns;
-pipeline statuses ("Thinking…", "Transcribing…", "Synthesizing…",
-"Speaking…") are surfaced only as text inside the mic button.
-AGENTS.md codified that as the design rule in v0.3.0 ("Keep
-status/progress separate from conversation bubbles … only final
-assistant responses should appear as assistant bubbles").
-
-User intent: surface pipeline statuses **back into the conversation
-log as inline entries**, but styled distinctly from real turns so
-they read as activity rather than content. Add a verbose ↔ simple
-toggle at the top of the conversation pane so users can hide the
-activity feed when they want a clean transcript.
-
-Concrete shape:
-
-- New `ConversationModel` level value: `"status"` (alongside the
-  existing `"user"` / `"assistant"` / `"system"`). Status entries
-  carry a state name (`"thinking"`, `"transcribing"`,
-  `"synthesizing"`, `"speaking"`) and a timestamp. They may persist
-  for the session or be ephemeral — see open question below.
-- Pipeline state transitions in `controller.py` /
-  `window.py:_apply_state` push status entries into the
-  `ConversationModel` when verbose mode is enabled. In simple mode,
-  do not push (status entries are derived from state, not the source
-  of truth).
-- New role styling in `qml/ConversationPane.qml`: status entries
-  render as **purple text** (no bubble background) so they're
-  visually distinct from user/assistant bubbles. Pick a Kirigami
-  theme color or a hardcoded color that reads well in both light and
-  dark themes.
-- New toggle button at the top of `ConversationPane.qml`: an
-  eye-on / eye-off icon (or "Verbose" / "Simple" labels) that flips
-  between modes. Persist user choice via QSettings.
-- AGENTS.md update: soften the v0.3.0 "operational states belong in
-  status rows or the microphone control" rule — verbose mode is an
-  explicit user opt-in. Status entries must remain visually distinct
-  from real bubbles; the rule's spirit is preserved by styling, not
-  by exclusion.
-
-Open design questions for the implementing engineer to resolve with
-the user before coding:
-
-- **Persistence**: are status entries kept across the session
-  (scrollable activity timeline) or removed when the state exits
-  (ephemeral)? Persistence makes the log a fuller record; ephemeral
-  keeps it cleaner.
-- **Per-state coloring**: same purple for all status types, or
-  different shades per state (`thinking` = purple, `transcribing` =
-  another, etc.)?
-- **Simple-mode error handling**: does simple mode also strip
-  `system` (error) messages, or only `status` entries? Default
-  recommendation: keep system errors visible regardless.
-- **Interaction with the existing mic-button status text**: keep
-  both surfaces (button + log) so the user always sees current
-  state in one place even when log is in simple mode? Yes,
-  recommended.
-
-### Toolbar polish: dark-mode icons, icon-only theme button
-
-The header toolbar (`Kirigami.Action`s defined in `MainWindow.qml`:
-`themeAction`, `muteAction`, `modelManagerAction`) has three
-usability issues currently visible in dark mode (per user
-screenshot 2026-04-24):
-
-- **Mute icon**: not theme-aware. Renders washed-out in dark mode
-  because the icon name in use isn't a symbolic Kirigami glyph that
-  picks up the palette automatically.
-- **Voice Models icon**: same problem. The current `folder-cloud`
-  icon is colored, not symbolic.
-- **Theme button**: presents as a rainbow square plus the text
-  `"Theme: " + voiceAgent.themeModeLabel` (e.g. `"Theme: Auto"`).
-  Reads as bulky and unmodern. Replace with an icon-only sleek
-  button that cycles Auto → Light → Dark on click and uses the
-  Kirigami theme glyph so it inherits the toolbar palette.
-
-Concrete shape:
-
-- `MainWindow.qml`: drop the `text:` on `themeAction`, switch
-  `icon.name` to a Kirigami monochrome theme glyph (candidates:
-  `preferences-desktop-theme`, `view-preview`, or a custom symbolic
-  cycle icon). Keep the click-to-cycle behavior; surface current
-  mode via the icon variant, not text. Keep the existing Auto /
-  Light / Dark sub-actions (the dropdown menu) so users can also
-  pick directly.
-- Switch `muteAction.icon.name` to symbolic variants (e.g.
-  `audio-volume-muted-symbolic` / `audio-volume-high-symbolic`).
-  Symbolic icons are flat masks that pick up the palette.
-- Switch `modelManagerAction.icon.name` to a symbolic equivalent
-  (e.g. `folder-cloud-symbolic` if it exists, or
-  `application-x-addon-symbolic`).
-- Verify in both themes — `./voiceagent-compiletest.sh` catches
-  missing icons; visual check is a manual launch in light + dark
-  mode (the existing theme cycler makes this fast).
 
 ## Deferred review findings (PR #6)
 
@@ -219,10 +97,9 @@ surrounding code.
 - **`voiceagent-compiletest.sh:49,329`** — QML compile-test stub
   `voiceAgent` has slot/property signatures that drift from the real
   `MainWindow`, and the script doesn't lint the extracted QML
-  components (`MicButton.qml`, `ConversationPane.qml`,
-  `WaveformMeter.qml`) directly — only via `MainWindow.qml`. Make the
-  stub generation programmatic or at minimum add explicit qmllint
-  invocations.
+  components (`MicButton.qml`, `ConversationPane.qml`) directly —
+  only via `MainWindow.qml`. Make the stub generation programmatic
+  or at minimum add explicit qmllint invocations.
 
 ### From CodeRabbit
 
@@ -294,3 +171,110 @@ not user-visible.
   of the project's expected workflow. (Several CodeRabbit nitpicks
   reference Ruff rules that aren't being enforced locally because
   ruff isn't in the venv.)
+
+## Deferred from PR #7 round-2 review
+
+External round-2 review of PR #7 (the v0.4.0 ui-shaping branch)
+surfaced these architectural items. Each is its own cycle.
+
+- **`ConversationTurnCoordinator`.** Centralize the draft → final →
+  status row ordering policy for a conversation turn into a single
+  owner. The acute ordering bug (status rows landing before the user
+  bubble on short turns with no partial transcript) was patched in
+  this PR by deferring status rows in `_apply_state` until
+  `_sync_live_user_message` or `_append_user_message` flips a
+  per-turn flag (see `src/voiceagent/window.py:754`); the queue is
+  also gated on `logVerboseMode` at flush time. That works but leaves
+  the policy spread across three call sites and a queue. A
+  coordinator would own the queue, the per-turn flag, the dedupe
+  state, and the verbose-mode gate, and is the natural place to add
+  any future ordering rules (e.g., assistant draft anchoring).
+
+- **`ConversationLogController` as the only writer to
+  `ConversationModel`.** Today `window.py` writes to the model from
+  `_apply_state`, `_set_status_message` (just unwound in this PR),
+  `_set_error_message`, `_apply_model_status`, `_apply_tts_status`,
+  `_on_llm_status_message`, `_append_user_message`, and
+  `_append_assistant_message`. Centralizing through a controller
+  would make simple/verbose mode policy testable in isolation and
+  remove the risk of the next caller re-introducing the same
+  duplicate-append regression we just fixed.
+
+- **Custom STT path support in `CatalogModel`.** Backend already
+  supports `WHISPER_MODEL=/path/to/model`, but
+  `WhisperTranscriber.available_items()`
+  (`src/voiceagent/services/stt.py:60`) only lists managed names, so
+  the UI catalog and `selectedSttModel`
+  (`src/voiceagent/window.py:243`, `:553`) cannot select a direct
+  custom path. The path either looks unavailable or gets silently
+  replaced by a fallback.
+
+- **`CatalogModel` role extension.** Add `installed`, `loading`,
+  `progress`, `downloadable`, and `managed`/`custom` as proper Qt
+  roles. Removes the QML-side `QVariantMap`/`Array.indexOf` lookup
+  maps and lets the model invalidate per-row instead of rebuilding
+  full `QVariantList`s on every `ui_changed`.
+
+- **Extract QML components.** `MainWindow.qml` is ~800 lines and
+  `window.py` is ~860 lines. Pull `CatalogList.qml` (replaces the
+  duplicated STT/TTS catalog ListViews), `SessionSetupPane.qml`,
+  `MicButtonFrame.qml` (the inline pulsing-frame Item), and consider
+  a Kirigami dialog/page for model management. Kirigami's
+  `FormLayout` is the documented pattern for the settings/control
+  groups inside `sessionSetupGrid`.
+
+- **Tighten QML component dependencies.** `MicButton.qml` and
+  `ConversationPane.qml` rely on ambient `voiceAgent` and
+  `ApplicationWindow.window`. Pass them as `required property` so
+  the components are testable in isolation (and the compiletest stub
+  doesn't have to be kept in sync separately).
+
+- **MainWindow-level integration tests.** Cover simple-vs-verbose
+  transcript content per mode, draft-to-final user-bubble ordering
+  with and without a draft, replay error handling
+  (`replayMessage` raise paths), custom STT path selection, and the
+  connect spam-click guard below.
+
+- **Connect spam-click guard.** `MainWindow.qml:681` allows the
+  Connect action when `!llmServerConnected`, even if
+  `llmConnectionBusy` is `true`. Each click queues another refresh
+  via `_start_refresh()`
+  (`src/voiceagent/services/llm_controller.py:271`). Gate the QML
+  `enabled` on `!llmConnectionBusy` too.
+
+- **`replayMessage` defensive layer.** Round-2 added a try/except
+  and an `is_available()` readiness check; a deeper pass should
+  surface synthesis errors via a transient toast or status rather
+  than silently logging.
+
+- **Test fixture normalization.** Existing pytest run emits a
+  `QApplication is not an instance of qapp_cls` warning because some
+  tests use bare `QCoreApplication` while others need
+  `QApplication`. Pick `QApplication` in `tests/conftest.py` and
+  route every test through a shared fixture.
+
+- **Add `ruff` to the dev extra in `pyproject.toml`.** Several
+  CodeRabbit nitpicks reference Ruff rules (BLE001, FBT001, FBT003)
+  that aren't enforced locally because ruff isn't in the venv.
+  Decide whether linting is part of the project workflow.
+
+- **KDE polish.** Migrate the session-setup grid to
+  `Kirigami.FormLayout` (Kirigami's documented pattern for
+  settings/control groups), wire user-facing strings through
+  `KLocalizedContext` / `i18n()` for i18n readiness, and convert
+  more of the inline button bindings to `Kirigami.Action`-based
+  command surfaces. Each is small but they should land together so
+  the QML reads consistently.
+
+- **True post-first-frame deferral helper.** `app.py:118` documents
+  why a 0 ms `QTimer.singleShot(0, ...)` can fire on the next
+  event-loop tick before the first frame swap completes — that
+  deferral was rewritten to a daemon thread for the sounddevice
+  pre-warm. But `window.py:182` still uses the same pattern for
+  LLM autoconnect and the TTS catalog refresh. Both are
+  lightweight / off-thread today so it is not currently a P1 bug,
+  but it is the same anti-pattern. Build a small helper that
+  schedules work after the first frame swap (Qt has
+  `QQuickWindow::frameSwapped` for exactly this) or off-thread,
+  and route both call sites through it. KDE startup-best-practice
+  alignment.

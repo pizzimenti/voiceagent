@@ -8,6 +8,7 @@ import time
 from PySide6.QtCore import QObject, Qt, Signal, Slot, QTimer
 
 from voiceagent.backends import SpeechToTextBackend, TextToSpeechBackend
+from voiceagent.logging_utils import log_ui_timing
 from voiceagent.models import AppState, PipelineResult
 from voiceagent.services.audio import MicrophoneRecorder
 from voiceagent.services.chat import LmStudioClient
@@ -554,6 +555,7 @@ class VoiceController(QObject):
             self._logger.info("Microphone start skipped because recorder is already active")
             return True
         self._logger.info("Starting microphone stream for voice connection")
+        started = time.monotonic()
         try:
             self.recorder.start(segment_ready_callback=self.segment_ready.emit)
         except Exception as exc:
@@ -563,6 +565,7 @@ class VoiceController(QObject):
             self.connection_changed.emit(False)
             self._apply_state(AppState.IDLE.value, "Microphone unavailable")
             return False
+        log_ui_timing(self._logger, "recorder.start", started)
         self._logger.info("Microphone stream started for voice connection")
         return True
 

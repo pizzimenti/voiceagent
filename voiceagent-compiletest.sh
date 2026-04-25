@@ -47,8 +47,7 @@ export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
   "${ROOT_DIR}/src/voiceagent/controller.py"
 
 qmllint \
-  "${ROOT_DIR}/src/voiceagent/qml/MainWindow.qml" \
-  "${ROOT_DIR}/src/voiceagent/qml/WaveformMeter.qml"
+  "${ROOT_DIR}/src/voiceagent/qml/MainWindow.qml"
 
 "${VENV_PYTHON}" -c '
 from pathlib import Path
@@ -65,6 +64,7 @@ class StubConversationModel(QAbstractListModel):
     BubbleStateRole = Qt.ItemDataRole.UserRole + 5
     TurnPendingRole = Qt.ItemDataRole.UserRole + 6
     TimestampLabelRole = Qt.ItemDataRole.UserRole + 7
+    StateNameRole = Qt.ItemDataRole.UserRole + 8
     _roles = {
         MessageRole: QByteArray(b"messageRole"),
         LevelRole: QByteArray(b"level"),
@@ -73,6 +73,7 @@ class StubConversationModel(QAbstractListModel):
         BubbleStateRole: QByteArray(b"bubbleState"),
         TurnPendingRole: QByteArray(b"turnPending"),
         TimestampLabelRole: QByteArray(b"timestampLabel"),
+        StateNameRole: QByteArray(b"stateName"),
     }
     _keys = {
         MessageRole: "role",
@@ -282,6 +283,10 @@ class StubVoiceAgent(QObject):
     def themeModeLabel(self):
         return "Auto"
 
+    @Property(bool, notify=ui_changed)
+    def logVerboseMode(self):
+        return False
+
     def __init__(self):
         super().__init__()
         self._conversation_model = StubConversationModel()
@@ -326,7 +331,7 @@ class StubVoiceAgent(QObject):
     def selectSttModel(self, _value):
         pass
 
-    @Slot()
+    @Slot(str)
     def installSttModel(self, _value):
         pass
 
@@ -370,11 +375,15 @@ class StubVoiceAgent(QObject):
     def setAudioMuted(self, _enabled):
         pass
 
+    @Slot(bool)
+    def setLogVerboseMode(self, _enabled):
+        pass
+
     @Slot(str)
     def setThemeMode(self, _mode):
         pass
 
-    @Slot()
+    @Slot(int)
     def replayMessage(self, _index):
         pass
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import logging
 from pathlib import Path
+import time
 from collections.abc import Callable
 
 from PySide6.QtCore import (
@@ -22,11 +23,24 @@ from voiceagent.catalog_model import CatalogModel
 from voiceagent.controller import VoiceController
 from voiceagent.conversation_model import ConversationModel
 from voiceagent.downloaders import format_bytes, format_transfer_rate
+from voiceagent.logging_utils import log_ui_timing
 from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.models import AppState
 from voiceagent.services.llm_controller import LlmController
 from voiceagent.services.playback import AudioPlayer
 from voiceagent.tts_loader import TtsVoiceLoader
+
+
+# Pipeline states surfaced into the verbose conversation log.
+# Labels mirror the micStatusLabel vocabulary so the mic indicator
+# and the log read identically. RECORDING is intentionally omitted
+# because the draft user bubble already signals "listening".
+_STATUS_LOG_LABELS: dict[str, str] = {
+    AppState.TRANSCRIBING.value: "Transcribing…",
+    AppState.THINKING.value: "Thinking…",
+    AppState.SYNTHESIZING.value: "Generating voice…",
+    AppState.SPEAKING.value: "Speaking…",
+}
 
 
 class MainWindow(QObject):
@@ -56,6 +70,22 @@ class MainWindow(QObject):
         self._conversation_model = ConversationModel(self)
         self._error_message = ""
         self._status_message = "Ready"
+        # Tracks the most recent verbose-mode pipeline status state we
+        # logged. Reset on turn-boundary states (RECORDING, IDLE) so a
+        # new turn that re-enters the same first-phase state as the
+        # previous turn ended on (e.g., user cancelled mid-Transcribing
+        # then starts a new turn) does not get its first marker
+        # suppressed by the immediate-predecessor dedupe.
+        self._last_logged_status_state: str | None = None
+        # Verbose-mode turn-anchoring: status rows must not appear before
+        # the user bubble for the current turn. If TRANSCRIBING/THINKING
+        # fires while no user bubble has been created yet (short turn
+        # without a partial transcript), queue the state and flush after
+        # the user bubble materializes via _sync_live_user_message or
+        # _append_user_message. Both reset on RECORDING/IDLE turn
+        # boundaries.
+        self._current_turn_user_bubble_present: bool = False
+        self._pending_status_log_states: list[str] = []
         self._llm = LlmController(self.controller.chat_client, self.settings, parent=self)
         self._shutting_down = False
         self._state = "idle"
@@ -375,6 +405,10 @@ class MainWindow(QObject):
     def themeModeLabel(self) -> str:  # noqa: N802
         return {"auto": "Auto", "light": "Light", "dark": "Dark"}.get(self.themeMode, "Auto")
 
+    @Property(bool, notify=ui_changed)
+    def logVerboseMode(self) -> bool:  # noqa: N802
+        return self.settings.value("log_verbose_mode", False, bool)
+
     @Property(QObject, constant=True)
     def conversationModel(self) -> ConversationModel:  # noqa: N802
         return self._conversation_model
@@ -470,16 +504,26 @@ class MainWindow(QObject):
 
     @Slot(bool)
     def setVoiceConnectionEnabled(self, enabled: bool) -> None:  # noqa: N802
+        started = time.monotonic()
         if enabled:
             self.persistCurrentLlmUrl()
             self.controller.start_recording()
+            log_ui_timing(self._logger, "setVoiceConnectionEnabled.on", started)
             return
         self.controller.stop_recording()
+        log_ui_timing(self._logger, "setVoiceConnectionEnabled.off", started)
 
     @Slot(bool)
     def setAudioMuted(self, enabled: bool) -> None:  # noqa: N802
         self.settings.setValue("audio_output_muted", enabled)
         self._apply_audio_mute_state(enabled)
+
+    @Slot(bool)
+    def setLogVerboseMode(self, enabled: bool) -> None:  # noqa: N802
+        if bool(enabled) == self.logVerboseMode:
+            return
+        self.settings.setValue("log_verbose_mode", bool(enabled))
+        self.ui_changed.emit()
 
     @Slot(str)
     def setThemeMode(self, mode: str) -> None:  # noqa: N802
@@ -500,9 +544,23 @@ class MainWindow(QObject):
         if message.get("role") != "assistant":
             return
         text = str(message.get("text", "")).strip()
-        if not text or not self.tts_loader.tts_service.enabled:
+        if not text:
             return
-        audio_path = self.tts_loader.tts_service.synthesize(text)
+        # is_available checks both .onnx and .onnx.json exist for the
+        # selected voice (tighter than `enabled`, which only checks
+        # command + path). Without it, replay can call into a
+        # half-installed voice and raise into the QML binding.
+        if not self.tts_loader.tts_service.is_available:
+            return
+        try:
+            audio_path = self.tts_loader.tts_service.synthesize(text)
+        except Exception as exc:
+            self._logger.exception("Replay synthesis failed")
+            # Replay failures are unrelated to any active draft turn;
+            # don't let the error surface tear down a user bubble the
+            # user is currently dictating.
+            self._set_error_message(f"Replay failed: {exc}", discard_draft=False)
+            return
         if audio_path is not None:
             self.replay_player.play_file(audio_path)
 
@@ -572,6 +630,8 @@ class MainWindow(QObject):
                     "timestampLabel": f"Sent {self._clock_time()}",
                 }
             )
+        self._current_turn_user_bubble_present = True
+        self._flush_pending_status_log_entries()
         self.conversation_changed.emit()
 
     def _append_assistant_message(self, text: str) -> None:
@@ -703,17 +763,67 @@ class MainWindow(QObject):
             AppState.SPEAKING.value,
         }:
             self._promote_live_user_message()
+        if state in {AppState.RECORDING.value, AppState.IDLE.value}:
+            # Turn boundary — reset the verbose-log dedupe AND the
+            # user-bubble-anchor flag so a new turn starts clean.
+            self._last_logged_status_state = None
+            self._current_turn_user_bubble_present = False
+            self._pending_status_log_states.clear()
+        if self.logVerboseMode and state in _STATUS_LOG_LABELS:
+            if state != self._last_logged_status_state:
+                self._last_logged_status_state = state
+                if self._current_turn_user_bubble_present:
+                    self._append_status_log_entry(state)
+                else:
+                    # Defer until the user bubble materializes, so the
+                    # status row never lands before the user turn it
+                    # belongs to.
+                    self._pending_status_log_states.append(state)
         self.ui_changed.emit()
+
+    def _append_status_log_entry(self, state: str) -> None:
+        self._conversation_model.append_message(
+            {
+                "role": "status",
+                "text": _STATUS_LOG_LABELS[state],
+                "stateName": state,
+            }
+        )
+        self.conversation_changed.emit()
+
+    def _flush_pending_status_log_entries(self) -> None:
+        if not self._pending_status_log_states:
+            return
+        # Honor a mid-turn verbose -> simple toggle. The queued states
+        # are deferred entries from when verbose was on; if the user
+        # has since switched to simple, drop them silently rather than
+        # leaking pipeline rows into a transcript the user just chose
+        # to keep clean. Always clear the queue since these states are
+        # stale anyway (we've moved past them).
+        if self.logVerboseMode:
+            for state in self._pending_status_log_states:
+                self._append_status_log_entry(state)
+        self._pending_status_log_states.clear()
 
     def _set_status_message(self, message: str) -> None:
+        # Status text drives the mic-button label only. Pipeline activity
+        # routed through the conversation log goes via _apply_state's
+        # role="status" path, gated on logVerboseMode. Appending here
+        # would (a) defeat simple mode and (b) duplicate the role="status"
+        # row in verbose mode.
         self._status_message = message
-        self._append_log_message(message, "status")
         self.ui_changed.emit()
 
-    def _set_error_message(self, message: str) -> None:
+    def _set_error_message(self, message: str, *, discard_draft: bool = True) -> None:
+        # discard_draft defaults to True because most error sources
+        # (STT failure, transcription failure, connection drop) signal
+        # that the in-flight user turn is dead. Replay-of-prior-message
+        # failures are the exception — they're unrelated to the active
+        # turn — and pass discard_draft=False.
         self._error_message = message
         if message:
-            self._discard_draft_user_message()
+            if discard_draft:
+                self._discard_draft_user_message()
             self._append_log_message(message, "error")
         self.ui_changed.emit()
 
@@ -797,6 +907,8 @@ class MainWindow(QObject):
                     "timestampLabel": "",
                 }
             )
+            self._current_turn_user_bubble_present = True
+            self._flush_pending_status_log_entries()
         self.conversation_changed.emit()
 
     def _promote_live_user_message(self) -> None:

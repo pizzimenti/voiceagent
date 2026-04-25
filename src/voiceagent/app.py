@@ -86,6 +86,29 @@ def build_controller(
     )
 
 
+def _prewarm_sounddevice(logger: logging.Logger) -> None:
+    """Force sounddevice + PortAudio to load off the first-paint path.
+
+    The first import of sounddevice loads the PortAudio C library and
+    can take 100-500 ms. If that cost is paid lazily inside
+    MicrophoneRecorder.start(), it stretches the gap between mic
+    button click and visible UI response. We run this on a daemon
+    thread (see main()) so the import cost is genuinely off the main
+    Qt thread; the GUI keeps painting while PortAudio loads.
+    """
+    import time as _time
+    started = _time.monotonic()
+    try:
+        import sounddevice as _sd  # noqa: F401
+    except Exception as exc:  # pragma: no cover - depends on host audio stack
+        logger.warning("sounddevice pre-warm failed: %s", exc)
+        return
+    logger.info(
+        "sounddevice pre-warm ok ms=%.1f",
+        (_time.monotonic() - started) * 1000.0,
+    )
+
+
 def main() -> int:
     log_path = configure_logging()
     logger = logging.getLogger(__name__)
@@ -116,5 +139,22 @@ def main() -> int:
     # not via Python GC of `instance` (which SystemExit or hard interrupt can bypass).
     app.aboutToQuit.connect(instance.release)
     window.show()
+    # Run the sounddevice/PortAudio pre-warm in a daemon thread so the
+    # import cost is genuinely off the main Qt thread. A previous
+    # iteration used QTimer.singleShot(0, ...) but a 0 ms timer can
+    # fire on the next event-loop tick before the first frame swap
+    # completes, defeating the point. The import does no Qt work and
+    # PortAudio releases the GIL during its C library load, so the
+    # GUI thread keeps painting while this runs. If the user clicks
+    # the mic before this finishes, MicrophoneRecorder.start()'s
+    # `import sounddevice` blocks on Python's import lock until this
+    # thread completes — same worst case as the pre-fix behavior.
+    import threading
+    threading.Thread(
+        target=_prewarm_sounddevice,
+        args=(logger,),
+        daemon=True,
+        name="sounddevice-prewarm",
+    ).start()
     console.info("Ready.")
     return app.exec()

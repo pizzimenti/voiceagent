@@ -12,6 +12,14 @@ from PySide6.QtCore import (
 
 
 class ConversationModel(QAbstractListModel):
+    # Valid "role" values on appended messages:
+    #   "user"      — finalized user turn (renders as a bubble)
+    #   "assistant" — finalized assistant response (renders as a bubble)
+    #   "system"    — operational notices (carries level="status" or "error";
+    #                 renders as plain inline text styled by level)
+    #   "status"    — pipeline activity entries (Transcribing, Thinking,
+    #                 Synthesizing, Speaking) for verbose log mode; carries
+    #                 a stateName field, renders as plain purple text
     MessageRole = Qt.ItemDataRole.UserRole + 1
     LevelRole = Qt.ItemDataRole.UserRole + 2
     TextRole = Qt.ItemDataRole.UserRole + 3
@@ -19,6 +27,7 @@ class ConversationModel(QAbstractListModel):
     BubbleStateRole = Qt.ItemDataRole.UserRole + 5
     TurnPendingRole = Qt.ItemDataRole.UserRole + 6
     TimestampLabelRole = Qt.ItemDataRole.UserRole + 7
+    StateNameRole = Qt.ItemDataRole.UserRole + 8
 
     _ROLE_NAMES: ClassVar[dict[int, QByteArray]] = {
         MessageRole: QByteArray(b"messageRole"),
@@ -28,6 +37,7 @@ class ConversationModel(QAbstractListModel):
         BubbleStateRole: QByteArray(b"bubbleState"),
         TurnPendingRole: QByteArray(b"turnPending"),
         TimestampLabelRole: QByteArray(b"timestampLabel"),
+        StateNameRole: QByteArray(b"stateName"),
     }
     _ROLE_KEYS: ClassVar[dict[int, str]] = {
         MessageRole: "role",
@@ -37,6 +47,7 @@ class ConversationModel(QAbstractListModel):
         BubbleStateRole: "bubbleState",
         TurnPendingRole: "turnPending",
         TimestampLabelRole: "timestampLabel",
+        StateNameRole: "stateName",
     }
 
     def __init__(self, parent: QObject | None = None) -> None:

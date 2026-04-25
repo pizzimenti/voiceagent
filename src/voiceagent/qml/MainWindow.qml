@@ -9,15 +9,46 @@ Kirigami.ApplicationWindow {
 
     width: 512
     height: 512
+    // Cap horizontal width below the gridUnit*50 threshold that previously
+    // toggled the two-column dashboard layout. The single-pane layout is the
+    // only supported view above compactMode.
+    maximumWidth: Kirigami.Units.gridUnit * 49
+    // Cap height to the screen's available area (excluding panels). With
+    // both axes bounded against the workable screen, "maximize" via the
+    // title-bar button or Super+Up has no visible effect — the window is
+    // already at its maximum useful size. Pinning maximumHeight against a
+    // dynamic Screen value (rather than a fixed grid count) preserves the
+    // user's ability to grow the window vertically up to the workable area
+    // without ever stretching past it.
+    maximumHeight: Screen.desktopAvailableHeight
+    // Drop Qt.WindowMaximizeButtonHint so the WM does not advertise an
+    // affordance for an action that cannot meaningfully change the window
+    // beyond what the user has already done by hand.
+    flags: Qt.Window
+        | Qt.WindowTitleHint
+        | Qt.WindowSystemMenuHint
+        | Qt.WindowMinimizeButtonHint
+        | Qt.WindowCloseButtonHint
     visible: true
     title: "Voice Agent"
     required property QtObject voiceAgent
 
+    // Belt-and-suspenders: KWin honors min/max size constraints in
+    // isResizable(), but the maximize button only disappears when
+    // BOTH axes are pinned (min == max). We deliberately keep the
+    // height resizable up to the screen cap, so isResizable() may
+    // still return true and the title-bar button may render. Snap
+    // back to Windowed if anything still triggers maximize, so the
+    // visible result is the same as the policy.
+    onVisibilityChanged: function(visibility) {
+        if (visibility === Window.Maximized || visibility === Window.FullScreen) {
+            root.visibility = Window.Windowed;
+        }
+    }
+
     readonly property bool compactMode: width < Kirigami.Units.gridUnit * 25
-    readonly property bool largeMode: width >= Kirigami.Units.gridUnit * 50
-    readonly property bool mediumMode: !compactMode && !largeMode
+    readonly property bool mediumMode: !compactMode
     readonly property bool ultraCompactMode: compactMode
-    readonly property int dashboardColumns: largeMode ? 2 : 1
     readonly property int sttInstalledCount: countInstalled(voiceAgent.sttCatalog)
     readonly property int ttsInstalledCount: countInstalled(voiceAgent.ttsCatalog)
     readonly property color micPulseColor: voiceAgent.talkReady ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
@@ -52,26 +83,6 @@ Kirigami.ApplicationWindow {
         return name.toLowerCase().indexOf(filterText.toLowerCase()) !== -1;
     }
 
-    function sessionReadinessText() {
-        const missing = [];
-        if (!voiceAgent.selectedSttModel) {
-            missing.push("an STT model");
-        }
-        if (!voiceAgent.selectedTtsModel) {
-            missing.push("a TTS voice");
-        }
-        if (!voiceAgent.currentLlmUrl) {
-            missing.push("an LLM URL");
-        }
-        if (!voiceAgent.selectedLlmModel) {
-            missing.push("a loaded LLM");
-        }
-        if (missing.length === 0) {
-            return "Everything is ready for voice mode.";
-        }
-        return "Still needed: " + missing.join(", ") + ".";
-    }
-
     function modelStatusSummary(item) {
         return item.installed ? "Installed" : "Available to download";
     }
@@ -103,7 +114,7 @@ Kirigami.ApplicationWindow {
     Kirigami.Action {
         id: modelManagerAction
         text: "Voice Models"
-        icon.name: "folder-cloud"
+        icon.name: "folder-cloud-symbolic"
         visible: !root.compactMode
         onTriggered: {
             modelManagerWindow.x = root.x + Math.max(0, (root.width - modelManagerWindow.width) / 2);
@@ -120,8 +131,9 @@ Kirigami.ApplicationWindow {
 
     Kirigami.Action {
         id: themeAction
-        text: "Theme: " + voiceAgent.themeModeLabel
-        icon.name: "preferences-desktop-theme-global"
+        text: "Theme"
+        icon.name: "preferences-desktop-theme-symbolic"
+        displayHint: Kirigami.DisplayHint.IconOnly
         visible: !root.compactMode
 
         Kirigami.Action {
@@ -152,7 +164,7 @@ Kirigami.ApplicationWindow {
     Kirigami.Action {
         id: muteAction
         text: voiceAgent.audioMuted ? "Unmute" : "Mute"
-        icon.name: voiceAgent.audioMuted ? "audio-volume-muted" : "audio-volume-high"
+        icon.name: voiceAgent.audioMuted ? "audio-volume-muted-symbolic" : "audio-volume-high-symbolic"
         enabled: voiceAgent.talkReady
         onTriggered: voiceAgent.setAudioMuted(!voiceAgent.audioMuted)
     }
@@ -509,7 +521,7 @@ Kirigami.ApplicationWindow {
                     GridLayout {
                         id: sessionSetupGrid
                         width: parent.width
-                        columns: root.compactMode ? 1 : (root.largeMode ? 2 : 3)
+                        columns: root.compactMode ? 1 : 3
                         columnSpacing: Kirigami.Units.mediumSpacing
                         rowSpacing: Kirigami.Units.smallSpacing
 
@@ -715,74 +727,6 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    Component {
-        id: largeMicPaneComponent
-
-        Pane {
-            padding: Kirigami.Units.mediumSpacing
-            implicitWidth: Kirigami.Units.gridUnit * 12
-
-            Item {
-                id: largeMicButtonFrame
-                anchors.fill: parent
-                property real glowOpacity: root.micPulseActive ? 0.5 : 0.2
-                property real glowScale: 1.0
-
-                SequentialAnimation {
-                    running: root.largeMode && root.micPulseActive
-                    loops: Animation.Infinite
-
-                    ParallelAnimation {
-                        NumberAnimation {
-                            target: largeMicButtonFrame
-                            property: "glowOpacity"
-                            to: voiceAgent.voiceConnectionEnabled ? 1.0 : 0.78
-                            duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
-                            easing.type: Easing.InOutSine
-                        }
-                        NumberAnimation {
-                            target: largeMicButtonFrame
-                            property: "glowScale"
-                            to: 1.02
-                            duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
-                            easing.type: Easing.InOutSine
-                        }
-                    }
-
-                    ParallelAnimation {
-                        NumberAnimation {
-                            target: largeMicButtonFrame
-                            property: "glowOpacity"
-                            to: voiceAgent.voiceConnectionEnabled ? 0.45 : 0.35
-                            duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
-                            easing.type: Easing.InOutSine
-                        }
-                        NumberAnimation {
-                            target: largeMicButtonFrame
-                            property: "glowScale"
-                            to: 1.0
-                            duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
-                            easing.type: Easing.InOutSine
-                        }
-                    }
-                }
-
-                    MicButton {
-                        anchors.fill: parent
-                        anchors.margins: 0
-                        iconSize: 32
-                        fontPixel: 12
-                        borderWidth: 3
-                        glowOpacity: largeMicButtonFrame.glowOpacity
-                        glowScaleSource: largeMicButtonFrame.glowScale
-                        buttonColor: root.micButtonColor
-                        pulseColor: root.micPulseColor
-                        pulseActive: root.micPulseActive
-                    }
-            }
-        }
-    }
-
     pageStack.initialPage: Kirigami.Page {
         id: page
         title: "Voice Agent"
@@ -805,50 +749,6 @@ Kirigami.ApplicationWindow {
                 id: dashboardModes
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                readonly property real largeMicMinimumHeight: Kirigami.Units.gridUnit * 6.5
-                readonly property bool largeMicPriorityMode: root.largeMode
-                    && largeControlsColumn.height > 0
-                    && largeControlsColumn.height < ((largeSessionLoader.item ? largeSessionLoader.item.implicitHeight : 0)
-                        + largeMicMinimumHeight + Kirigami.Units.largeSpacing)
-
-                RowLayout {
-                    id: largeDashboardRow
-                    anchors.fill: parent
-                    visible: root.largeMode
-                    spacing: Kirigami.Units.largeSpacing
-
-                    ColumnLayout {
-                        id: largeControlsColumn
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        Layout.preferredWidth: 1
-                        spacing: Kirigami.Units.largeSpacing
-
-                        Loader {
-                            id: largeSessionLoader
-                            active: root.largeMode
-                            visible: !dashboardModes.largeMicPriorityMode
-                            sourceComponent: sessionPaneComponent
-                            Layout.fillWidth: true
-                        }
-
-                        Loader {
-                            id: largeMicLoader
-                            active: root.largeMode
-                            sourceComponent: largeMicPaneComponent
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                        }
-                    }
-
-                    Loader {
-                        active: root.largeMode
-                        source: "ConversationPane.qml"
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        Layout.preferredWidth: 1
-                    }
-                }
 
                 ColumnLayout {
                     anchors.fill: parent

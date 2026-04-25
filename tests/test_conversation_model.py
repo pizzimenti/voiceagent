@@ -136,3 +136,34 @@ def test_message_returns_shallow_copy_not_internal_dict(model):
     fresh = model.message(0)
     assert fresh is not None
     assert fresh["text"] == "hi"
+
+
+def test_append_status_message_carries_state_name(model):
+    model.append_message({"role": "status", "text": "Thinking…", "stateName": "thinking"})
+    idx = model.index(0, 0)
+    assert model.data(idx, ConversationModel.MessageRole) == "status"
+    assert model.data(idx, ConversationModel.TextRole) == "Thinking…"
+    assert model.data(idx, ConversationModel.StateNameRole) == "thinking"
+
+
+def test_status_message_coexists_with_other_roles(model):
+    model.append_message(_make_message("user", "what time is it"))
+    model.append_message({"role": "status", "text": "Transcribing…", "stateName": "transcribing"})
+    model.append_message({"role": "status", "text": "Thinking…", "stateName": "thinking"})
+    model.append_message(_make_message("assistant", "It is noon"))
+    assert model.rowCount() == 4
+    assert model.data(model.index(0, 0), ConversationModel.MessageRole) == "user"
+    assert model.data(model.index(1, 0), ConversationModel.MessageRole) == "status"
+    assert model.data(model.index(1, 0), ConversationModel.StateNameRole) == "transcribing"
+    assert model.data(model.index(2, 0), ConversationModel.MessageRole) == "status"
+    assert model.data(model.index(2, 0), ConversationModel.StateNameRole) == "thinking"
+    assert model.data(model.index(3, 0), ConversationModel.MessageRole) == "assistant"
+
+
+def test_find_message_index_locates_status_role(model):
+    model.append_message(_make_message("user", "hello"))
+    model.append_message({"role": "status", "text": "Thinking…", "stateName": "thinking"})
+    model.append_message(_make_message("assistant", "hi"))
+    model.append_message({"role": "status", "text": "Speaking…", "stateName": "speaking"})
+    # find_message_index walks in reverse, so most recent status row wins.
+    assert model.find_message_index("status") == 3
