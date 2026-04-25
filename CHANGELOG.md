@@ -2,6 +2,99 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.3.1 — 2026-04-25
+
+**Internal cleanup release.** No new user-facing features. Substantial
+restructuring under the hood, several real concurrency fixes that
+parallel-install users could trigger, and the project now ships with a
+test suite. Same install path, same UI.
+
+### Fixed
+- **Parallel-install thread safety.** STT and TTS download progress
+  was mutated from worker threads while the UI thread read it
+  concurrently — a real race that could corrupt the per-row progress
+  map under multi-download load. Progress now routes through a
+  queued-connection signal so only the owner thread writes the dict.
+- **Idempotent download finalization.** A download that emitted
+  `load_failed` from inside its worker *and* from the
+  `add_done_callback` path could double-finalize and re-enter the row
+  busy state. The finalization slots are now early-return no-ops if
+  the item is no longer active.
+- **`DownloadProgress` is immutable.** Promoted to
+  `@dataclass(frozen=True, slots=True)`. Required so the value type
+  can be safely shared across thread boundaries via the queued
+  connection.
+- **Catalog rows no longer stick on "Installing…" after a successful
+  install.** The QML `downloading` predicate is now consistent with
+  the loader's terminal-tick behavior (post-finalization ticks are
+  guarded out, and `delete_item` now emits the symmetric initial
+  empty-progress tick).
+- **Delete failures route to `delete_failed`, not `load_failed`.**
+  `_handle_done` is the done-callback for both download and delete
+  futures; a delete-future raising no longer surfaces a misleading
+  "load failed" message.
+- **Single-instance activation requires `b"activate"` payload.** The
+  Qt `QLocalServer` now reads the payload before emitting
+  `activated`, instead of activating on any TCP-style connection.
+  Bounded payload accumulation guards against unbounded reads.
+- **Subprocess output pre-initialized.** `aria2c` invocation in
+  `downloaders.py` initializes `stdout, stderr = "", ""` before the
+  `try:` so an unexpected `proc.communicate()` failure can't shadow
+  the real error with `UnboundLocalError`.
+
+### Changed
+- **`MainWindow` is split.** `ConversationModel` (`conversation_model.py`),
+  `CatalogModel` (`catalog_model.py`), and the LLM connect/refresh/
+  load orchestration (`services/llm_controller.py`) now live in
+  dedicated modules. `MainWindow` shrank from ~1156 lines to ~600 and
+  delegates the LLM surface to a controller object. The QML-facing
+  slot/property surface is unchanged.
+- **STT and TTS loaders share a `ParallelItemLoader` base.** The
+  duplicated state-machine code in `model_loader.py` and `tts_loader.py`
+  is now in `parallel_item_loader.py`. Subclasses override only the
+  status-string formatters and a couple of backend-specific hooks.
+- **QML extracted into reusable components.** New `qml/MicButton.qml`
+  replaces three near-identical Button blocks across the medium /
+  compact / large layouts. New `qml/ConversationPane.qml` factors the
+  inline `conversationPaneComponent` into its own file.
+  `MainWindow.qml` shrank from 1187 → ~880 lines.
+- **`micStatusLabel` is a priority table** instead of a 14-branch
+  if/elif. Adding a new pipeline state means inserting one tuple at
+  the right priority.
+- **Local PKGBUILD and AUR PKGBUILD share one packaging policy.**
+  Both vendor speech dependencies under `/usr/lib/voiceagent/vendor`
+  and ship the launcher script. The launcher discovers the system
+  site-packages path via `sysconfig.get_paths()["purelib"]` at run
+  time, so a Python rollover (3.14 → 3.15) no longer breaks
+  installed packages.
+- **Catalog delegate downloading-set lookup is O(1)** via a
+  `QVariantMap` instead of `Array.indexOf`.
+
+### Added
+- **Pytest infrastructure.** `pytest>=8` + `pytest-qt>=4`, headless Qt
+  via `QT_QPA_PLATFORM=offscreen` in `tests/conftest.py`. 57 tests
+  cover the format helpers, both list models, the
+  `ParallelItemLoader` state machine (including idempotent
+  finalization, queued-connection thread-safety, post-finalization
+  tick handling, and delete-failure routing), and the
+  `LlmController`.
+- **`FOLLOWUPS.md`** — forward-only worklist of items deferred from
+  this release's review and from future-feature scoping.
+
+### Removed
+- **`audio_check.py` and `replay_widgets.py`**, which were leftover
+  Qt Widgets debug code unreferenced by any live module after the
+  Kirigami/QML migration.
+- **Stale `TODO.md`** (its single line referred to replacing the
+  Widgets shell, which already happened in v0.2.0).
+
+### Documentation
+- **CHANGELOG correction**: v0.3.0 claimed "inertial scrolling" but
+  the implementation is direct `contentY` assignment with
+  bounds-checking. Reworded to describe what shipped.
+- **README**: `Tests` section, AUR section reflects the new vendor
+  policy, AUR release checklist updated.
+
 ## 0.3.0 — 2026-04-24
 
 **Install multiple voices at once, watch each one's progress in the list, and
