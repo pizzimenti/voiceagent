@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QObject
+from concurrent.futures import Future
+
+from PySide6.QtCore import QObject, Qt, Signal
 
 from voiceagent.backends import TextToSpeechBackend
 from voiceagent.parallel_item_loader import ParallelItemLoader
@@ -8,6 +10,18 @@ from voiceagent.parallel_item_loader import ParallelItemLoader
 
 class TtsVoiceLoader(ParallelItemLoader):
     """Piper-flavored loader. The state machine lives in `ParallelItemLoader`."""
+
+    # Emitted once the deferred remote catalog refresh completes. Payload
+    # is the full sorted voice-name list (on-disk ∪ cache ∪ remote). Fires
+    # only when the refreshed list actually differs from the eager set,
+    # so QML doesn't churn its delegates on a no-op refresh.
+    catalog_changed = Signal(list)
+
+    # Worker-thread → owner-thread bridge for the catalog refresh. The
+    # done-callback runs on the executor thread; this queued signal lands
+    # the result on the owner thread, matching the `_progress_tick`
+    # pattern already used by the base class.
+    _catalog_refresh_finished = Signal(list)
 
     def __init__(
         self, tts_service: TextToSpeechBackend, parent: QObject | None = None
@@ -19,7 +33,73 @@ class TtsVoiceLoader(ParallelItemLoader):
             parent=parent,
         )
         self.tts_service = tts_service
+        self._catalog_refresh_scheduled = False
+        self._catalog_refresh_finished.connect(
+            self._handle_catalog_refresh_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._emit_initial_state()
+
+    # -- deferred catalog refresh ------------------------------------------
+
+    @property
+    def catalog_refresh_scheduled(self) -> bool:
+        return self._catalog_refresh_scheduled
+
+    def refresh_catalog_async(self) -> None:
+        """Kick off the network refresh of the voice catalog.
+
+        Idempotent: only the first call actually schedules work. Callers
+        invoke this after QML first paint so the blocking `voices.json`
+        fetch never stalls the UI thread. See AGENTS.md: "keep
+        network/model refreshes off the first paint path."
+        """
+        if self._catalog_refresh_scheduled:
+            return
+        self._catalog_refresh_scheduled = True
+        # Capture the eager snapshot on the owner thread *before* the
+        # worker runs. The worker's `refresh_catalog` call writes to the
+        # on-disk cache as a side effect, so calling `available_items()`
+        # after the worker would always match the post-fetch list and
+        # the change check would miss real additions.
+        pre_refresh = list(self.tts_service.available_items())
+        future = self.executor.submit(self._refresh_catalog_worker)
+        future.add_done_callback(
+            lambda f, snapshot=pre_refresh: self._dispatch_catalog_refresh_result(
+                f, snapshot
+            )
+        )
+
+    def _refresh_catalog_worker(self) -> list[str]:
+        refresh = getattr(self.tts_service, "refresh_catalog", None)
+        if not callable(refresh):
+            return list(self.tts_service.available_items())
+        return list(refresh())
+
+    def _dispatch_catalog_refresh_result(
+        self, future: "Future[list[str]]", pre_refresh: list[str]
+    ) -> None:
+        try:
+            names = future.result()
+        except Exception as exc:  # pragma: no cover - defensive, logged for triage
+            self._logger.warning("TTS catalog refresh failed: %s", exc)
+            return
+        # Only dispatch to the owner thread when the refresh actually
+        # added/removed entries relative to the eager snapshot captured
+        # before the fetch. The worker rewrites `voices.json` as a side
+        # effect, so an identity check against `available_items()`
+        # post-fetch would always look like "no change."
+        if list(names) == list(pre_refresh):
+            return
+        self._catalog_refresh_finished.emit(list(names))
+
+    def _handle_catalog_refresh_finished(self, names: list[str]) -> None:
+        # The delta has already been validated on the worker side against
+        # the eager pre-refresh snapshot. Forward to QML so the catalog
+        # dropdown rebinds.
+        if not names:
+            return
+        self.catalog_changed.emit(list(names))
 
     @property
     def is_enabled(self) -> bool:

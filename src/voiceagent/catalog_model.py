@@ -61,3 +61,18 @@ class CatalogModel(QAbstractListModel):
             self.index(len(self._names) - 1, 0),
             [self.InstalledRole],
         )
+
+    def replace_names(self, names) -> None:
+        """Swap the full name list (e.g. after a deferred catalog refresh).
+
+        Uses `beginResetModel` so QML rebuilds the delegates against the
+        new list. Callers should only invoke this on genuine catalog
+        changes (not on every `installed`-flip) because a full reset
+        disturbs `contentY` — see AGENTS.md's sticky-scroll guidance.
+        """
+        new_names = list(names)
+        if new_names == self._names:
+            return
+        self.beginResetModel()
+        self._names = new_names
+        self.endResetModel()

@@ -48,20 +48,43 @@ class PiperTtsService(TextToSpeechBackend):
 
     @classmethod
     def available_voice_names(cls, model_root: Path, configured_model: str | None = None) -> list[str]:
+        """Return the eager on-disk catalog (installed + cached + configured).
+
+        This path must never touch the network — see AGENTS.md's "keep
+        network/model refreshes off the first paint path" rule. The
+        asynchronous refresh that adds remote-only entries is driven by
+        `refresh_remote_catalog`, which is expected to run after the QML
+        window has painted.
+        """
         voices: set[str] = set()
         if configured_model:
             voices.add(configured_model)
 
         voices.update(cls._cached_voice_names(model_root))
-        cached_voices = cls._voice_names_from_cache_file(model_root)
-        voices.update(cached_voices)
-        if not cached_voices:
-            voices.update(cls._fetch_and_cache_voice_names(model_root))
+        voices.update(cls._voice_names_from_cache_file(model_root))
 
         return sorted(voices)
 
+    @classmethod
+    def refresh_remote_catalog(
+        cls, model_root: Path, configured_model: str | None = None
+    ) -> list[str]:
+        """Fetch `voices.json`, refresh the on-disk cache, and return the union.
+
+        Safe to run from a worker thread: only performs a `urlopen` and a
+        file write to the cache path. Returns the same eager union as
+        `available_voice_names` when the network fetch fails, so callers
+        can treat any failure as a no-op.
+        """
+        cls._fetch_and_cache_voice_names(model_root)
+        return cls.available_voice_names(model_root, configured_model)
+
     def available_items(self) -> list[str]:
         return self.available_voice_names(self.model_root, self.model_path)
+
+    def refresh_catalog(self) -> list[str]:
+        """Worker-thread entry point for the deferred catalog refresh."""
+        return self.refresh_remote_catalog(self.model_root, self.model_path)
 
     @classmethod
     def is_voice_available(cls, model_root: Path, model_path: str | None) -> bool:
