@@ -97,10 +97,9 @@ surrounding code.
 - **`voiceagent-compiletest.sh:49,329`** — QML compile-test stub
   `voiceAgent` has slot/property signatures that drift from the real
   `MainWindow`, and the script doesn't lint the extracted QML
-  components (`MicButton.qml`, `ConversationPane.qml`,
-  `WaveformMeter.qml`) directly — only via `MainWindow.qml`. Make the
-  stub generation programmatic or at minimum add explicit qmllint
-  invocations.
+  components (`MicButton.qml`, `ConversationPane.qml`) directly —
+  only via `MainWindow.qml`. Make the stub generation programmatic
+  or at minimum add explicit qmllint invocations.
 
 ### From CodeRabbit
 
@@ -178,13 +177,18 @@ not user-visible.
 External round-2 review of PR #7 (the v0.4.0 ui-shaping branch)
 surfaced these architectural items. Each is its own cycle.
 
-- **`ConversationTurnCoordinator`.** A small object that owns the
-  draft → final → status row ordering for a conversation turn. Today
-  `_apply_state` only promotes an existing draft user bubble; if no
-  draft exists yet (the user finalized via VAD silence rather than a
-  click), pipeline status rows can land before the final user bubble.
-  The coordinator would gate status appends on the user-bubble
-  finalization being settled.
+- **`ConversationTurnCoordinator`.** Centralize the draft → final →
+  status row ordering policy for a conversation turn into a single
+  owner. The acute ordering bug (status rows landing before the user
+  bubble on short turns with no partial transcript) was patched in
+  this PR by deferring status rows in `_apply_state` until
+  `_sync_live_user_message` or `_append_user_message` flips a
+  per-turn flag (see `src/voiceagent/window.py:754`); the queue is
+  also gated on `logVerboseMode` at flush time. That works but leaves
+  the policy spread across three call sites and a queue. A
+  coordinator would own the queue, the per-turn flag, the dedupe
+  state, and the verbose-mode gate, and is the natural place to add
+  any future ordering rules (e.g., assistant draft anchoring).
 
 - **`ConversationLogController` as the only writer to
   `ConversationModel`.** Today `window.py` writes to the model from
@@ -261,3 +265,16 @@ surfaced these architectural items. Each is its own cycle.
   more of the inline button bindings to `Kirigami.Action`-based
   command surfaces. Each is small but they should land together so
   the QML reads consistently.
+
+- **True post-first-frame deferral helper.** `app.py:118` documents
+  why a 0 ms `QTimer.singleShot(0, ...)` can fire on the next
+  event-loop tick before the first frame swap completes — that
+  deferral was rewritten to a daemon thread for the sounddevice
+  pre-warm. But `window.py:182` still uses the same pattern for
+  LLM autoconnect and the TTS catalog refresh. Both are
+  lightweight / off-thread today so it is not currently a P1 bug,
+  but it is the same anti-pattern. Build a small helper that
+  schedules work after the first frame swap (Qt has
+  `QQuickWindow::frameSwapped` for exactly this) or off-thread,
+  and route both call sites through it. KDE startup-best-practice
+  alignment.
