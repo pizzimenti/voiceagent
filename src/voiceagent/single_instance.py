@@ -10,6 +10,12 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 logger = logging.getLogger(__name__)
 
+# Wire protocol: a peer must send this exact byte string to trigger activation.
+ACTIVATE_PAYLOAD = b"activate"
+# Cap the per-connection buffer so a misbehaving peer cannot stream unbounded
+# bytes at us. The protocol is a single fixed token, so a small ceiling is fine.
+_MAX_PAYLOAD_BYTES = 64
+
 
 class SingleInstance(QObject):
     activated = Signal()
@@ -18,15 +24,45 @@ class SingleInstance(QObject):
         super().__init__(parent)
         self._lock_file = lock_file
         self._server = server
+        self._buffers: dict[int, bytearray] = {}
         self._server.newConnection.connect(self._on_new_connection)
 
     def _on_new_connection(self) -> None:
         connection = self._server.nextPendingConnection()
         if connection is None:
             return
-        connection.readyRead.connect(connection.readAll)
-        connection.disconnected.connect(connection.deleteLater)
-        self.activated.emit()
+        key = id(connection)
+        self._buffers[key] = bytearray()
+
+        def _on_ready_read() -> None:
+            buffer = self._buffers.get(key)
+            if buffer is None:
+                # Connection already finalized; drain and ignore.
+                connection.readAll()
+                return
+            chunk = bytes(connection.readAll())
+            if not chunk:
+                return
+            buffer.extend(chunk)
+            if len(buffer) > _MAX_PAYLOAD_BYTES:
+                logger.warning(
+                    "Activation peer sent oversized payload (%d bytes); dropping",
+                    len(buffer),
+                )
+                self._buffers.pop(key, None)
+                connection.disconnectFromServer()
+                return
+            if bytes(buffer).rstrip(b"\r\n") == ACTIVATE_PAYLOAD:
+                self._buffers.pop(key, None)
+                self.activated.emit()
+                connection.disconnectFromServer()
+
+        def _on_disconnected() -> None:
+            self._buffers.pop(key, None)
+            connection.deleteLater()
+
+        connection.readyRead.connect(_on_ready_read)
+        connection.disconnected.connect(_on_disconnected)
 
     def release(self) -> None:
         if self._server.isListening():
@@ -51,7 +87,7 @@ def acquire_or_activate(server_name: str = "voiceagent") -> SingleInstance | Non
         socket = QLocalSocket()
         socket.connectToServer(server_name)
         if socket.waitForConnected(1000):
-            socket.write(b"activate\n")
+            socket.write(ACTIVATE_PAYLOAD)
             socket.flush()
             socket.waitForBytesWritten(1000)
             socket.disconnectFromServer()

@@ -18,7 +18,7 @@ _QT_LEVEL_MAP = {
 }
 
 
-def _qt_message_handler(mode, context, message):  # noqa: ANN001 - Qt signature
+def _qt_message_handler(mode, _context, message) -> None:  # noqa: ANN001 - Qt signature
     logging.getLogger("voiceagent.qml").log(_QT_LEVEL_MAP.get(mode, logging.INFO), message)
 
 

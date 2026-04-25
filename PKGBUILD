@@ -2,7 +2,7 @@
 
 pkgname=voiceagent
 pkgver=0.3.0
-pkgrel=1
+pkgrel=2
 pkgdesc='Push-to-talk KDE-friendly desktop voice assistant'
 arch=('any')
 url='https://github.com/pizzimenti/voiceagent'

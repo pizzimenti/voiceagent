@@ -44,7 +44,6 @@ export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
 "${VENV_PYTHON}" -m py_compile \
   "${ROOT_DIR}/src/voiceagent/app.py" \
   "${ROOT_DIR}/src/voiceagent/window.py" \
-  "${ROOT_DIR}/src/voiceagent/audio_check.py" \
   "${ROOT_DIR}/src/voiceagent/controller.py"
 
 qmllint \

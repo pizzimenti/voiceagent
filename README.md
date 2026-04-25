@@ -10,7 +10,6 @@ Push-to-talk KDE-friendly desktop voice assistant for local speech workflows.
 - `piper-tts` for local speech synthesis
 - `aria2c` for segmented model downloads
 - LM Studio's OpenAI-compatible local API for chat
-- Piper's Python runtime for local speech synthesis
 
 ## Setup
 
@@ -60,6 +59,16 @@ For a quick non-packaging smoke check of the desktop shell:
 
 That verifies the key Python entrypoints compile and that the Kirigami QML window loads offscreen.
 
+## Tests
+
+Run the test suite from the project root:
+
+```bash
+QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m pytest -q tests/
+```
+
+If the venv is already active, `pytest -q tests/` is enough — `tests/conftest.py` sets `QT_QPA_PLATFORM=offscreen` and adds `src/` to `sys.path` automatically.
+
 ## Arch / Manjaro Packaging
 
 The repo includes two Arch packaging paths:
@@ -98,7 +107,7 @@ When additional STT or TTS backends are introduced, prefer this packaging policy
 
 Before publishing or updating the AUR package:
 
-1. Create and push a signed or otherwise finalized Git tag such as `v0.2.0`.
+1. Create and push a signed or otherwise finalized Git tag such as `v0.3.0`.
 2. Confirm the GitHub release tarball for that tag exists and matches the expected source layout.
 3. Update `pkgver` in `packaging/PKGBUILD.aur` if needed.
 4. Replace `sha256sums=('SKIP')` in `packaging/PKGBUILD.aur` with the real release checksum if you want reproducible source verification.
@@ -106,7 +115,7 @@ Before publishing or updating the AUR package:
 6. Verify runtime behavior after installation:
    `voiceagent`, desktop entry launch, XDG data paths, model download flow, microphone capture, TTS playback.
 7. Regenerate `.SRCINFO` from the AUR package recipe before publishing to the AUR repo.
-8. Recheck AUR dependency names, especially for non-core Python speech packages that may move between official repos and AUR.
+8. Confirm `packaging/vendor-requirements.txt` is in sync with `pyproject.toml` so the Python speech stack vendored into `/usr/lib/voiceagent/vendor` matches what the wheel expects at runtime.
 
 ## Acknowledgements
 

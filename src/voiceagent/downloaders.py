@@ -22,7 +22,7 @@ class DownloadFile:
     size_bytes: int
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class DownloadProgress:
     completed_bytes: int
     total_bytes: int
@@ -128,6 +128,7 @@ class AriaDownloader:
                         break
                     time.sleep(0.2)
             finally:
+                stdout, stderr = "", ""
                 try:
                     stdout, stderr = proc.communicate(timeout=5)
                 except subprocess.TimeoutExpired:

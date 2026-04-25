@@ -15,8 +15,10 @@ keep your scroll position while they finish.**
 - **Sticky-to-bottom conversation view.** If you're at the bottom when a new
   turn arrives, the view follows; if you've scrolled up to read history, the
   view stays put and a small "↓" button appears to jump back.
-- **Inertial scrolling** in both the conversation and the Voice Models lists —
-  wheel / trackpad flicks coast and decelerate instead of teleporting.
+- **Smooth pixel-based wheel scrolling** in both the conversation and the
+  Voice Models lists — wheel / trackpad input drives `contentY` directly
+  with bounds-checking, replacing the prior page-jump behavior. (True
+  inertial coast-and-decelerate remains future work.)
 - **Microphone button shows live status** inside the button itself — "Ready —
   tap to talk", "Listening…", "Transcribing…", "Thinking…", etc. The status
   replaces the old separate indicator text.
