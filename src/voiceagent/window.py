@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import logging
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 from PySide6.QtCore import (
     Property,
@@ -643,6 +643,12 @@ class MainWindow(QObject):
         self.downloads_progress_changed.emit()
 
     def _on_stt_item_progress_changed(self, model_name: str, progress) -> None:
+        # The loader emits a terminal item_progress_changed in _finish_success
+        # *after* item_loading_changed(False) has already cleared this row.
+        # Drop the post-finalization tick so the row doesn't re-enter the
+        # downloading-set lookup map and stick on "Installing…".
+        if not self.model_loader.is_item_loading(model_name):
+            return
         total = getattr(progress, "total_bytes", 0) or 0
         completed = getattr(progress, "completed_bytes", 0) or 0
         fraction = (completed / total) if total > 0 else 0.0
@@ -660,6 +666,9 @@ class MainWindow(QObject):
         self.downloads_progress_changed.emit()
 
     def _on_tts_item_progress_changed(self, model_name: str, progress) -> None:
+        # See _on_stt_item_progress_changed — same post-finalization-tick guard.
+        if not self.tts_loader.is_item_loading(model_name):
+            return
         total = getattr(progress, "total_bytes", 0) or 0
         completed = getattr(progress, "completed_bytes", 0) or 0
         fraction = (completed / total) if total > 0 else 0.0

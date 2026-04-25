@@ -156,7 +156,6 @@ def test_loading_changed_idle_to_busy_edge_only(qtbot):
 
     backend.download_strategy = strategy
     loader = _ConcreteLoader(backend)
-    qtbot.addWidget  # noqa: B018  (qtbot installs the QApplication)
 
     loading_signals: list[bool] = []
     loader.loading_changed.connect(loading_signals.append)

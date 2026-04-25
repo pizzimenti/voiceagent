@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 from PySide6.QtCore import (
     QAbstractListModel,
     QByteArray,
@@ -18,7 +20,7 @@ class ConversationModel(QAbstractListModel):
     TurnPendingRole = Qt.ItemDataRole.UserRole + 6
     TimestampLabelRole = Qt.ItemDataRole.UserRole + 7
 
-    _ROLE_NAMES = {
+    _ROLE_NAMES: ClassVar[dict[int, QByteArray]] = {
         MessageRole: QByteArray(b"messageRole"),
         LevelRole: QByteArray(b"level"),
         TextRole: QByteArray(b"text"),
@@ -27,7 +29,7 @@ class ConversationModel(QAbstractListModel):
         TurnPendingRole: QByteArray(b"turnPending"),
         TimestampLabelRole: QByteArray(b"timestampLabel"),
     }
-    _ROLE_KEYS = {
+    _ROLE_KEYS: ClassVar[dict[int, str]] = {
         MessageRole: "role",
         LevelRole: "level",
         TextRole: "text",
