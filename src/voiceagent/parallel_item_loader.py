@@ -392,11 +392,18 @@ class ParallelItemLoader(QObject):
                 name,
                 operation,
             )
-            if name in self._active_items:
-                if operation == "delete":
-                    self.delete_failed.emit(name, "Item operation failed unexpectedly")
-                else:
-                    self.load_failed.emit(name, "Item operation failed unexpectedly")
+            # Emit unconditionally: this callback runs on the executor
+            # thread, so we must NOT read owner-thread state like
+            # `_active_items` to gate the emission. The connected
+            # finish-* slots run on the owner thread and each have an
+            # idempotent `name in self._active_items` guard that
+            # safely no-ops on stale/duplicate emissions (e.g. when
+            # the worker already emitted load_failed before the future
+            # bubbled the same exception up here).
+            if operation == "delete":
+                self.delete_failed.emit(name, "Item operation failed unexpectedly")
+            else:
+                self.load_failed.emit(name, "Item operation failed unexpectedly")
 
     # -- owner-thread slots ------------------------------------------------
 

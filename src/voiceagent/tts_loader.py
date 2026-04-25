@@ -95,32 +95,51 @@ class TtsVoiceLoader(ParallelItemLoader):
     def _dispatch_catalog_refresh_result(
         self, future: "Future[list[str]]", pre_refresh: list[str]
     ) -> None:
-        # Reset the scheduled flag once the worker has resolved (success,
-        # exception, or no-op). The flag is a "do not stack concurrent
-        # refreshes" guard, not a once-per-session latch — a transient
-        # network failure on first paint must not lock out future
-        # user-triggered re-fetches.
+        # Runs on the executor thread. Per the thread-affinity invariant
+        # established by `ParallelItemLoader._on_progress_tick` (only the
+        # owner thread mutates loader state), this callback must NOT
+        # touch `_catalog_refresh_scheduled` directly. Instead it always
+        # emits `_catalog_refresh_finished`; the queued connection lands
+        # the result on the owner thread, where
+        # `_handle_catalog_refresh_finished` is the sole writer of the
+        # flag.
+        #
+        # The signal fires on every settled outcome (success, exception,
+        # or no-delta no-op) so the owner-thread slot can release the
+        # "do not stack concurrent refreshes" latch. A transient network
+        # failure on first paint must not lock out future user-triggered
+        # re-fetches. Payload is the new catalog when there's a delta to
+        # publish, or `[]` for failure / no-change — the slot uses the
+        # latter as a "reset only" sentinel.
         try:
-            try:
-                names = future.result()
-            except Exception as exc:  # pragma: no cover - defensive, logged for triage
-                self._logger.warning("TTS catalog refresh failed: %s", exc)
-                return
-            # Only dispatch to the owner thread when the refresh actually
-            # added/removed entries relative to the eager snapshot captured
-            # before the fetch. The worker rewrites `voices.json` as a side
-            # effect, so an identity check against `available_items()`
-            # post-fetch would always look like "no change."
-            if list(names) == list(pre_refresh):
-                return
-            self._catalog_refresh_finished.emit(list(names))
-        finally:
-            self._catalog_refresh_scheduled = False
+            names = future.result()
+        except Exception as exc:  # pragma: no cover - defensive, logged for triage
+            self._logger.warning("TTS catalog refresh failed: %s", exc)
+            self._catalog_refresh_finished.emit([])
+            return
+        # Only forward a non-empty payload when the refresh actually
+        # added/removed entries relative to the eager snapshot captured
+        # before the fetch. The worker rewrites `voices.json` as a side
+        # effect, so an identity check against `available_items()`
+        # post-fetch would always look like "no change."
+        if list(names) == list(pre_refresh):
+            self._catalog_refresh_finished.emit([])
+            return
+        self._catalog_refresh_finished.emit(list(names))
 
     def _handle_catalog_refresh_finished(self, names: list[str]) -> None:
-        # The delta has already been validated on the worker side against
-        # the eager pre-refresh snapshot. Forward to QML so the catalog
-        # dropdown rebinds.
+        # Owner-thread slot — connected via QueuedConnection so the
+        # executor-thread emission lands here serialized against the
+        # rest of the GUI-thread state. This is the SOLE writer of
+        # `_catalog_refresh_scheduled` after the initial set in
+        # `refresh_catalog_async`, mirroring the
+        # `_progress_tick → _on_progress_tick` pattern in the base class.
+        #
+        # Always reset the latch (the worker has settled, regardless of
+        # outcome). Only forward to QML when the worker gave us a real
+        # delta — an empty payload means "no change / failure, just
+        # release the flag."
+        self._catalog_refresh_scheduled = False
         if not names:
             return
         self.catalog_changed.emit(list(names))
