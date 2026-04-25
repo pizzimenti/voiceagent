@@ -273,3 +273,50 @@ def test_queued_connection_is_used_for_bridges():
 
     assert hasattr(VoiceController, "_pipeline_count_delta")
     assert hasattr(VoiceController, "_partial_inflight_changed")
+
+
+def test_pipeline_count_decrements_inline_when_emitted_on_owner_thread(qtbot, controller):
+    """`Future.add_done_callback` invokes the callback synchronously on the
+    caller's thread when the future is already done at registration time.
+    For our submit/add-done pattern that's the owner thread.
+
+    With QueuedConnection, the same-thread emit would *post* the
+    decrement instead of applying it inline; subsequent same-thread
+    signals (pipeline_completed/pipeline_failed) would then read a stale
+    `_active_pipeline_count` and skip the resume/state-transition logic.
+
+    AutoConnection (the new default for these bridges) routes same-thread
+    emits inline, so by the time pipeline_completed fires the count is
+    already correct.
+
+    Codex P2 round 3 on PR #6.
+    """
+
+    controller._active_pipeline_count = 3
+    # Same-thread emit (the owner thread is currently executing this test).
+    controller._pipeline_count_delta.emit(-1)
+    # No event loop spin needed — the slot must have run inline.
+    assert controller._active_pipeline_count == 2
+
+    # The cross-thread path still works.
+    def _emit_from_worker():
+        controller._pipeline_count_delta.emit(-1)
+
+    t = threading.Thread(target=_emit_from_worker)
+    t.start()
+    t.join(timeout=1.0)
+    # Cross-thread emit queues; spin the loop.
+    deadline = 50
+    while controller._active_pipeline_count != 1 and deadline > 0:
+        _process_events(2)
+        deadline -= 1
+    assert controller._active_pipeline_count == 1
+
+
+def test_partial_inflight_clears_inline_when_emitted_on_owner_thread(qtbot, controller):
+    """Same property as above for the partial-inflight bridge."""
+
+    controller._partial_inflight = True
+    controller._partial_inflight_changed.emit(False)
+    # Inline same-thread delivery via AutoConnection.
+    assert controller._partial_inflight is False

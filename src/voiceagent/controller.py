@@ -29,12 +29,12 @@ class VoiceController(QObject):
     partial_transcription_ready = Signal(object)
 
     # Internal worker-thread -> owner-thread bridges. Emitted from
-    # `add_done_callback` callbacks that run on executor threads, and
-    # connected with Qt.QueuedConnection so the paired slot runs on the
-    # owner thread (the QObject's thread) and is the SOLE writer of the
-    # attribute it controls. See the pattern in
-    # `voiceagent.parallel_item_loader.ParallelItemLoader` and
-    # `voiceagent.services.llm_controller.LlmController`.
+    # `add_done_callback` callbacks that may run on executor threads OR
+    # synchronously on the owner thread (when add_done_callback registers
+    # against an already-done future). Connected with AutoConnection so
+    # cross-thread emits queue (slot runs on the owner thread, sole
+    # writer) and same-thread emits run inline (correct count is in
+    # place before any subsequent same-thread signal emit reads it).
     _pipeline_count_delta = Signal(int)
     _partial_inflight_changed = Signal(bool)
 
@@ -68,13 +68,15 @@ class VoiceController(QObject):
         self._voice_connection_enabled = False
         # INVARIANT: only the owner thread writes `_active_pipeline_count`.
         # Executor-thread callbacks emit `_pipeline_count_delta` and
-        # `_on_pipeline_count_delta` (QueuedConnection) is the sole writer.
+        # `_on_pipeline_count_delta` is the sole writer (AutoConnection
+        # routes to it directly when same-thread, queues when cross-thread).
         self._active_pipeline_count = 0
         self._playing_response = False
         self._aux_playback_active = False
         # INVARIANT: only the owner thread writes `_partial_inflight`.
         # Executor-thread callbacks emit `_partial_inflight_changed` and
-        # `_on_partial_inflight_changed` (QueuedConnection) is the sole writer.
+        # `_on_partial_inflight_changed` is the sole writer (AutoConnection;
+        # see the matching comment above on `_active_pipeline_count`).
         self._partial_inflight = False
         self._live_transcript = ""
         self._partial_last_text = ""
@@ -97,15 +99,18 @@ class VoiceController(QObject):
         self.player.playback_started.connect(self._handle_playback_started)
         self.player.playback_finished.connect(self._handle_playback_finished)
         self.player.playback_failed.connect(self._handle_playback_failed)
-        # Worker-thread -> owner-thread bridges. QueuedConnection forces the
-        # slot to run on the thread that owns this QObject, so the slot is
-        # safe to use as the single writer of the protected attribute.
-        self._pipeline_count_delta.connect(
-            self._on_pipeline_count_delta, Qt.ConnectionType.QueuedConnection
-        )
-        self._partial_inflight_changed.connect(
-            self._on_partial_inflight_changed, Qt.ConnectionType.QueuedConnection
-        )
+        # Worker-thread -> owner-thread bridges. Use AutoConnection (default):
+        # cross-thread emits queue (sole writer is still the owner thread),
+        # same-thread emits run inline. Same-thread is the corner case where
+        # `Future.add_done_callback` is registered against an already-done
+        # future — Python invokes the callback synchronously on the caller's
+        # thread (the owner thread for our submit/add-done pattern). With
+        # explicit QueuedConnection, that synchronous owner-thread callback
+        # would *post* the decrement instead of applying it, and the
+        # subsequent `pipeline_completed` emit (also synchronous) would read
+        # a stale count and skip the resume/state transition.
+        self._pipeline_count_delta.connect(self._on_pipeline_count_delta)
+        self._partial_inflight_changed.connect(self._on_partial_inflight_changed)
 
         self._apply_state(AppState.IDLE.value, "Ready")
 
