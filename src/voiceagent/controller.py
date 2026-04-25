@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 import time
 
-from PySide6.QtCore import QObject, Signal, QTimer
+from PySide6.QtCore import QObject, Qt, Signal, Slot, QTimer
 
 from voiceagent.backends import SpeechToTextBackend, TextToSpeechBackend
 from voiceagent.models import AppState, PipelineResult
@@ -27,6 +27,16 @@ class VoiceController(QObject):
     pipeline_failed = Signal(str)
     pipeline_state_changed = Signal(str, str)
     partial_transcription_ready = Signal(object)
+
+    # Internal worker-thread -> owner-thread bridges. Emitted from
+    # `add_done_callback` callbacks that run on executor threads, and
+    # connected with Qt.QueuedConnection so the paired slot runs on the
+    # owner thread (the QObject's thread) and is the SOLE writer of the
+    # attribute it controls. See the pattern in
+    # `voiceagent.parallel_item_loader.ParallelItemLoader` and
+    # `voiceagent.services.llm_controller.LlmController`.
+    _pipeline_count_delta = Signal(int)
+    _partial_inflight_changed = Signal(bool)
 
     _PARTIAL_CHECK_INTERVAL_MS = 350
     _PARTIAL_MIN_SPEECH_SECONDS = 0.35
@@ -56,9 +66,15 @@ class VoiceController(QObject):
         self.state = AppState.IDLE
         self._logger = logging.getLogger(__name__)
         self._voice_connection_enabled = False
+        # INVARIANT: only the owner thread writes `_active_pipeline_count`.
+        # Executor-thread callbacks emit `_pipeline_count_delta` and
+        # `_on_pipeline_count_delta` (QueuedConnection) is the sole writer.
         self._active_pipeline_count = 0
         self._playing_response = False
         self._aux_playback_active = False
+        # INVARIANT: only the owner thread writes `_partial_inflight`.
+        # Executor-thread callbacks emit `_partial_inflight_changed` and
+        # `_on_partial_inflight_changed` (QueuedConnection) is the sole writer.
         self._partial_inflight = False
         self._live_transcript = ""
         self._partial_last_text = ""
@@ -81,6 +97,15 @@ class VoiceController(QObject):
         self.player.playback_started.connect(self._handle_playback_started)
         self.player.playback_finished.connect(self._handle_playback_finished)
         self.player.playback_failed.connect(self._handle_playback_failed)
+        # Worker-thread -> owner-thread bridges. QueuedConnection forces the
+        # slot to run on the thread that owns this QObject, so the slot is
+        # safe to use as the single writer of the protected attribute.
+        self._pipeline_count_delta.connect(
+            self._on_pipeline_count_delta, Qt.ConnectionType.QueuedConnection
+        )
+        self._partial_inflight_changed.connect(
+            self._on_partial_inflight_changed, Qt.ConnectionType.QueuedConnection
+        )
 
         self._apply_state(AppState.IDLE.value, "Ready")
 
@@ -188,8 +213,10 @@ class VoiceController(QObject):
             audio_path.unlink(missing_ok=True)
 
     def _handle_pipeline_done(self, future: Future[PipelineResult]) -> None:
-        self._active_pipeline_count = max(0, self._active_pipeline_count - 1)
-        self._logger.info("Voice pipeline future completed active_pipeline_count=%s", self._active_pipeline_count)
+        # Runs on the executor thread. MUST NOT mutate `_active_pipeline_count`
+        # directly; route the delta through `_pipeline_count_delta` so the
+        # queued slot on the owner thread is the sole writer.
+        self._pipeline_count_delta.emit(-1)
         try:
             result = future.result()
         except Exception as exc:
@@ -401,13 +428,36 @@ class VoiceController(QObject):
             audio_path.unlink(missing_ok=True)
 
     def _handle_partial_done(self, future: Future[dict[str, object]]) -> None:
-        self._partial_inflight = False
+        # Runs on the partial-executor thread. MUST NOT mutate
+        # `_partial_inflight` directly; route the change through
+        # `_partial_inflight_changed` so the queued slot on the owner thread
+        # is the sole writer.
+        self._partial_inflight_changed.emit(False)
         try:
             payload = future.result()
         except Exception as exc:
             self._logger.exception("Partial transcription future failed unexpectedly")
             payload = {"text": "", "speech_frames": 0, "error": str(exc)}
         self.partial_transcription_ready.emit(payload)
+
+    @Slot(int)
+    def _on_pipeline_count_delta(self, delta: int) -> None:
+        # Sole owner-thread writer for `_active_pipeline_count` when the
+        # update originates on a worker thread. Runs via QueuedConnection
+        # so it always executes on the thread that owns this QObject.
+        new_count = max(0, self._active_pipeline_count + delta)
+        self._active_pipeline_count = new_count
+        self._logger.info(
+            "Voice pipeline count updated via queued bridge delta=%s active_pipeline_count=%s",
+            delta,
+            new_count,
+        )
+
+    @Slot(bool)
+    def _on_partial_inflight_changed(self, inflight: bool) -> None:
+        # Sole owner-thread writer for `_partial_inflight` when the update
+        # originates on a worker thread. Runs via QueuedConnection.
+        self._partial_inflight = inflight
 
     def _handle_partial_transcription_ready(self, payload: object) -> None:
         if not isinstance(payload, dict):
