@@ -23,6 +23,16 @@ Kirigami.ApplicationWindow {
     title: "Voice Agent"
     required property QtObject voiceAgent
 
+    // Belt-and-suspenders: window-flag hints (above) are advisory on
+    // Linux WMs and can be bypassed via keyboard shortcut (Super+Up)
+    // or right-click title-bar menu. Snap back to Windowed if anything
+    // promotes the window past it.
+    onVisibilityChanged: function(visibility) {
+        if (visibility === Window.Maximized || visibility === Window.FullScreen) {
+            root.visibility = Window.Windowed;
+        }
+    }
+
     readonly property bool compactMode: width < Kirigami.Units.gridUnit * 25
     readonly property bool mediumMode: !compactMode
     readonly property bool ultraCompactMode: compactMode
