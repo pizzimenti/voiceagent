@@ -9,15 +9,23 @@ Kirigami.ApplicationWindow {
 
     width: 512
     height: 512
+    // Cap horizontal width below the gridUnit*50 threshold that previously
+    // toggled the two-column dashboard layout. The single-pane layout is the
+    // only supported view above compactMode.
+    maximumWidth: Kirigami.Units.gridUnit * 49
+    // Drop Qt.WindowMaximizeButtonHint so the WM cannot expand past the cap.
+    flags: Qt.Window
+        | Qt.WindowTitleHint
+        | Qt.WindowSystemMenuHint
+        | Qt.WindowMinimizeButtonHint
+        | Qt.WindowCloseButtonHint
     visible: true
     title: "Voice Agent"
     required property QtObject voiceAgent
 
     readonly property bool compactMode: width < Kirigami.Units.gridUnit * 25
-    readonly property bool largeMode: width >= Kirigami.Units.gridUnit * 50
-    readonly property bool mediumMode: !compactMode && !largeMode
+    readonly property bool mediumMode: !compactMode
     readonly property bool ultraCompactMode: compactMode
-    readonly property int dashboardColumns: largeMode ? 2 : 1
     readonly property int sttInstalledCount: countInstalled(voiceAgent.sttCatalog)
     readonly property int ttsInstalledCount: countInstalled(voiceAgent.ttsCatalog)
     readonly property color micPulseColor: voiceAgent.talkReady ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
@@ -510,7 +518,7 @@ Kirigami.ApplicationWindow {
                     GridLayout {
                         id: sessionSetupGrid
                         width: parent.width
-                        columns: root.compactMode ? 1 : (root.largeMode ? 2 : 3)
+                        columns: root.compactMode ? 1 : 3
                         columnSpacing: Kirigami.Units.mediumSpacing
                         rowSpacing: Kirigami.Units.smallSpacing
 
@@ -716,74 +724,6 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    Component {
-        id: largeMicPaneComponent
-
-        Pane {
-            padding: Kirigami.Units.mediumSpacing
-            implicitWidth: Kirigami.Units.gridUnit * 12
-
-            Item {
-                id: largeMicButtonFrame
-                anchors.fill: parent
-                property real glowOpacity: root.micPulseActive ? 0.5 : 0.2
-                property real glowScale: 1.0
-
-                SequentialAnimation {
-                    running: root.largeMode && root.micPulseActive
-                    loops: Animation.Infinite
-
-                    ParallelAnimation {
-                        NumberAnimation {
-                            target: largeMicButtonFrame
-                            property: "glowOpacity"
-                            to: voiceAgent.voiceConnectionEnabled ? 1.0 : 0.78
-                            duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
-                            easing.type: Easing.InOutSine
-                        }
-                        NumberAnimation {
-                            target: largeMicButtonFrame
-                            property: "glowScale"
-                            to: 1.02
-                            duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
-                            easing.type: Easing.InOutSine
-                        }
-                    }
-
-                    ParallelAnimation {
-                        NumberAnimation {
-                            target: largeMicButtonFrame
-                            property: "glowOpacity"
-                            to: voiceAgent.voiceConnectionEnabled ? 0.45 : 0.35
-                            duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
-                            easing.type: Easing.InOutSine
-                        }
-                        NumberAnimation {
-                            target: largeMicButtonFrame
-                            property: "glowScale"
-                            to: 1.0
-                            duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
-                            easing.type: Easing.InOutSine
-                        }
-                    }
-                }
-
-                    MicButton {
-                        anchors.fill: parent
-                        anchors.margins: 0
-                        iconSize: 32
-                        fontPixel: 12
-                        borderWidth: 3
-                        glowOpacity: largeMicButtonFrame.glowOpacity
-                        glowScaleSource: largeMicButtonFrame.glowScale
-                        buttonColor: root.micButtonColor
-                        pulseColor: root.micPulseColor
-                        pulseActive: root.micPulseActive
-                    }
-            }
-        }
-    }
-
     pageStack.initialPage: Kirigami.Page {
         id: page
         title: "Voice Agent"
@@ -806,50 +746,6 @@ Kirigami.ApplicationWindow {
                 id: dashboardModes
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                readonly property real largeMicMinimumHeight: Kirigami.Units.gridUnit * 6.5
-                readonly property bool largeMicPriorityMode: root.largeMode
-                    && largeControlsColumn.height > 0
-                    && largeControlsColumn.height < ((largeSessionLoader.item ? largeSessionLoader.item.implicitHeight : 0)
-                        + largeMicMinimumHeight + Kirigami.Units.largeSpacing)
-
-                RowLayout {
-                    id: largeDashboardRow
-                    anchors.fill: parent
-                    visible: root.largeMode
-                    spacing: Kirigami.Units.largeSpacing
-
-                    ColumnLayout {
-                        id: largeControlsColumn
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        Layout.preferredWidth: 1
-                        spacing: Kirigami.Units.largeSpacing
-
-                        Loader {
-                            id: largeSessionLoader
-                            active: root.largeMode
-                            visible: !dashboardModes.largeMicPriorityMode
-                            sourceComponent: sessionPaneComponent
-                            Layout.fillWidth: true
-                        }
-
-                        Loader {
-                            id: largeMicLoader
-                            active: root.largeMode
-                            sourceComponent: largeMicPaneComponent
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                        }
-                    }
-
-                    Loader {
-                        active: root.largeMode
-                        source: "ConversationPane.qml"
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        Layout.preferredWidth: 1
-                    }
-                }
 
                 ColumnLayout {
                     anchors.fill: parent
