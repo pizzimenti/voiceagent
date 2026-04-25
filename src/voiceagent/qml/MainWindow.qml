@@ -13,7 +13,17 @@ Kirigami.ApplicationWindow {
     // toggled the two-column dashboard layout. The single-pane layout is the
     // only supported view above compactMode.
     maximumWidth: Kirigami.Units.gridUnit * 49
-    // Drop Qt.WindowMaximizeButtonHint so the WM cannot expand past the cap.
+    // Cap height to the screen's available area (excluding panels). With
+    // both axes bounded against the workable screen, "maximize" via the
+    // title-bar button or Super+Up has no visible effect — the window is
+    // already at its maximum useful size. Pinning maximumHeight against a
+    // dynamic Screen value (rather than a fixed grid count) preserves the
+    // user's ability to grow the window vertically up to the workable area
+    // without ever stretching past it.
+    maximumHeight: Screen.desktopAvailableHeight
+    // Drop Qt.WindowMaximizeButtonHint so the WM does not advertise an
+    // affordance for an action that cannot meaningfully change the window
+    // beyond what the user has already done by hand.
     flags: Qt.Window
         | Qt.WindowTitleHint
         | Qt.WindowSystemMenuHint
@@ -23,10 +33,13 @@ Kirigami.ApplicationWindow {
     title: "Voice Agent"
     required property QtObject voiceAgent
 
-    // Belt-and-suspenders: window-flag hints (above) are advisory on
-    // Linux WMs and can be bypassed via keyboard shortcut (Super+Up)
-    // or right-click title-bar menu. Snap back to Windowed if anything
-    // promotes the window past it.
+    // Belt-and-suspenders: KWin honors min/max size constraints in
+    // isResizable(), but the maximize button only disappears when
+    // BOTH axes are pinned (min == max). We deliberately keep the
+    // height resizable up to the screen cap, so isResizable() may
+    // still return true and the title-bar button may render. Snap
+    // back to Windowed if anything still triggers maximize, so the
+    // visible result is the same as the policy.
     onVisibilityChanged: function(visibility) {
         if (visibility === Window.Maximized || visibility === Window.FullScreen) {
             root.visibility = Window.Windowed;
