@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import logging
 from pathlib import Path
+import time
 from collections.abc import Callable
 
 from PySide6.QtCore import (
@@ -22,6 +23,7 @@ from voiceagent.catalog_model import CatalogModel
 from voiceagent.controller import VoiceController
 from voiceagent.conversation_model import ConversationModel
 from voiceagent.downloaders import format_bytes, format_transfer_rate
+from voiceagent.logging_utils import log_ui_timing
 from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.models import AppState
 from voiceagent.services.llm_controller import LlmController
@@ -486,11 +488,14 @@ class MainWindow(QObject):
 
     @Slot(bool)
     def setVoiceConnectionEnabled(self, enabled: bool) -> None:  # noqa: N802
+        started = time.monotonic()
         if enabled:
             self.persistCurrentLlmUrl()
             self.controller.start_recording()
+            log_ui_timing(self._logger, "setVoiceConnectionEnabled.on", started)
             return
         self.controller.stop_recording()
+        log_ui_timing(self._logger, "setVoiceConnectionEnabled.off", started)
 
     @Slot(bool)
     def setAudioMuted(self, enabled: bool) -> None:  # noqa: N802

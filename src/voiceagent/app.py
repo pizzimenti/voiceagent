@@ -86,6 +86,28 @@ def build_controller(
     )
 
 
+def _prewarm_sounddevice(logger: logging.Logger) -> None:
+    """Force sounddevice + PortAudio to load during startup.
+
+    The first import of sounddevice loads the PortAudio C library and
+    can take 100-500 ms. If that cost is paid lazily inside
+    MicrophoneRecorder.start(), it stretches the gap between mic
+    button click and visible UI response. Pre-loading here moves that
+    cost to startup where the splash period absorbs it.
+    """
+    import time as _time
+    started = _time.monotonic()
+    try:
+        import sounddevice as _sd  # noqa: F401
+    except Exception as exc:  # pragma: no cover - depends on host audio stack
+        logger.warning("sounddevice pre-warm failed: %s", exc)
+        return
+    logger.info(
+        "sounddevice pre-warm ok ms=%.1f",
+        (_time.monotonic() - started) * 1000.0,
+    )
+
+
 def main() -> int:
     log_path = configure_logging()
     logger = logging.getLogger(__name__)
@@ -93,6 +115,7 @@ def main() -> int:
     logger.info("Starting voiceagent")
     console.info("Voice Agent %s", __version__)
     console.info("Starting services...")
+    _prewarm_sounddevice(logger)
     app = QApplication(sys.argv)
     app.setApplicationName("voiceagent")
     app.setApplicationDisplayName("Voice Agent")

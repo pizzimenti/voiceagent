@@ -82,7 +82,12 @@ class MicrophoneRecorder:
             if self._stream is not None:
                 raise RuntimeError("Recording is already in progress.")
 
+            sd_import_started = time.monotonic()
             import sounddevice as sd
+            self._logger.debug(
+                "ui-timing label=audio.sounddevice_import ms=%.1f",
+                (time.monotonic() - sd_import_started) * 1000.0,
+            )
 
             self._frames = []
             self._pending_segments.clear()
@@ -100,6 +105,7 @@ class MicrophoneRecorder:
             self._pre_roll_max_frames = max(1, int(self.sample_rate * pre_roll_seconds))
             self._speech_trigger_frames = max(1, int(self.sample_rate * speech_trigger_seconds))
             self._reset_segment_tracking_locked()
+            stream_open_started = time.monotonic()
             self._stream = sd.RawInputStream(
                 samplerate=self.sample_rate,
                 channels=self.channels,
@@ -107,6 +113,10 @@ class MicrophoneRecorder:
                 callback=self._handle_audio_chunk,
             )
             self._stream.start()
+            self._logger.debug(
+                "ui-timing label=audio.stream_open_and_start ms=%.1f",
+                (time.monotonic() - stream_open_started) * 1000.0,
+            )
             self._logger.info(
                 "Microphone recording started sample_rate=%s channels=%s silence_timeout_seconds=%s max_turn_seconds=%s speech_threshold=%s silence_threshold=%s",
                 self.sample_rate,

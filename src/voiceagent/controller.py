@@ -554,6 +554,7 @@ class VoiceController(QObject):
             self._logger.info("Microphone start skipped because recorder is already active")
             return True
         self._logger.info("Starting microphone stream for voice connection")
+        started = time.monotonic()
         try:
             self.recorder.start(segment_ready_callback=self.segment_ready.emit)
         except Exception as exc:
@@ -563,6 +564,10 @@ class VoiceController(QObject):
             self.connection_changed.emit(False)
             self._apply_state(AppState.IDLE.value, "Microphone unavailable")
             return False
+        self._logger.debug(
+            "ui-timing label=recorder.start ms=%.1f",
+            (time.monotonic() - started) * 1000.0,
+        )
         self._logger.info("Microphone stream started for voice connection")
         return True
 
