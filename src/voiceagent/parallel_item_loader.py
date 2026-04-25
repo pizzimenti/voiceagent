@@ -175,7 +175,7 @@ class ParallelItemLoader(QObject):
         self.progress_changed.emit(self._aggregate_progress())
 
         future = self.executor.submit(self._download_worker, name)
-        future.add_done_callback(lambda f, n=name: self._handle_done(f, n))
+        future.add_done_callback(lambda f, n=name: self._handle_done(f, n, "download"))
 
     def delete_item(self, name: str) -> None:
         if (
@@ -201,7 +201,7 @@ class ParallelItemLoader(QObject):
         self.progress_changed.emit(self._aggregate_progress())
 
         future = self.executor.submit(self._delete_worker, name)
-        future.add_done_callback(lambda f, n=name: self._handle_done(f, n))
+        future.add_done_callback(lambda f, n=name: self._handle_done(f, n, "delete"))
 
     # -- subclass hooks ----------------------------------------------------
 
@@ -276,17 +276,21 @@ class ParallelItemLoader(QObject):
         """
         self._progress_tick.emit(name, progress)
 
-    def _handle_done(self, future: Future[None], name: str) -> None:
+    def _handle_done(self, future: Future[None], name: str, operation: str) -> None:
         try:
             future.result()
         except Exception:
             self._logger.exception(
-                "%s future raised unexpectedly for item=%s",
+                "%s future raised unexpectedly for item=%s operation=%s",
                 self.__class__.__name__,
                 name,
+                operation,
             )
             if name in self._active_items:
-                self.load_failed.emit(name, "Item operation failed unexpectedly")
+                if operation == "delete":
+                    self.delete_failed.emit(name, "Item operation failed unexpectedly")
+                else:
+                    self.load_failed.emit(name, "Item operation failed unexpectedly")
 
     # -- owner-thread slots ------------------------------------------------
 

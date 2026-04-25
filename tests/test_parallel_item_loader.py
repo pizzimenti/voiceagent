@@ -352,3 +352,40 @@ def test_delete_clears_active_state(qtbot):
     assert "a" not in loader._active_items
     assert ("remove", "a") in backend.calls
     loader.shutdown()
+
+
+def test_handle_done_routes_failure_by_operation(qtbot):
+    """A catastrophic future failure must surface on the right signal.
+
+    `_handle_done` is registered for both download and delete futures.
+    If a delete future raises (e.g. cancelled by shutdown, slot-raised
+    exception from delete_completed.emit), the failure must route
+    through `delete_failed`, not `load_failed`. Codex round 3 P-minor.
+    """
+    from concurrent.futures import Future
+
+    backend = FakeBackend()
+    loader = _ConcreteLoader(backend)
+    loader._active_items.add("a")  # simulate in-flight operation
+
+    load_failed_spy: list[tuple[str, str]] = []
+    delete_failed_spy: list[tuple[str, str]] = []
+    loader.load_failed.connect(lambda n, m: load_failed_spy.append((n, m)))
+    loader.delete_failed.connect(lambda n, m: delete_failed_spy.append((n, m)))
+
+    bad: Future = Future()
+    bad.set_exception(RuntimeError("simulated catastrophic failure"))
+
+    loader._handle_done(bad, "a", "delete")
+    assert load_failed_spy == []
+    assert len(delete_failed_spy) == 1 and delete_failed_spy[0][0] == "a"
+
+    # Re-arm and verify the download path still routes to load_failed.
+    loader._active_items.add("b")
+    bad2: Future = Future()
+    bad2.set_exception(RuntimeError("simulated catastrophic failure"))
+    loader._handle_done(bad2, "b", "download")
+    assert len(load_failed_spy) == 1 and load_failed_spy[0][0] == "b"
+    assert len(delete_failed_spy) == 1  # unchanged
+
+    loader.shutdown()
