@@ -103,7 +103,7 @@ Kirigami.ApplicationWindow {
     Kirigami.Action {
         id: modelManagerAction
         text: "Voice Models"
-        icon.name: "folder-cloud"
+        icon.name: "folder-cloud-symbolic"
         visible: !root.compactMode
         onTriggered: {
             modelManagerWindow.x = root.x + Math.max(0, (root.width - modelManagerWindow.width) / 2);
@@ -120,8 +120,9 @@ Kirigami.ApplicationWindow {
 
     Kirigami.Action {
         id: themeAction
-        text: "Theme: " + voiceAgent.themeModeLabel
-        icon.name: "preferences-desktop-theme-global"
+        text: "Theme"
+        icon.name: "preferences-desktop-theme-symbolic"
+        displayHint: Kirigami.DisplayHint.IconOnly
         visible: !root.compactMode
 
         Kirigami.Action {
@@ -152,7 +153,7 @@ Kirigami.ApplicationWindow {
     Kirigami.Action {
         id: muteAction
         text: voiceAgent.audioMuted ? "Unmute" : "Mute"
-        icon.name: voiceAgent.audioMuted ? "audio-volume-muted" : "audio-volume-high"
+        icon.name: voiceAgent.audioMuted ? "audio-volume-muted-symbolic" : "audio-volume-high-symbolic"
         enabled: voiceAgent.talkReady
         onTriggered: voiceAgent.setAudioMuted(!voiceAgent.audioMuted)
     }
