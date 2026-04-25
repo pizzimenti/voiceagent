@@ -140,10 +140,22 @@ def main() -> int:
     # not via Python GC of `instance` (which SystemExit or hard interrupt can bypass).
     app.aboutToQuit.connect(instance.release)
     window.show()
-    # Defer the sounddevice/PortAudio pre-warm to the next event-loop
-    # tick so first paint runs first; the import cost overlaps with
-    # idle time instead of blocking startup.
-    from PySide6.QtCore import QTimer
-    QTimer.singleShot(0, lambda: _prewarm_sounddevice(logger))
+    # Run the sounddevice/PortAudio pre-warm in a daemon thread so the
+    # import cost is genuinely off the main Qt thread. A previous
+    # iteration used QTimer.singleShot(0, ...) but a 0 ms timer can
+    # fire on the next event-loop tick before the first frame swap
+    # completes, defeating the point. The import does no Qt work and
+    # PortAudio releases the GIL during its C library load, so the
+    # GUI thread keeps painting while this runs. If the user clicks
+    # the mic before this finishes, MicrophoneRecorder.start()'s
+    # `import sounddevice` blocks on Python's import lock until this
+    # thread completes — same worst case as the pre-fix behavior.
+    import threading
+    threading.Thread(
+        target=_prewarm_sounddevice,
+        args=(logger,),
+        daemon=True,
+        name="sounddevice-prewarm",
+    ).start()
     console.info("Ready.")
     return app.exec()
