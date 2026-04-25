@@ -40,7 +40,14 @@ class PiperTtsService(TextToSpeechBackend):
     def is_available(self) -> bool:
         if not self.model_path:
             return False
-        return self._resolve_existing_model_path() is not None
+        # Stay in lockstep with `is_item_available(selected)`: a voice is
+        # only "available" when BOTH the `.onnx` and its paired
+        # `.onnx.json` config exist. Previously this returned True as
+        # soon as any `.onnx` candidate resolved, which let a partial
+        # download (onnx only, no json) masquerade as ready and drove
+        # the loader to emit `load_completed` for a voice that would
+        # crash on first synthesis.
+        return self.is_item_available(self.model_path)
 
     @property
     def can_download(self) -> bool:
@@ -181,6 +188,18 @@ class PiperTtsService(TextToSpeechBackend):
         if self.model_path == item_name:
             self._loaded_voice_path = None
             self._voice = None
+
+    def artifact_paths(self, item_name: str) -> list[Path]:
+        """Return the two files a Piper voice install is made of.
+
+        Used by `ParallelItemLoader._verify_download` (to look for
+        aria2 sidecars) and `_cleanup_failed_download` (to wipe
+        partials). The order is `[onnx, onnx.json]`; the base
+        verifier treats any `<artifact>.aria2` as a failed transfer.
+        """
+        onnx_path = self.model_root / f"{item_name}.onnx"
+        json_path = self.model_root / f"{item_name}.onnx.json"
+        return [onnx_path, json_path]
 
     def _resolve_existing_model_path(self) -> Path | None:
         assert self.model_path is not None

@@ -128,6 +128,23 @@ class WhisperTranscriber(SpeechToTextBackend):
         if self.model_name == item_name:
             self._model = None
 
+    def artifact_paths(self, item_name: str) -> list[Path]:
+        """Files that comprise an installed Whisper model.
+
+        The base `ParallelItemLoader` verifier uses this to look for
+        `.aria2` leftover sidecars after a transfer. For managed
+        Whisper models this is the set of required HF repo files under
+        `<model_root>/<item_name>/`. For unmanaged custom paths we
+        return an empty list (nothing to verify beyond what the user
+        supplied).
+        """
+        repo_id = self.MODEL_REPOSITORIES.get(item_name)
+        if repo_id is None:
+            return []
+
+        local_dir = self.model_root / item_name
+        return [local_dir / filename for filename in self.REQUIRED_MODEL_FILES]
+
     def download_and_load(self, progress_callback=None) -> None:
         model_source = self._prepare_model_source(item_name=self.model_name, progress_callback=progress_callback)
         if self._model is None:

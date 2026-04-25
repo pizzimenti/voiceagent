@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
+from typing import Optional
 
 from PySide6.QtCore import QObject, Qt, Signal
 
@@ -144,6 +145,58 @@ class TtsVoiceLoader(ParallelItemLoader):
     def _can_download(self, name: str) -> bool:
         # Piper requires its CLI command to be present before downloading.
         return bool(getattr(self.tts_service, "command", None))
+
+    def _verify_download(self, name: str) -> Optional[str]:
+        """Adds **layer 4 (smoke-load)** on top of the base aria2-sidecar
+        check.
+
+        The corrupt-ONNX bug that motivated this work showed that even
+        when the aria2 sidecar is gone, the `.onnx` payload can be
+        truncated/malformed (e.g. an interrupted transfer resumed by a
+        different tool). The cheap fix is to open it once with
+        `onnxruntime.InferenceSession`: a corrupt file raises immediately
+        (typically `InvalidProtobuf`) rather than deferring the crash to
+        first synthesis where it surfaces as a baffling
+        `wave.Error: # channels not specified`.
+
+        Cost: ~50–100 ms per voice. Acceptable for a one-time
+        post-download check; would NOT be acceptable on every
+        `is_item_available` poll, so we do not wire it there.
+        """
+        base_error = super()._verify_download(name)
+        if base_error is not None:
+            return base_error
+
+        try:
+            artifact_paths = list(self.tts_service.artifact_paths(name))
+        except Exception as exc:
+            return f"could not determine artifact paths: {exc}"
+
+        onnx_path = next(
+            (p for p in artifact_paths if p.suffix == ".onnx"), None
+        )
+        if onnx_path is None or not onnx_path.exists():
+            return f"Piper onnx artifact missing for {name}"
+
+        try:
+            import onnxruntime  # local import: heavy, only needed at verify time
+        except Exception as exc:  # pragma: no cover - onnxruntime is a hard dep
+            self._logger.warning(
+                "onnxruntime unavailable; skipping smoke-load for %s: %s",
+                name,
+                exc,
+            )
+            return None
+
+        try:
+            onnxruntime.InferenceSession(str(onnx_path))
+        except Exception as exc:
+            return (
+                f"onnx smoke-load failed ({exc.__class__.__name__}): "
+                f"{exc}"
+            )
+
+        return None
 
     def _emit_initial_state(self) -> None:
         self._log_state("emit_initial_state")

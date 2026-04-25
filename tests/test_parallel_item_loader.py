@@ -94,6 +94,12 @@ class FakeBackend:
         with self._lock:
             self._installed.discard(name)
 
+    def artifact_paths(self, name: str) -> list[Path]:
+        # Base verifier only inspects these for sibling `.aria2` files;
+        # the default test backend has no on-disk artifacts, so an
+        # empty list is fine (verification passes for everything).
+        return []
+
 
 class _ConcreteLoader(ParallelItemLoader):
     """Minimal subclass with trivial status strings, for testing the base."""
