@@ -64,6 +64,7 @@ class StubConversationModel(QAbstractListModel):
     BubbleStateRole = Qt.ItemDataRole.UserRole + 5
     TurnPendingRole = Qt.ItemDataRole.UserRole + 6
     TimestampLabelRole = Qt.ItemDataRole.UserRole + 7
+    StateNameRole = Qt.ItemDataRole.UserRole + 8
     _roles = {
         MessageRole: QByteArray(b"messageRole"),
         LevelRole: QByteArray(b"level"),
@@ -72,6 +73,7 @@ class StubConversationModel(QAbstractListModel):
         BubbleStateRole: QByteArray(b"bubbleState"),
         TurnPendingRole: QByteArray(b"turnPending"),
         TimestampLabelRole: QByteArray(b"timestampLabel"),
+        StateNameRole: QByteArray(b"stateName"),
     }
     _keys = {
         MessageRole: "role",
@@ -329,7 +331,7 @@ class StubVoiceAgent(QObject):
     def selectSttModel(self, _value):
         pass
 
-    @Slot()
+    @Slot(str)
     def installSttModel(self, _value):
         pass
 
@@ -381,7 +383,7 @@ class StubVoiceAgent(QObject):
     def setThemeMode(self, _mode):
         pass
 
-    @Slot()
+    @Slot(int)
     def replayMessage(self, _index):
         pass
 

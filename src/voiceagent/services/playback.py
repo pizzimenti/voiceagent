@@ -118,13 +118,24 @@ class AudioPlayer(QObject):
         with self._lock:
             # A concurrent `play_file` may have already bumped the
             # generation past `gen` while we were joining. If so, we lost
-            # the race; discard this attempt entirely.
+            # the race; discard this attempt entirely. Unlink the WAV
+            # we accepted before bailing — synthesize() handed it off to
+            # us, and the worker that would have unlinked it is never
+            # going to start.
             if self._generation != gen:
                 self._logger.info(
                     "Abandoning start of playback gen=%s; superseded by gen=%s",
                     gen,
                     self._generation,
                 )
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except OSError as exc:
+                    self._logger.warning(
+                        "Failed to unlink superseded playback temp path=%s: %s",
+                        path,
+                        exc,
+                    )
                 return False
             self._thread = thread
         thread.start()
