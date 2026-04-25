@@ -64,19 +64,27 @@ def test_is_available_agrees_with_is_item_available_on_selected(tmp_path):
     service = _make_service(tmp_path, voice)
 
     # No files yet.
-    assert service.is_available == service.is_item_available(voice) == False
+    assert service.is_available is False
+    assert service.is_item_available(voice) is False
+    assert service.is_available == service.is_item_available(voice)
 
     # Only the onnx.
     (tmp_path / f"{voice}.onnx").write_bytes(b"fake-onnx")
-    assert service.is_available == service.is_item_available(voice) == False
+    assert service.is_available is False
+    assert service.is_item_available(voice) is False
+    assert service.is_available == service.is_item_available(voice)
 
     # Both files.
     (tmp_path / f"{voice}.onnx.json").write_text("{}", encoding="utf-8")
-    assert service.is_available == service.is_item_available(voice) == True
+    assert service.is_available is True
+    assert service.is_item_available(voice) is True
+    assert service.is_available == service.is_item_available(voice)
 
     # Then json gone again (corruption mid-use).
     (tmp_path / f"{voice}.onnx.json").unlink()
-    assert service.is_available == service.is_item_available(voice) == False
+    assert service.is_available is False
+    assert service.is_item_available(voice) is False
+    assert service.is_available == service.is_item_available(voice)
 
 
 def test_artifact_paths_reports_both_voice_files(tmp_path):

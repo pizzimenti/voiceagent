@@ -134,16 +134,25 @@ class WhisperTranscriber(SpeechToTextBackend):
         The base `ParallelItemLoader` verifier uses this to look for
         `.aria2` leftover sidecars after a transfer. For managed
         Whisper models this is the set of required HF repo files under
-        `<model_root>/<item_name>/`. For unmanaged custom paths we
-        return an empty list (nothing to verify beyond what the user
-        supplied).
+        `<model_root>/<item_name>/`, plus the vocabulary files —
+        those are large enough to be the most likely partial-download
+        candidate (downloaded last in sorted order) and a `.aria2`
+        sidecar next to a partial vocab file would otherwise slip
+        past verification. The verifier tolerates non-existent paths,
+        so listing both vocabulary candidates is safe even though
+        only one is typically present per model.
+        For unmanaged custom paths we return an empty list (nothing
+        to verify beyond what the user supplied).
         """
         repo_id = self.MODEL_REPOSITORIES.get(item_name)
         if repo_id is None:
             return []
 
         local_dir = self.model_root / item_name
-        return [local_dir / filename for filename in self.REQUIRED_MODEL_FILES]
+        return [
+            local_dir / filename
+            for filename in (*self.REQUIRED_MODEL_FILES, *self.VOCABULARY_FILES)
+        ]
 
     def download_and_load(self, progress_callback=None) -> None:
         model_source = self._prepare_model_source(item_name=self.model_name, progress_callback=progress_callback)

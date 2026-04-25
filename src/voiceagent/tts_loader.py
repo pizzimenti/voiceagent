@@ -57,25 +57,29 @@ class TtsVoiceLoader(ParallelItemLoader):
         """
         if self._catalog_refresh_scheduled:
             return
-        self._catalog_refresh_scheduled = True
         # Capture the eager snapshot on the owner thread *before* the
         # worker runs. The worker's `refresh_catalog` call writes to the
         # on-disk cache as a side effect, so calling `available_items()`
         # after the worker would always match the post-fetch list and
-        # the change check would miss real additions.
+        # the change check would miss real additions. Snapshot first so
+        # `_catalog_refresh_scheduled` only goes True once we know we'll
+        # actually submit (otherwise an `available_items()` raise would
+        # leak the flag and lock out future refreshes).
         pre_refresh = list(self.tts_service.available_items())
         try:
             future = self.executor.submit(self._refresh_catalog_worker)
         except RuntimeError:
             # Executor has been shut down — typically because MainWindow.show()
             # scheduled this via QTimer.singleShot(0, …) and shutdown ran
-            # before the timer fired. Reset the flag so a future re-init
-            # could still attempt a refresh.
-            self._catalog_refresh_scheduled = False
+            # before the timer fired. Don't latch the flag; a future
+            # re-init could still attempt a refresh.
             self._logger.debug(
                 "TTS catalog refresh skipped: executor already shut down"
             )
             return
+        # Invariant: flag set ⇔ work scheduled. Set only after submit
+        # succeeded.
+        self._catalog_refresh_scheduled = True
         future.add_done_callback(
             lambda f, snapshot=pre_refresh: self._dispatch_catalog_refresh_result(
                 f, snapshot
@@ -91,19 +95,27 @@ class TtsVoiceLoader(ParallelItemLoader):
     def _dispatch_catalog_refresh_result(
         self, future: "Future[list[str]]", pre_refresh: list[str]
     ) -> None:
+        # Reset the scheduled flag once the worker has resolved (success,
+        # exception, or no-op). The flag is a "do not stack concurrent
+        # refreshes" guard, not a once-per-session latch — a transient
+        # network failure on first paint must not lock out future
+        # user-triggered re-fetches.
         try:
-            names = future.result()
-        except Exception as exc:  # pragma: no cover - defensive, logged for triage
-            self._logger.warning("TTS catalog refresh failed: %s", exc)
-            return
-        # Only dispatch to the owner thread when the refresh actually
-        # added/removed entries relative to the eager snapshot captured
-        # before the fetch. The worker rewrites `voices.json` as a side
-        # effect, so an identity check against `available_items()`
-        # post-fetch would always look like "no change."
-        if list(names) == list(pre_refresh):
-            return
-        self._catalog_refresh_finished.emit(list(names))
+            try:
+                names = future.result()
+            except Exception as exc:  # pragma: no cover - defensive, logged for triage
+                self._logger.warning("TTS catalog refresh failed: %s", exc)
+                return
+            # Only dispatch to the owner thread when the refresh actually
+            # added/removed entries relative to the eager snapshot captured
+            # before the fetch. The worker rewrites `voices.json` as a side
+            # effect, so an identity check against `available_items()`
+            # post-fetch would always look like "no change."
+            if list(names) == list(pre_refresh):
+                return
+            self._catalog_refresh_finished.emit(list(names))
+        finally:
+            self._catalog_refresh_scheduled = False
 
     def _handle_catalog_refresh_finished(self, names: list[str]) -> None:
         # The delta has already been validated on the worker side against
@@ -192,12 +204,16 @@ class TtsVoiceLoader(ParallelItemLoader):
         try:
             import onnxruntime  # local import: heavy, only needed at verify time
         except Exception as exc:  # pragma: no cover - onnxruntime is a hard dep
-            self._logger.warning(
-                "onnxruntime unavailable; skipping smoke-load for %s: %s",
-                name,
-                exc,
+            # onnxruntime is a hard project dependency. If the import
+            # fails (broken install, ABI mismatch, missing system lib),
+            # fail closed: a corrupt download must NOT pass smoke-load
+            # verification just because the verifier itself is broken.
+            # The user gets a clear error message naming the import
+            # failure rather than a downstream `wave.Error` at synthesis.
+            return (
+                f"onnxruntime unavailable for smoke-load "
+                f"({exc.__class__.__name__}): {exc}"
             )
-            return None
 
         try:
             onnxruntime.InferenceSession(str(onnx_path))
