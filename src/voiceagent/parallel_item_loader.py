@@ -36,7 +36,8 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 import logging
-from typing import Callable, Protocol, runtime_checkable
+from pathlib import Path
+from typing import Callable, Optional, Protocol, runtime_checkable
 
 from PySide6.QtCore import QObject, Qt, Signal
 
@@ -70,6 +71,8 @@ class _ItemBackend(Protocol):
     ) -> None: ...
 
     def remove_item(self, name: str) -> None: ...
+
+    def artifact_paths(self, name: str) -> list[Path]: ...
 
 
 class ParallelItemLoader(QObject):
@@ -239,6 +242,84 @@ class ParallelItemLoader(QObject):
     def _status_select_to_enable(self) -> str:
         raise NotImplementedError
 
+    # -- download verification --------------------------------------------
+
+    def _verify_download(self, name: str) -> Optional[str]:
+        """Return `None` if the freshly downloaded artifact is usable,
+        or an error message string if verification failed.
+
+        Called from the worker thread on the success path of
+        `_download_worker`, between the backend's `download_item`
+        returning and `load_completed` being emitted. If this returns a
+        string, the worker emits `load_failed` with that message instead
+        and the partials are cleaned up via `_cleanup_failed_download`.
+
+        The default implementation runs **layer 1** (cheapest): for
+        every artifact path reported by the backend, reject the
+        download if a `<path>.aria2` sidecar is still present — aria2
+        writes this control file during active transfers and removes it
+        on clean completion, so a leftover sidecar means the transfer
+        was interrupted.
+
+        Subclasses may override to add expensive layers on top (e.g.
+        the Piper loader runs a smoke-load via onnxruntime). Overrides
+        should run the base check first (via `super()._verify_download`)
+        and only continue to their own checks when the base returns
+        `None`.
+
+        # TODO: layer 2 — file size vs voice / HF manifest
+        # TODO: layer 3 — sha256 verification
+        """
+        try:
+            paths = list(self._backend.artifact_paths(name))
+        except Exception as exc:  # defensive: missing/broken impl
+            self._logger.exception(
+                "%s artifact_paths raised for item=%s",
+                self.__class__.__name__,
+                name,
+            )
+            return f"could not determine artifact paths: {exc}"
+
+        for path in paths:
+            sidecar = path.with_name(path.name + ".aria2")
+            if sidecar.exists():
+                return (
+                    f"aria2 sidecar still present for {path.name} "
+                    f"— download did not complete cleanly"
+                )
+
+        return None
+
+    def _cleanup_failed_download(self, name: str) -> None:
+        """Best-effort removal of partial artifacts + aria2 sidecars.
+
+        Runs on the worker thread from the verification-failure path so
+        the next attempt starts from a clean slate and stale partials
+        never get mistaken for a good install by `is_item_available`.
+        """
+        try:
+            paths = list(self._backend.artifact_paths(name))
+        except Exception:
+            self._logger.exception(
+                "%s artifact_paths raised during cleanup for item=%s",
+                self.__class__.__name__,
+                name,
+            )
+            return
+
+        for path in paths:
+            sidecar = path.with_name(path.name + ".aria2")
+            for target in (path, sidecar):
+                try:
+                    if target.exists():
+                        target.unlink()
+                except Exception:
+                    self._logger.exception(
+                        "%s cleanup failed to remove %s",
+                        self.__class__.__name__,
+                        target,
+                    )
+
     # -- worker-thread side -----------------------------------------------
 
     def _download_worker(self, name: str) -> None:
@@ -251,6 +332,31 @@ class ParallelItemLoader(QObject):
         except Exception as exc:
             self._logger.exception("%s download failed", self.__class__.__name__)
             self.load_failed.emit(name, str(exc))
+            return
+
+        # Verify the download before marking the item ready. The base
+        # implementation catches `.aria2` sidecar leftovers (partial
+        # aria2 transfer); Piper overrides this with an additional
+        # smoke-load layer. See the v0.3.2 FOLLOWUPS P2 item
+        # ("Verify model/voice downloads before marking ready") for the
+        # corrupt-ONNX bug this guards against.
+        try:
+            verification_error = self._verify_download(name)
+        except Exception as exc:  # defensive: hook must not escape
+            self._logger.exception(
+                "%s verification hook raised", self.__class__.__name__
+            )
+            verification_error = f"verification hook raised: {exc}"
+
+        if verification_error is not None:
+            self._logger.error(
+                "%s download verification failed item=%s message=%s",
+                self.__class__.__name__,
+                name,
+                verification_error,
+            )
+            self._cleanup_failed_download(name)
+            self.load_failed.emit(name, verification_error)
             return
 
         self.load_completed.emit(name)

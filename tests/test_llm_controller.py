@@ -243,6 +243,85 @@ def test_select_model_without_connection_emits_error_log(qtbot, controller):
     assert controller.model_busy is False
 
 
+def test_stale_refresh_does_not_clear_connection_busy(qtbot, controller, chat_client):
+    # Regression: a stale refresh completion must NOT clear the busy flag
+    # while the live (newer) refresh is still in flight. If it did, the UI
+    # would briefly see "connected, idle" between the stale clear and the
+    # live refresh's eventual resolution.
+    controller.set_current_url("host:1234")
+    # Simulate two overlapping refreshes: request_id 1 is the stale one that
+    # resolves first; request_id 2 is the live one still in flight.
+    controller._llm_refresh_request_id = 2
+    controller._llm_active_refresh_request_id = 2
+    controller._set_connection_busy(True)
+
+    busy_events: list[bool] = []
+    controller.connection_busy_changed.connect(busy_events.append)
+
+    # Fire the stale (older) completion first.
+    controller._operation_finished.emit(
+        "refresh",
+        {
+            "ok": True,
+            "models": ["stale-model"],
+            "loaded_model": "stale-model",
+            "request_id": 1,
+            "show_error": False,
+        },
+    )
+
+    # Stale completion must NOT have cleared busy — the live refresh is
+    # still running.
+    assert busy_events == []
+    assert controller.connection_busy is True
+
+    # Now fire the live (newer) completion.
+    controller._operation_finished.emit(
+        "refresh",
+        {
+            "ok": True,
+            "models": ["fresh-model"],
+            "loaded_model": "fresh-model",
+            "request_id": 2,
+            "show_error": False,
+        },
+    )
+
+    # Exactly one busy-clear, and only after the live completion resolved.
+    assert busy_events == [False]
+    assert controller.connection_busy is False
+
+
+def test_stale_refresh_failure_does_not_clear_connection_busy(
+    qtbot, controller, chat_client
+):
+    # Same ordering guarantee applies to the failure path: a stale refresh's
+    # network error must not clear busy while the live refresh is still
+    # running.
+    controller.set_current_url("host:1234")
+    controller._llm_refresh_request_id = 2
+    controller._llm_active_refresh_request_id = 2
+    controller._set_connection_busy(True)
+
+    busy_events: list[bool] = []
+    controller.connection_busy_changed.connect(busy_events.append)
+
+    # Stale failure arrives first — must be a silent drop.
+    with qtbot.assertNotEmitted(controller.error, wait=200):
+        controller._operation_finished.emit(
+            "refresh",
+            {
+                "ok": False,
+                "error": "stale timeout",
+                "request_id": 1,
+                "show_error": True,
+            },
+        )
+
+    assert busy_events == []
+    assert controller.connection_busy is True
+
+
 def test_two_rapid_refreshes_only_emit_latest(qtbot, controller, chat_client):
     # First refresh's payload is "stale"; second is "fresh". Both go through
     # the operation_finished bridge synchronously here, so we can fire them in

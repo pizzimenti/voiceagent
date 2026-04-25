@@ -109,6 +109,7 @@ class MainWindow(QObject):
         self.tts_loader.selection_changed.connect(self._emit_ui_changed)
         self.tts_loader.load_completed.connect(self._handle_inventory_change)
         self.tts_loader.delete_completed.connect(self._handle_inventory_change)
+        self.tts_loader.catalog_changed.connect(self._on_tts_catalog_changed)
         self._llm.urls_changed.connect(self._on_llm_urls_changed)
         self._llm.current_url_changed.connect(self._on_llm_current_url_changed)
         self._llm.connection_state_changed.connect(self._on_llm_connection_state_changed)
@@ -151,6 +152,12 @@ class MainWindow(QObject):
         if not self._llm.startup_connect_scheduled and self.currentLlmUrl:
             self._llm.mark_startup_connect_scheduled()
             QTimer.singleShot(0, self.autoconnectLlmServer)
+        # Defer the Piper `voices.json` network fetch until after QML
+        # paints — see AGENTS.md's "keep network/model refreshes off the
+        # first paint path" rule. The catalog starts populated with
+        # whatever's already on disk; the refresh adds remote-only entries.
+        if not self.tts_loader.catalog_refresh_scheduled:
+            QTimer.singleShot(0, self.tts_loader.refresh_catalog_async)
 
     def shutdown(self) -> None:
         if self._shutting_down:
@@ -501,6 +508,18 @@ class MainWindow(QObject):
 
     def _handle_inventory_change(self) -> None:
         self._sync_installed_selections()
+        self.ui_changed.emit()
+
+    def _on_tts_catalog_changed(self, names: list[str]) -> None:
+        # The deferred remote refresh landed new voices. Swap the list
+        # that drives ttsCatalog / ttsOptions and push the new names
+        # into the QAbstractListModel so the ComboBox / catalog list
+        # rebinds.
+        new_names = list(names)
+        if new_names == self._tts_catalog:
+            return
+        self._tts_catalog = new_names
+        self._tts_catalog_model.replace_names(new_names)
         self.ui_changed.emit()
 
     def _sync_installed_selections(self) -> None:

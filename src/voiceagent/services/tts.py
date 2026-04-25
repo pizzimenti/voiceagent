@@ -40,7 +40,14 @@ class PiperTtsService(TextToSpeechBackend):
     def is_available(self) -> bool:
         if not self.model_path:
             return False
-        return self._resolve_existing_model_path() is not None
+        # Stay in lockstep with `is_item_available(selected)`: a voice is
+        # only "available" when BOTH the `.onnx` and its paired
+        # `.onnx.json` config exist. Previously this returned True as
+        # soon as any `.onnx` candidate resolved, which let a partial
+        # download (onnx only, no json) masquerade as ready and drove
+        # the loader to emit `load_completed` for a voice that would
+        # crash on first synthesis.
+        return self.is_item_available(self.model_path)
 
     @property
     def can_download(self) -> bool:
@@ -48,20 +55,43 @@ class PiperTtsService(TextToSpeechBackend):
 
     @classmethod
     def available_voice_names(cls, model_root: Path, configured_model: str | None = None) -> list[str]:
+        """Return the eager on-disk catalog (installed + cached + configured).
+
+        This path must never touch the network — see AGENTS.md's "keep
+        network/model refreshes off the first paint path" rule. The
+        asynchronous refresh that adds remote-only entries is driven by
+        `refresh_remote_catalog`, which is expected to run after the QML
+        window has painted.
+        """
         voices: set[str] = set()
         if configured_model:
             voices.add(configured_model)
 
         voices.update(cls._cached_voice_names(model_root))
-        cached_voices = cls._voice_names_from_cache_file(model_root)
-        voices.update(cached_voices)
-        if not cached_voices:
-            voices.update(cls._fetch_and_cache_voice_names(model_root))
+        voices.update(cls._voice_names_from_cache_file(model_root))
 
         return sorted(voices)
 
+    @classmethod
+    def refresh_remote_catalog(
+        cls, model_root: Path, configured_model: str | None = None
+    ) -> list[str]:
+        """Fetch `voices.json`, refresh the on-disk cache, and return the union.
+
+        Safe to run from a worker thread: only performs a `urlopen` and a
+        file write to the cache path. Returns the same eager union as
+        `available_voice_names` when the network fetch fails, so callers
+        can treat any failure as a no-op.
+        """
+        cls._fetch_and_cache_voice_names(model_root)
+        return cls.available_voice_names(model_root, configured_model)
+
     def available_items(self) -> list[str]:
         return self.available_voice_names(self.model_root, self.model_path)
+
+    def refresh_catalog(self) -> list[str]:
+        """Worker-thread entry point for the deferred catalog refresh."""
+        return self.refresh_remote_catalog(self.model_root, self.model_path)
 
     @classmethod
     def is_voice_available(cls, model_root: Path, model_path: str | None) -> bool:
@@ -158,6 +188,18 @@ class PiperTtsService(TextToSpeechBackend):
         if self.model_path == item_name:
             self._loaded_voice_path = None
             self._voice = None
+
+    def artifact_paths(self, item_name: str) -> list[Path]:
+        """Return the two files a Piper voice install is made of.
+
+        Used by `ParallelItemLoader._verify_download` (to look for
+        aria2 sidecars) and `_cleanup_failed_download` (to wipe
+        partials). The order is `[onnx, onnx.json]`; the base
+        verifier treats any `<artifact>.aria2` as a failed transfer.
+        """
+        onnx_path = self.model_root / f"{item_name}.onnx"
+        json_path = self.model_root / f"{item_name}.onnx.json"
+        return [onnx_path, json_path]
 
     def _resolve_existing_model_path(self) -> Path | None:
         assert self.model_path is not None
