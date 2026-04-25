@@ -36,6 +36,16 @@ Pane {
                 Layout.fillWidth: true
             }
 
+            ToolButton {
+                visible: !root.compactMode
+                icon.name: voiceAgent.logVerboseMode ? "view-visible-symbolic" : "view-hidden-symbolic"
+                ToolTip.visible: hovered
+                ToolTip.text: voiceAgent.logVerboseMode
+                    ? "Hide pipeline activity in log"
+                    : "Show pipeline activity in log (new entries only)"
+                onClicked: voiceAgent.setLogVerboseMode(!voiceAgent.logVerboseMode)
+            }
+
             Label {
                 visible: !root.compactMode
                 text: voiceAgent.voiceConnectionEnabled ? "Live" : "Idle"
@@ -141,7 +151,10 @@ Pane {
             delegate: Item {
                 width: conversationView.width
                 readonly property bool systemEntry: model.messageRole === "system"
-                implicitHeight: systemEntry ? systemMessage.implicitHeight : messageRow.implicitHeight
+                readonly property bool statusEntry: model.messageRole === "status"
+                implicitHeight: statusEntry
+                    ? statusMessage.implicitHeight
+                    : (systemEntry ? systemMessage.implicitHeight : messageRow.implicitHeight)
 
                 property bool assistant: model.messageRole === "assistant"
                 readonly property string bubbleState: model.bubbleState || "sent"
@@ -152,6 +165,10 @@ Pane {
                 readonly property color systemTextColor: (model.level || "status") === "error"
                     ? Kirigami.Theme.negativeTextColor
                     : Kirigami.Theme.disabledTextColor
+                // Hardcoded purple. Kirigami.Theme.linkColor on Breeze is blue,
+                // not purple, so we tune this independently. Verified to read
+                // against both Breeze Light and Dark backgrounds.
+                readonly property color statusTextColor: "#9b6bcc"
                 readonly property real maxBubbleWidth: Math.min(
                     conversationView.width * (root.compactMode ? 0.96 : (root.mediumMode ? 0.9 : 0.78)),
                     Kirigami.Units.gridUnit * (root.compactMode ? 18 : (root.mediumMode ? 28 : 34))
@@ -170,10 +187,24 @@ Pane {
                     font.pixelSize: 12
                 }
 
+                Label {
+                    id: statusMessage
+                    visible: parent.statusEntry
+                    width: parent.width
+                    text: root.bubbleText(model.text)
+                    wrapMode: Text.WordWrap
+                    color: parent.statusTextColor
+                    textFormat: Text.PlainText
+                    horizontalAlignment: Text.AlignLeft
+                    verticalAlignment: Text.AlignVCenter
+                    font.pixelSize: 12
+                    font.italic: true
+                }
+
                 RowLayout {
                     id: messageRow
                     width: parent.width
-                    visible: !parent.systemEntry
+                    visible: !parent.systemEntry && !parent.statusEntry
                     spacing: Kirigami.Units.smallSpacing
                     layoutDirection: assistant ? Qt.LeftToRight : Qt.RightToLeft
 

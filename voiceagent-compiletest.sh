@@ -282,6 +282,10 @@ class StubVoiceAgent(QObject):
     def themeModeLabel(self):
         return "Auto"
 
+    @Property(bool, notify=ui_changed)
+    def logVerboseMode(self):
+        return False
+
     def __init__(self):
         super().__init__()
         self._conversation_model = StubConversationModel()
@@ -368,6 +372,10 @@ class StubVoiceAgent(QObject):
 
     @Slot(bool)
     def setAudioMuted(self, _enabled):
+        pass
+
+    @Slot(bool)
+    def setLogVerboseMode(self, _enabled):
         pass
 
     @Slot(str)
