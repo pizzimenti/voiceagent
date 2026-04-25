@@ -2,6 +2,29 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.3.3 — 2026-04-26
+
+**Local-repo packaging helper.** No app changes. New script that
+publishes VoiceAgent into a personal pacman repo so AUR helpers
+stop probing the AUR for a package that lives only on disk.
+
+### Added
+- **`packaging/release-local.sh`** — runs `makepkg -f`, moves the
+  resulting `.pkg.tar.zst` into `~/.local/share/pacman-localrepo/`
+  (override via `REPO_DIR` / `REPO_NAME`), and updates the local
+  repo database via `repo-add -R`. Once VoiceAgent is installed via
+  `pacman -S` from that repo instead of `pacman -U` against a loose
+  artifact, it stops appearing in `pacman -Qm`, and `yay` / `paru`
+  no longer include it in the per-startup AUR `arg[]=...` info
+  request.
+
+### Notes
+- The script intentionally does **not** pass `--cleanbuild` to
+  `makepkg`. In this repo `${srcdir}` resolves to `${startdir}/src`,
+  which is the actual source tree; `--cleanbuild` would `rm -rf`
+  it before `build()` runs and yield an empty wheel. The trap is
+  documented in a comment in the script.
+
 ## 0.3.2 — 2026-04-25
 
 **Concurrency and download-integrity release.** No new user-facing
