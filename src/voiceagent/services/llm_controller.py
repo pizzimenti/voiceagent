@@ -329,11 +329,17 @@ class LlmController(QObject):
                 self.status_message.emit("No LLM model loaded.")
             return
 
-        self._set_connection_busy(False)
+        # Drop stale refresh completions BEFORE touching the busy state.
+        # If the earlier refresh's payload landed here while a newer refresh
+        # is still in flight, clearing `connection_busy` here would cause a
+        # spurious "connected, idle" UI flash until the live refresh resolved
+        # and then tried (and failed) to clear an already-cleared busy.
+        # Only the live refresh's outcome should touch the busy state.
         if operation == "refresh":
             request_id = int(result.get("request_id", 0) or 0)
             if request_id and request_id != self._llm_active_refresh_request_id:
                 return
+        self._set_connection_busy(False)
         if operation == "disconnect":
             if ok:
                 self._set_connected(False)
