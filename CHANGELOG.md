@@ -2,7 +2,7 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
-## 0.4.0 — 2026-04-24
+## 0.4.0 — 2026-04-26
 
 **UI shaping release.** Toolbar tightens up with symbolic icons, the
 conversation log gains an opt-in verbose mode that surfaces pipeline

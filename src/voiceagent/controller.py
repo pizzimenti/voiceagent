@@ -8,6 +8,7 @@ import time
 from PySide6.QtCore import QObject, Qt, Signal, Slot, QTimer
 
 from voiceagent.backends import SpeechToTextBackend, TextToSpeechBackend
+from voiceagent.logging_utils import log_ui_timing
 from voiceagent.models import AppState, PipelineResult
 from voiceagent.services.audio import MicrophoneRecorder
 from voiceagent.services.chat import LmStudioClient
@@ -564,10 +565,7 @@ class VoiceController(QObject):
             self.connection_changed.emit(False)
             self._apply_state(AppState.IDLE.value, "Microphone unavailable")
             return False
-        self._logger.debug(
-            "ui-timing label=recorder.start ms=%.1f",
-            (time.monotonic() - started) * 1000.0,
-        )
+        log_ui_timing(self._logger, "recorder.start", started)
         self._logger.info("Microphone stream started for voice connection")
         return True
 

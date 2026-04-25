@@ -12,6 +12,8 @@ import time
 from typing import Any, Callable
 import wave
 
+from voiceagent.logging_utils import log_ui_timing
+
 
 class MicrophoneRecorder:
     def __init__(self, sample_rate: int = 16_000, channels: int = 1) -> None:
@@ -84,10 +86,7 @@ class MicrophoneRecorder:
 
             sd_import_started = time.monotonic()
             import sounddevice as sd
-            self._logger.debug(
-                "ui-timing label=audio.sounddevice_import ms=%.1f",
-                (time.monotonic() - sd_import_started) * 1000.0,
-            )
+            log_ui_timing(self._logger, "audio.sounddevice_import", sd_import_started)
 
             self._frames = []
             self._pending_segments.clear()
@@ -113,10 +112,7 @@ class MicrophoneRecorder:
                 callback=self._handle_audio_chunk,
             )
             self._stream.start()
-            self._logger.debug(
-                "ui-timing label=audio.stream_open_and_start ms=%.1f",
-                (time.monotonic() - stream_open_started) * 1000.0,
-            )
+            log_ui_timing(self._logger, "audio.stream_open_and_start", stream_open_started)
             self._logger.info(
                 "Microphone recording started sample_rate=%s channels=%s silence_timeout_seconds=%s max_turn_seconds=%s speech_threshold=%s silence_threshold=%s",
                 self.sample_rate,

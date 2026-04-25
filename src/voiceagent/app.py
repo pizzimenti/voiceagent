@@ -87,13 +87,15 @@ def build_controller(
 
 
 def _prewarm_sounddevice(logger: logging.Logger) -> None:
-    """Force sounddevice + PortAudio to load during startup.
+    """Force sounddevice + PortAudio to load off the first-paint path.
 
     The first import of sounddevice loads the PortAudio C library and
     can take 100-500 ms. If that cost is paid lazily inside
     MicrophoneRecorder.start(), it stretches the gap between mic
-    button click and visible UI response. Pre-loading here moves that
-    cost to startup where the splash period absorbs it.
+    button click and visible UI response. We schedule this on the
+    event loop after window.show() so the QML window paints first and
+    the import cost overlaps with idle time rather than blocking
+    startup.
     """
     import time as _time
     started = _time.monotonic()
@@ -115,7 +117,6 @@ def main() -> int:
     logger.info("Starting voiceagent")
     console.info("Voice Agent %s", __version__)
     console.info("Starting services...")
-    _prewarm_sounddevice(logger)
     app = QApplication(sys.argv)
     app.setApplicationName("voiceagent")
     app.setApplicationDisplayName("Voice Agent")
@@ -139,5 +140,10 @@ def main() -> int:
     # not via Python GC of `instance` (which SystemExit or hard interrupt can bypass).
     app.aboutToQuit.connect(instance.release)
     window.show()
+    # Defer the sounddevice/PortAudio pre-warm to the next event-loop
+    # tick so first paint runs first; the import cost overlaps with
+    # idle time instead of blocking startup.
+    from PySide6.QtCore import QTimer
+    QTimer.singleShot(0, lambda: _prewarm_sounddevice(logger))
     console.info("Ready.")
     return app.exec()
