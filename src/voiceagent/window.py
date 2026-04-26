@@ -448,7 +448,13 @@ class MainWindow(QObject):
     def selectSttModel(self, model_name: str) -> None:  # noqa: N802
         if model_name not in self.sttOptions:
             return
-        self.settings.setValue("selected_stt_model", model_name)
+        # Only persist managed selections. Custom paths come from the
+        # `WHISPER_MODEL` env var; persisting one would leave a ghost
+        # entry in QSettings that resolves to the fallback on next launch
+        # if the env var is unset (the path no longer appears in the
+        # catalog), making selection state invisibly drift.
+        if self.model_loader.transcriber.is_item_managed(model_name):
+            self.settings.setValue("selected_stt_model", model_name)
         self.model_loader.select_model(model_name)
         self.ui_changed.emit()
 
@@ -580,8 +586,22 @@ class MainWindow(QObject):
             self.replay_player.play_file(audio_path)
 
     def _handle_inventory_change(self) -> None:
+        self._refresh_stt_catalog_if_changed()
         self._sync_installed_selections()
         self.ui_changed.emit()
+
+    def _refresh_stt_catalog_if_changed(self) -> None:
+        # Whisper's `available_items()` is mostly static (managed
+        # repository keys), but a custom path can enter / leave the list
+        # when `set_model_name` is called with a path-shaped value. Rebuild
+        # the catalog model when the underlying list shape actually shifts
+        # so a custom-path row appears or disappears in the Model Manager
+        # without a full app restart.
+        new_catalog = self.model_loader.transcriber.available_items()
+        if new_catalog == self._stt_catalog:
+            return
+        self._stt_catalog = list(new_catalog)
+        self._stt_catalog_model.replace_names(self._stt_catalog)
 
     def _on_tts_catalog_changed(self, names: list[str]) -> None:
         # The deferred remote refresh landed new voices. Swap the list
@@ -615,7 +635,10 @@ class MainWindow(QObject):
 
     def _restore_initial_selections(self) -> None:
         self._sync_installed_selections()
-        if self.selectedSttModel:
+        # Only persist managed STT selections — see `selectSttModel` for
+        # the full reasoning. Custom paths live in `WHISPER_MODEL` and
+        # should not leave a ghost entry in QSettings.
+        if self.selectedSttModel and self.model_loader.transcriber.is_item_managed(self.selectedSttModel):
             self.settings.setValue("selected_stt_model", self.selectedSttModel)
         if self.selectedTtsModel:
             self.settings.setValue("selected_tts_model", self.selectedTtsModel)

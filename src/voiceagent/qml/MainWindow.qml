@@ -74,11 +74,22 @@ Kirigami.ApplicationWindow {
     }
 
     function modelStatusSummary(item) {
+        if (item.installed && !item.managed) {
+            return "Custom path";
+        }
         return item.installed ? "Installed" : "Available to download";
     }
 
     function modelActionLabel(item) {
         return item.installed ? "Remove" : "Install";
+    }
+
+    // Install / Remove acts on managed catalog entries. Custom-path rows
+    // (managed=false, installed via WHISPER_MODEL/TTS_MODEL pointing at a
+    // user-administered file) have no install/remove semantic — Voice
+    // Agent does not own the file lifecycle for those.
+    function modelActionVisible(item) {
+        return item.managed;
     }
 
     function scrollList(listView, wheel) {
@@ -333,6 +344,7 @@ Kirigami.ApplicationWindow {
                                         }
 
                                         ToolButton {
+                                            visible: root.modelActionVisible(model)
                                             text: sttDelegate.downloading ? "Installing…" : root.modelActionLabel(model)
                                             enabled: !sttDelegate.downloading
                                             onClicked: {
@@ -448,6 +460,7 @@ Kirigami.ApplicationWindow {
                                         }
 
                                         ToolButton {
+                                            visible: root.modelActionVisible(model)
                                             text: ttsDelegate.downloading ? "Installing…" : root.modelActionLabel(model)
                                             enabled: !ttsDelegate.downloading
                                             onClicked: {
