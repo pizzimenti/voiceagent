@@ -52,13 +52,36 @@ class WhisperTranscriber(SpeechToTextBackend):
         self._logger = logging.getLogger(__name__)
         self.model_root = default_stt_model_root()
         self.downloader = AriaDownloader(connections=10)
+        # Track a custom (non-managed) selected path so it can surface in the
+        # catalog as a `managed=False, downloadable=False` row alongside the
+        # managed Whisper models. `None` means "no custom path active".
+        self._custom_path: str | None = (
+            model_name if self._is_custom_path(model_name) else None
+        )
+
+    @classmethod
+    def _is_custom_path(cls, name: str | None) -> bool:
+        """Return True when `name` is a path-shaped Whisper model selector.
+
+        A name is custom when it is non-empty, not a managed catalog key,
+        and reads as a path (absolute, contains a separator, or starts
+        with `~`). Bare managed names like `tiny.en` always return False.
+        """
+        if not name:
+            return False
+        if name in cls.MODEL_REPOSITORIES:
+            return False
+        return "/" in name or name.startswith("~") or Path(name).is_absolute()
 
     @classmethod
     def available_model_names(cls) -> list[str]:
         return list(cls.MODEL_REPOSITORIES.keys())
 
     def available_items(self) -> list[str]:
-        return self.available_model_names()
+        names = self.available_model_names()
+        if self._custom_path:
+            names.append(self._custom_path)
+        return names
 
     @property
     def is_loaded(self) -> bool:
@@ -125,6 +148,7 @@ class WhisperTranscriber(SpeechToTextBackend):
 
         self.model_name = model_name
         self._model = None
+        self._custom_path = model_name if self._is_custom_path(model_name) else None
 
     def set_selected_item(self, item_name: str) -> None:
         self.set_model_name(item_name)

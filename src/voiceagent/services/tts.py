@@ -129,7 +129,17 @@ class PiperTtsService(TextToSpeechBackend):
         return item_name in self.known_voice_names(self.model_root)
 
     def is_item_downloadable(self, item_name: str) -> bool:
-        return self.is_item_managed(item_name)
+        # A name is downloadable when we know about it (cached in
+        # `voices.json` or already on disk) OR it is shaped like a
+        # Piper voice name and so resolvable via `_voice_remote_prefix`
+        # at install time. The second branch matters for first-run
+        # before the deferred `voices.json` fetch lands: a configured
+        # `TTS_MODEL=en_US-lessac-medium` should still let the user
+        # click Install, even though `is_item_managed` is False until
+        # the cache populates.
+        if self.is_item_managed(item_name):
+            return True
+        return self._looks_like_voice_name(item_name)
 
     @property
     def selected_item(self) -> str | None:

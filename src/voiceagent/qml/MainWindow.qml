@@ -74,11 +74,28 @@ Kirigami.ApplicationWindow {
     }
 
     function modelStatusSummary(item) {
+        if (item.installed && !item.managed) {
+            return "Custom path";
+        }
         return item.installed ? "Installed" : "Available to download";
     }
 
     function modelActionLabel(item) {
         return item.installed ? "Remove" : "Install";
+    }
+
+    // Install / Remove acts on managed catalog entries. Two row shapes
+    // hide the action button:
+    //   * `installed && !managed` — custom path (e.g., WHISPER_MODEL=/dir).
+    //     Voice Agent does not own that file's lifecycle.
+    //   * `!installed && !downloadable` — a configured name we can't
+    //     resolve to a download source; clicking Install would fail.
+    // The `downloadable` branch matters for first-run TTS: a configured
+    // `TTS_MODEL=en_US-lessac-medium` may not be in `known_voice_names`
+    // yet (cache hasn't populated) but the name is still resolvable via
+    // Piper's URL convention, so the Install button must remain.
+    function modelActionVisible(item) {
+        return item.installed ? item.managed : item.downloadable;
     }
 
     function scrollList(listView, wheel) {
@@ -333,6 +350,7 @@ Kirigami.ApplicationWindow {
                                         }
 
                                         ToolButton {
+                                            visible: root.modelActionVisible(model)
                                             text: sttDelegate.downloading ? "Installing…" : root.modelActionLabel(model)
                                             enabled: !sttDelegate.downloading
                                             onClicked: {
@@ -448,6 +466,7 @@ Kirigami.ApplicationWindow {
                                         }
 
                                         ToolButton {
+                                            visible: root.modelActionVisible(model)
                                             text: ttsDelegate.downloading ? "Installing…" : root.modelActionLabel(model)
                                             enabled: !ttsDelegate.downloading
                                             onClicked: {
