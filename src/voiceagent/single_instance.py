@@ -24,19 +24,26 @@ class SingleInstance(QObject):
         super().__init__(parent)
         self._lock_file = lock_file
         self._server = server
-        self._buffers: dict[int, bytearray] = {}
         self._server.newConnection.connect(self._on_new_connection)
 
     def _on_new_connection(self) -> None:
         connection = self._server.nextPendingConnection()
         if connection is None:
             return
-        key = id(connection)
-        self._buffers[key] = bytearray()
+
+        # Per-connection state lives in the closure rather than an
+        # `id(connection)`-keyed dict on `self`. The dict approach was
+        # vulnerable to id reuse after gc and forced manual cleanup at
+        # every termination path; closure-local state lifetimes match
+        # the connection's exactly (the bytearray is gc'd along with
+        # the closures when Qt drops the signal connections after
+        # `deleteLater`).
+        buffer = bytearray()
+        finalized = False
 
         def _on_ready_read() -> None:
-            buffer = self._buffers.get(key)
-            if buffer is None:
+            nonlocal finalized
+            if finalized:
                 # Connection already finalized; drain and ignore.
                 connection.readAll()
                 return
@@ -49,16 +56,15 @@ class SingleInstance(QObject):
                     "Activation peer sent oversized payload (%d bytes); dropping",
                     len(buffer),
                 )
-                self._buffers.pop(key, None)
+                finalized = True
                 connection.disconnectFromServer()
                 return
             if bytes(buffer).rstrip(b"\r\n") == ACTIVATE_PAYLOAD:
-                self._buffers.pop(key, None)
+                finalized = True
                 self.activated.emit()
                 connection.disconnectFromServer()
 
         def _on_disconnected() -> None:
-            self._buffers.pop(key, None)
             connection.deleteLater()
 
         connection.readyRead.connect(_on_ready_read)

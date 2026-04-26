@@ -234,8 +234,20 @@ class TtsVoiceLoader(ParallelItemLoader):
                 f"({exc.__class__.__name__}): {exc}"
             )
 
+        # Verification only checks that the protobuf parses and the
+        # graph builds — we don't run inference. Pre-configure
+        # `SessionOptions` with `ORT_DISABLE_ALL` to skip graph
+        # optimization, which costs ~20–50 ms per voice install but
+        # adds nothing to the verification signal. The default profile
+        # bakes the optimized graph into the runtime cache, which is
+        # equally pointless for a session we drop on the next line.
+        session_options = onnxruntime.SessionOptions()
+        session_options.graph_optimization_level = (
+            onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
+        )
+
         try:
-            onnxruntime.InferenceSession(str(onnx_path))
+            onnxruntime.InferenceSession(str(onnx_path), sess_options=session_options)
         except Exception as exc:
             return (
                 f"onnx smoke-load failed ({exc.__class__.__name__}): "

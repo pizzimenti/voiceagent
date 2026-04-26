@@ -412,3 +412,53 @@ def test_handle_done_routes_failure_by_operation(qtbot):
     assert len(delete_failed_spy) == 1  # unchanged
 
     loader.shutdown()
+
+
+def test_subclass_missing_status_overrides_raises_at_class_build():
+    # `__init_subclass__` enforces that every subclass overrides every
+    # `_status_*` hook at class-definition time, not lazily at the first
+    # call site. Without this, a forgotten override surfaces as
+    # `NotImplementedError` only when the state machine reaches that
+    # specific transition — situational and slow to diagnose.
+    with pytest.raises(TypeError, match="must override all status hooks"):
+        class _IncompleteLoader(ParallelItemLoader):
+            # Define some hooks but deliberately omit several.
+            def _status_checking(self) -> str:
+                return "checking"
+
+            def _status_downloading(self) -> str:
+                return "downloading"
+
+
+def test_subclass_with_all_overrides_inherited_via_intermediate_passes():
+    # A subclass that inherits its overrides from an intermediate base
+    # (rather than defining them directly) must also pass — the MRO
+    # walk must look beyond `cls.__dict__`.
+    class _Intermediate(ParallelItemLoader):
+        def _status_checking(self) -> str:
+            return "x"
+        def _status_downloading(self) -> str:
+            return "x"
+        def _status_removing(self) -> str:
+            return "x"
+        def _status_ready(self) -> str:
+            return "x"
+        def _status_load_failed(self) -> str:
+            return "x"
+        def _status_remove_failed(self) -> str:
+            return "x"
+        def _status_idle_prompt(self) -> str:
+            return "x"
+        def _status_removed_ok(self) -> str:
+            return "x"
+        def _status_select_to_enable(self) -> str:
+            return "x"
+
+    # No new overrides — relies entirely on `_Intermediate`.
+    class _Leaf(_Intermediate):
+        pass
+
+    backend = FakeBackend()
+    loader = _Leaf(backend)
+    assert loader._status_checking() == "x"
+    loader.shutdown()
