@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 from PySide6.QtCore import (
     QAbstractListModel,
@@ -36,7 +36,7 @@ class CatalogModel(QAbstractListModel):
     DownloadableRole = Qt.ItemDataRole.UserRole + 5
     ManagedRole = Qt.ItemDataRole.UserRole + 6
 
-    _ROLE_NAMES = {
+    _ROLE_NAMES: ClassVar[dict[int, QByteArray]] = {
         NameRole: QByteArray(b"name"),
         InstalledRole: QByteArray(b"installed"),
         LoadingRole: QByteArray(b"loading"),
@@ -48,7 +48,7 @@ class CatalogModel(QAbstractListModel):
     # Roles whose values can change after construction without a name-list
     # reset. `name` is excluded — names only change via `replace_names`,
     # which goes through `beginResetModel`.
-    _DYNAMIC_ROLES = [
+    _DYNAMIC_ROLES: ClassVar[list[int]] = [
         InstalledRole,
         LoadingRole,
         ProgressRole,
