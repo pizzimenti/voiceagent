@@ -375,15 +375,25 @@ class ParallelItemLoader(QObject):
                         target,
                     )
 
-        # Best-effort rmdir on parents that became empty. `set()` to
-        # collapse duplicates when multiple artifacts share the same
-        # parent directory.
+        # Best-effort rmdir on per-item nested directories that became
+        # empty after the artifact unlinks. The `parent.name == name`
+        # gate restricts this to layouts where each item lives in a
+        # dedicated subdirectory (e.g. Whisper's
+        # `<model_root>/<item_name>/`). Flat-layout backends like Piper
+        # store all voices directly under `<model_root>/` — the parent
+        # is the shared root and MUST NOT be removed (a downstream
+        # `tempfile.mkstemp(dir=model_root)` call in
+        # `_fetch_and_cache_voice_names` would silently fail and the
+        # voices.json refresh would stop working until the user
+        # recreated the dir by hand).
         seen_parents: set[Path] = set()
         for path in paths:
             parent = path.parent
             if parent in seen_parents:
                 continue
             seen_parents.add(parent)
+            if parent.name != name:
+                continue
             try:
                 if parent.is_dir() and not any(parent.iterdir()):
                     parent.rmdir()

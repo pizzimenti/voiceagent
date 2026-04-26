@@ -201,8 +201,9 @@ class TtsVoiceLoader(ParallelItemLoader):
         first synthesis where it surfaces as a baffling
         `wave.Error: # channels not specified`.
 
-        Cost: ~50–100 ms per voice. Acceptable for a one-time
-        post-download check; would NOT be acceptable on every
+        Cost: ~30-50 ms per voice with `ORT_DISABLE_ALL` skipping the
+        graph optimizer (~50-100 ms before that). Acceptable for a
+        one-time post-download check; would NOT be acceptable on every
         `is_item_available` poll, so we do not wire it there.
         """
         base_error = super()._verify_download(name)
