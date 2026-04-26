@@ -2,6 +2,53 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.6.3 — 2026-04-26
+
+**Infra hardening release.** Seven deferred items drained from the
+PR #5 / #6 / #7 round-2 review queues. Test-side cleanup, dev-dep
+plumbing, compiletest hardening, and one small loader-side
+robustness improvement. No user-visible behavior change.
+
+### Added
+- **`TtsVoiceLoader.catalog_refresh_settled` signal** fires once per
+  refresh cycle regardless of outcome (delta, no-change, exception).
+  Replaces the broken `_catalog_refresh_scheduled` polling pattern
+  in tests; UI code typically wants `catalog_changed` instead — the
+  delta-only emit is unchanged.
+- **`ruff` dev extra** in `pyproject.toml` plus a minimal
+  `[tool.ruff]` block (target py311, line-length 100, exclude
+  `src/vendor`). CodeRabbit references Ruff rule codes in PR reviews;
+  contributors can now enforce locally via
+  `pip install -e .[dev] && ruff check .`.
+
+### Changed
+- **`ParallelItemLoader.shutdown(timeout=2.0)`** now does a bounded
+  join on in-flight workers via per-instance future tracking + a
+  `concurrent.futures.wait(timeout=...)` after
+  `executor.shutdown(wait=False, cancel_futures=True)`. Workers
+  that complete within the timeout are awaited cleanly; over-runs
+  are left to run in the background, relying on Qt's queued-
+  connection safety net. Tracking is wired into both
+  `download_item` / `delete_item` and
+  `tts_loader.refresh_catalog_async` so a refresh mid-flight at
+  shutdown gets a chance to settle.
+- **Compiletest now lints components standalone.**
+  `voiceagent-compiletest.sh` runs `qmllint` on `MicButton.qml` and
+  `ConversationPane.qml` directly (in addition to `MainWindow.qml`).
+  Catches errors local to the components without depending on the
+  in-script `StubVoiceAgent`.
+- **`tests/conftest.py` pins `qapp_cls=QApplication`** and
+  materializes the `qapp` fixture at session start via an
+  `autouse` fixture. Removes the recurring `RuntimeWarning:
+  Existing QApplication ... is not an instance of qapp_cls` noise.
+- **`tests/test_parallel_item_loader.py`** now uses a `make_loader`
+  pytest fixture for unconditional shutdown — an assertion failure
+  mid-test no longer leaks the executor into the next test.
+- **`tests/test_tts_catalog_first_paint.py`** hoists the duplicated
+  `_FakeResponse` class (3x) and `_boom` (2x) into module-level
+  helpers. Third `_boom` re-definition is intentionally kept inline
+  because that test additionally tracks call attempts.
+
 ## 0.6.2 — 2026-04-26
 
 **Loader hardening release.** Five backend-only fixes drained from
