@@ -2,6 +2,43 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.6.0 — 2026-04-26
+
+**Custom STT path support in CatalogModel.** A `WHISPER_MODEL=/path`
+entry now appears as a `Custom path` row in the Model Manager
+alongside the managed Whisper models. The role infrastructure landed
+in v0.5.0 was designed for exactly this — `managed=False`,
+`downloadable=False`, `installed` reflects whether the path resolves
+to a faster-whisper-shaped layout on disk.
+
+### Added
+- **`WhisperTranscriber._custom_path`** tracks a path-shaped
+  selection (set in `__init__` and `set_model_name` when the value
+  is not in `MODEL_REPOSITORIES` and reads as a path — absolute,
+  contains `/`, or starts with `~`). `available_items()` appends
+  the custom path so it surfaces in the catalog.
+- **QML `modelStatusSummary` returns `"Custom path"`** for
+  `installed && !managed` rows; new `modelActionVisible(item)`
+  gate hides the Install / Remove button on unmanaged installed
+  rows (Voice Agent does not own that file's lifecycle) and on
+  un-installed rows that aren't downloadable.
+
+### Changed
+- **`MainWindow._handle_inventory_change` now refreshes the STT
+  catalog model** when `transcriber.available_items()` shape
+  shifts — same hook the TTS catalog already used for its deferred
+  remote refresh. Custom rows appear / disappear without an app
+  restart. `selection_changed` is routed through this handler too.
+- **`PiperTtsService.is_item_downloadable`** also accepts
+  voice-name-shaped strings via `_looks_like_voice_name`. A
+  configured `TTS_MODEL=en_US-lessac-medium` keeps its Install
+  button on first run before the deferred `voices.json` fetch
+  populates the cache.
+- **Persist only managed STT selections to QSettings.** A persisted
+  custom path would resolve to a fallback on next launch when the
+  env var is unset (the path no longer in the catalog), making
+  selection state silently drift.
+
 ## 0.5.0 — 2026-04-26
 
 **CatalogModel role extension.** The Model Manager's per-row state
