@@ -282,3 +282,73 @@ def test_verification_hook_exception_does_not_escape(tmp_path, qtbot):
     assert len(failed) == 1
     assert "hook exploded" in failed[0][1]
     loader.shutdown()
+
+
+def test_cleanup_does_not_rmdir_shared_model_root(tmp_path, qtbot):
+    """Flat-layout backends (Piper) keep all artifacts directly under
+    `model_root`. After a verification failure the cleanup unlinks the
+    item's files but MUST NOT remove `model_root` itself, even if it
+    happens to be empty afterwards — the next `voices.json` refresh
+    writes via `tempfile.mkstemp(dir=model_root)` and would silently
+    break if the dir disappeared.
+
+    The `parent.name == name` gate in `_cleanup_failed_download`
+    enforces this: for Piper, `parent` is `model_root` (not `<root>/v1`),
+    so the gate fails and rmdir is skipped.
+    """
+    backend = VerifyingFakeBackend(tmp_path)
+
+    def _strategy(name, root, cb):
+        (root / f"{name}.onnx").write_bytes(b"partial")
+        (root / f"{name}.onnx.json").write_text("{}", encoding="utf-8")
+        (root / f"{name}.onnx.aria2").write_bytes(b"aria2-control")
+
+    backend.download_strategy = _strategy
+    loader = _ConcreteLoader(backend)
+
+    loader.download_item("v1")
+    _wait(qtbot, lambda: not loader.is_loading)
+
+    # Files cleaned up.
+    assert not (tmp_path / "v1.onnx").exists()
+    assert not (tmp_path / "v1.onnx.aria2").exists()
+    # Shared root MUST still exist — without this guard, Piper installs
+    # would nuke the user's TTS model directory on first failure.
+    assert tmp_path.exists()
+    assert tmp_path.is_dir()
+    loader.shutdown()
+
+
+def test_cleanup_rmdirs_per_item_subdirectory(tmp_path, qtbot):
+    """Nested-layout backends (Whisper) keep artifacts under
+    `<model_root>/<item_name>/`. After a verification failure the
+    cleanup should unlink the artifacts AND rmdir the per-item
+    subdirectory if it became empty — leaves the FS in a clean state
+    for the next pass.
+    """
+
+    class _NestedBackend(VerifyingFakeBackend):
+        def artifact_paths(self, name: str):
+            base = self.model_root / name
+            return [base / "config.json", base / "model.bin"]
+
+    backend = _NestedBackend(tmp_path)
+
+    def _strategy(name, root, cb):
+        item_dir = root / name
+        item_dir.mkdir(parents=True, exist_ok=True)
+        (item_dir / "config.json").write_text("{}", encoding="utf-8")
+        (item_dir / "model.bin").write_bytes(b"partial")
+        (item_dir / "model.bin.aria2").write_bytes(b"aria2-control")
+
+    backend.download_strategy = _strategy
+    loader = _ConcreteLoader(backend)
+
+    loader.download_item("v1")
+    _wait(qtbot, lambda: not loader.is_loading)
+
+    # Per-item subdir is gone (empty after cleanup, so rmdir fired).
+    assert not (tmp_path / "v1").exists()
+    # Shared root stays put.
+    assert tmp_path.exists()
+    loader.shutdown()

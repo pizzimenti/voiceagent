@@ -37,7 +37,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 import logging
 from pathlib import Path
-from typing import Callable, Optional, Protocol, runtime_checkable
+from typing import Callable, ClassVar, Optional, Protocol, runtime_checkable
 
 from PySide6.QtCore import QObject, Qt, Signal
 
@@ -81,7 +81,47 @@ class ParallelItemLoader(QObject):
     Subclasses customize the user-facing status strings via the
     `_status_*` hooks and may override `_can_download` and
     `_log_state` to add preconditions or diagnostics.
+
+    Every name in `_REQUIRED_STATUS_HOOKS` must be overridden by every
+    concrete subclass. `__init_subclass__` enforces this at class-build
+    time so a missing override fails at import (loud, deterministic)
+    rather than the first time a state machine reaches that hook
+    (lazy, situational, hard to repro). `@abstractmethod` would be the
+    canonical mechanism but `QObject`'s metaclass conflicts with
+    `ABCMeta`, so a manual MRO walk is the simplest equivalent.
     """
+
+    _REQUIRED_STATUS_HOOKS: ClassVar[tuple[str, ...]] = (
+        "_status_checking",
+        "_status_downloading",
+        "_status_removing",
+        "_status_ready",
+        "_status_load_failed",
+        "_status_remove_failed",
+        "_status_idle_prompt",
+        "_status_removed_ok",
+        "_status_select_to_enable",
+    )
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        missing: list[str] = []
+        for hook in cls._REQUIRED_STATUS_HOOKS:
+            # Walk the MRO and find the first class that defines this
+            # hook. If that's `ParallelItemLoader` itself, neither `cls`
+            # nor any intermediate ancestor has overridden the
+            # `NotImplementedError`-raising sentinel.
+            defined_on = next(
+                (base for base in cls.__mro__ if hook in base.__dict__),
+                None,
+            )
+            if defined_on is None or defined_on is ParallelItemLoader:
+                missing.append(hook)
+        if missing:
+            raise TypeError(
+                f"{cls.__name__} must override all status hooks; "
+                f"missing: {', '.join(missing)}"
+            )
 
     selection_changed = Signal(str)
     ready_changed = Signal(bool)
@@ -245,14 +285,22 @@ class ParallelItemLoader(QObject):
     # -- download verification --------------------------------------------
 
     def _verify_download(self, name: str) -> Optional[str]:
-        """Return `None` if the freshly downloaded artifact is usable,
-        or an error message string if verification failed.
+        """Post-download integrity check. NOT a generic readiness probe.
 
-        Called from the worker thread on the success path of
-        `_download_worker`, between the backend's `download_item`
-        returning and `load_completed` being emitted. If this returns a
-        string, the worker emits `load_failed` with that message instead
-        and the partials are cleaned up via `_cleanup_failed_download`.
+        This hook runs from the worker thread on the success path of
+        `_download_worker`, exactly once per install attempt, between
+        the backend's `download_item` returning and `load_completed`
+        being emitted. Returns `None` when the freshly downloaded
+        artifacts pass verification, or an error message string that
+        routes the install through `load_failed` + cleanup.
+
+        It is **not** safe to call from a generic "is this ready?"
+        codepath. Subclass overrides may run heavy probes — the Piper
+        loader runs a one-shot `onnxruntime.InferenceSession` (~50–100
+        ms) — that are appropriate for a one-time post-download gate
+        but would be a serious cost regression if invoked from any
+        per-row availability check (`is_item_available`,
+        `_CatalogStateAdapter.is_installed`, etc.).
 
         The default implementation runs **layer 1** (cheapest): for
         every artifact path reported by the backend, reject the
@@ -296,6 +344,13 @@ class ParallelItemLoader(QObject):
         Runs on the worker thread from the verification-failure path so
         the next attempt starts from a clean slate and stale partials
         never get mistaken for a good install by `is_item_available`.
+
+        For nested-layout backends (e.g. Whisper, where artifacts live
+        under `<model_root>/<item_name>/`) we also try to rmdir each
+        artifact's parent directory if it became empty after the unlinks.
+        Without this step the empty `<item_name>/` directory lingers; the
+        next download pass treats it as empty so it isn't catastrophic,
+        but the FS state reads cleaner without it.
         """
         try:
             paths = list(self._backend.artifact_paths(name))
@@ -319,6 +374,37 @@ class ParallelItemLoader(QObject):
                         self.__class__.__name__,
                         target,
                     )
+
+        # Best-effort rmdir on per-item nested directories that became
+        # empty after the artifact unlinks. The `parent.name == name`
+        # gate restricts this to layouts where each item lives in a
+        # dedicated subdirectory (e.g. Whisper's
+        # `<model_root>/<item_name>/`). Flat-layout backends like Piper
+        # store all voices directly under `<model_root>/` — the parent
+        # is the shared root and MUST NOT be removed (a downstream
+        # `tempfile.mkstemp(dir=model_root)` call in
+        # `_fetch_and_cache_voice_names` would silently fail and the
+        # voices.json refresh would stop working until the user
+        # recreated the dir by hand).
+        seen_parents: set[Path] = set()
+        for path in paths:
+            parent = path.parent
+            if parent in seen_parents:
+                continue
+            seen_parents.add(parent)
+            if parent.name != name:
+                continue
+            try:
+                if parent.is_dir() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except Exception:
+                # rmdir failure is fine — the next pass will treat the
+                # directory as empty regardless.
+                self._logger.debug(
+                    "%s cleanup could not rmdir %s",
+                    self.__class__.__name__,
+                    parent,
+                )
 
     # -- worker-thread side -----------------------------------------------
 

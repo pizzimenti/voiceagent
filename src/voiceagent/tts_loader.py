@@ -201,8 +201,9 @@ class TtsVoiceLoader(ParallelItemLoader):
         first synthesis where it surfaces as a baffling
         `wave.Error: # channels not specified`.
 
-        Cost: ~50–100 ms per voice. Acceptable for a one-time
-        post-download check; would NOT be acceptable on every
+        Cost: ~30-50 ms per voice with `ORT_DISABLE_ALL` skipping the
+        graph optimizer (~50-100 ms before that). Acceptable for a
+        one-time post-download check; would NOT be acceptable on every
         `is_item_available` poll, so we do not wire it there.
         """
         base_error = super()._verify_download(name)
@@ -234,8 +235,20 @@ class TtsVoiceLoader(ParallelItemLoader):
                 f"({exc.__class__.__name__}): {exc}"
             )
 
+        # Verification only checks that the protobuf parses and the
+        # graph builds — we don't run inference. Pre-configure
+        # `SessionOptions` with `ORT_DISABLE_ALL` to skip graph
+        # optimization, which costs ~20–50 ms per voice install but
+        # adds nothing to the verification signal. The default profile
+        # bakes the optimized graph into the runtime cache, which is
+        # equally pointless for a session we drop on the next line.
+        session_options = onnxruntime.SessionOptions()
+        session_options.graph_optimization_level = (
+            onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
+        )
+
         try:
-            onnxruntime.InferenceSession(str(onnx_path))
+            onnxruntime.InferenceSession(str(onnx_path), sess_options=session_options)
         except Exception as exc:
             return (
                 f"onnx smoke-load failed ({exc.__class__.__name__}): "
