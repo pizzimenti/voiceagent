@@ -2,6 +2,43 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.6.1 — 2026-04-26
+
+**Review-cleanup release.** Drains five small deferred fixes from the
+PR #5 / #6 / #7 round-2 / #8 review queues; no new capabilities, no
+user-visible behavior changes except the Connect button now stays
+disabled during an in-flight refresh.
+
+### Changed
+- **Atomic `voices.json` write.** `_fetch_and_cache_voice_names`
+  writes to a per-call unique tempfile in `model_root` then
+  `os.replace`s onto the cache. A process kill mid-write now leaves
+  the previous (valid) cache intact instead of a truncated file
+  that the JSON parser silently treated as "empty cache". The
+  try/except cleans up partial tempfiles.
+- **Read-only role mapping.** `roleNames()` returns a fresh `dict`
+  copy in both `CatalogModel` and `ConversationModel`. Qt can mutate
+  the copy but not the canonical class-level dict. (PySide6 strictly
+  type-checks the return — `MappingProxyType` triggered a
+  `RuntimeWarning` and Qt fell back to an empty role map.)
+- **`update_message` O(1) role lookup.** `ConversationModel` now
+  resolves per-key role via a class-build-time `_KEY_TO_ROLE`
+  inverse map, dropping the per-update O(R) linear scan over
+  `_ROLE_KEYS`.
+- **Connect button spam-click guard.** The QML `enabled:` clause
+  now always requires `!llmConnectionBusy`. The previous
+  `(!llmServerConnected || !llmConnectionBusy)` let repeat clicks
+  through during the initial connect path while a refresh was
+  already in flight, queueing extra `_start_refresh()` calls.
+- **`PiperTtsService.known_voice_names` caching.** The union of
+  on-disk voices + `voices.json` cache is memoized per-instance
+  with a `threading.Lock` so worker-thread invalidations from
+  `refresh_catalog` are serialized against GUI-thread reads. The
+  cache invalidates on `refresh_catalog`, successful `_download_voice`,
+  and `remove_item`. Eliminates the per-row disk-glob /
+  JSON-parse cost when QML reads `model.managed` /
+  `model.downloadable` for every visible row.
+
 ## 0.6.0 — 2026-04-26
 
 **Custom STT path support in CatalogModel.** A `WHISPER_MODEL=/path`
