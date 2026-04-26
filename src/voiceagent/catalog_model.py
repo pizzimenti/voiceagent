@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from types import MappingProxyType
-from typing import ClassVar, Mapping, Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 from PySide6.QtCore import (
     QAbstractListModel,
@@ -56,10 +55,6 @@ class CatalogModel(QAbstractListModel):
         DownloadableRole,
         ManagedRole,
     ]
-    # Read-only view handed to Qt so the framework cannot mutate the
-    # class-level dict (PySide6 doesn't guarantee read-only semantics
-    # on the returned mapping).
-    _ROLE_NAMES_VIEW: ClassVar[Mapping[int, QByteArray]] = MappingProxyType(_ROLE_NAMES)
 
     def __init__(
         self,
@@ -96,8 +91,15 @@ class CatalogModel(QAbstractListModel):
             return bool(self._state.is_managed(name))
         return None
 
-    def roleNames(self) -> Mapping[int, QByteArray]:  # noqa: N802
-        return self._ROLE_NAMES_VIEW
+    def roleNames(self) -> dict[int, QByteArray]:  # noqa: N802
+        # Return a fresh dict copy. PySide6 strictly type-checks the
+        # `roleNames()` return — a `MappingProxyType` view raises a
+        # RuntimeWarning and Qt silently uses an empty role map, which
+        # makes QML bindings like `model.name` resolve to `undefined`
+        # and breaks all delegate rendering. The copy guards against Qt
+        # mutating the canonical class-level dict without sacrificing
+        # the QML interop.
+        return dict(self._ROLE_NAMES)
 
     def refresh_row(self, name: str) -> None:
         """Emit dataChanged for all dynamic roles on the matching row.

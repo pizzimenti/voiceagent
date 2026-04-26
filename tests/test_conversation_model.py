@@ -167,3 +167,22 @@ def test_find_message_index_locates_status_role(model):
     model.append_message({"role": "status", "text": "Speaking…", "stateName": "speaking"})
     # find_message_index walks in reverse, so most recent status row wins.
     assert model.find_message_index("status") == 3
+
+def test_role_names_returns_a_real_dict(model):
+    # PySide6 strictly type-checks the `roleNames()` return value —
+    # anything that isn't a real `dict` (notably `MappingProxyType`)
+    # triggers a RuntimeWarning and Qt then uses an empty role map,
+    # which breaks every QML role binding silently.
+    role_names = model.roleNames()
+    assert type(role_names) is dict
+    assert role_names is not ConversationModel._ROLE_NAMES
+    assert model.roleNames() is not role_names
+
+
+def test_update_message_uses_inverse_role_map(model):
+    # `_KEY_TO_ROLE` is an O(1) inverse of `_ROLE_KEYS` built at
+    # class-build time. Spot-check the wiring.
+    assert ConversationModel._KEY_TO_ROLE['text'] == ConversationModel.TextRole
+    assert ConversationModel._KEY_TO_ROLE['bubbleState'] == ConversationModel.BubbleStateRole
+    assert ConversationModel._KEY_TO_ROLE['stateName'] == ConversationModel.StateNameRole
+
