@@ -34,9 +34,10 @@ Three properties of the shared machinery worth highlighting:
 
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait as futures_wait
 import logging
 from pathlib import Path
+import threading
 from typing import Callable, ClassVar, Optional, Protocol, runtime_checkable
 
 from PySide6.QtCore import QObject, Qt, Signal
@@ -162,6 +163,13 @@ class ParallelItemLoader(QObject):
         # progress via `_emit_progress_from_worker` so the queued
         # signal serializes the writes.
         self._progress_by_item: dict[str, DownloadProgress] = {}
+        # In-flight worker futures so `shutdown()` can do a bounded
+        # join. The lock guards mutation from both owner-thread submits
+        # and worker-thread done-callbacks (which `_untrack_inflight`
+        # registers).
+        self._inflight_futures: set[Future] = set()
+        self._inflight_lock = threading.Lock()
+        self._shutdown_started = False
         self._logger = logging.getLogger(self.__class__.__module__)
 
         self._progress_tick.connect(
@@ -192,8 +200,62 @@ class ParallelItemLoader(QObject):
     def active_items(self) -> frozenset[str]:
         return frozenset(self._active_items)
 
-    def shutdown(self) -> None:
+    def shutdown(self, *, timeout: float = 2.0) -> None:
+        """Stop accepting new work; cancel queued tasks; bounded-wait
+        on in-flight workers.
+
+        The previous `shutdown(wait=False, cancel_futures=True)` was a
+        fire-and-forget call: queued tasks were cancelled, but any worker
+        already running continued in the background after `shutdown`
+        returned. Tests that asserted state immediately after
+        `loader.shutdown()` could see in-flight emits leak into the next
+        test, and app shutdown could leave a Piper voice mid-download
+        well after `app.aboutToQuit` ran.
+
+        New contract: when `shutdown()` returns, every in-flight worker
+        has either finished (within `timeout` seconds) or been left to
+        continue in the background. Workers that overrun the timeout
+        rely on Qt's queued-connection safety net (a deleted-receiver
+        emission is dropped silently — see `_handle_done`'s
+        `name in self._active_items` guard for the application-side
+        invariant).
+
+        Idempotent — repeated calls are a no-op after the first.
+        """
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
+
+        # Snapshot inflight futures BEFORE we tell the executor to stop —
+        # we need their handles to wait on. The set is mutated from both
+        # this owner thread and from worker-thread done-callbacks, so
+        # take the snapshot under the lock.
+        with self._inflight_lock:
+            pending = [f for f in self._inflight_futures if not f.done()]
+
+        # Cancel queued (not-yet-started) tasks; refuse new submissions.
+        # `wait=False` returns immediately so we can run our bounded join
+        # explicitly with a timeout below.
         self.executor.shutdown(wait=False, cancel_futures=True)
+
+        if pending:
+            futures_wait(pending, timeout=timeout)
+
+    # -- inflight-future tracking -----------------------------------------
+
+    def _track_inflight(self, future: Future) -> None:
+        with self._inflight_lock:
+            self._inflight_futures.add(future)
+        # Registered AFTER add so that if the future is already done at
+        # registration time (rare but possible — submit can race with
+        # immediate completion in a tight test loop), the discard sees
+        # the future in the set.
+        future.add_done_callback(self._untrack_inflight)
+
+    def _untrack_inflight(self, future: Future) -> None:
+        # Runs on the worker thread when the future completes.
+        with self._inflight_lock:
+            self._inflight_futures.discard(future)
 
     # -- core operations ---------------------------------------------------
 
@@ -218,6 +280,7 @@ class ParallelItemLoader(QObject):
         self.progress_changed.emit(self._aggregate_progress())
 
         future = self.executor.submit(self._download_worker, name)
+        self._track_inflight(future)
         future.add_done_callback(lambda f, n=name: self._handle_done(f, n, "download"))
 
     def delete_item(self, name: str) -> None:
@@ -244,6 +307,7 @@ class ParallelItemLoader(QObject):
         self.progress_changed.emit(self._aggregate_progress())
 
         future = self.executor.submit(self._delete_worker, name)
+        self._track_inflight(future)
         future.add_done_callback(lambda f, n=name: self._handle_done(f, n, "delete"))
 
     # -- subclass hooks ----------------------------------------------------

@@ -67,10 +67,10 @@ def _process_events(times: int = 5) -> None:
         app.processEvents()
 
 
-@pytest.fixture
-def qapp() -> QCoreApplication:
-    app = QCoreApplication.instance() or QCoreApplication([])
-    return app
+# `qapp` fixture comes from pytest-qt via `tests/conftest.py`. The local
+# override that previously created a bare `QCoreApplication([])` was
+# the source of the suite-wide `qapp_cls` warning — pytest-qt expects a
+# QApplication instance.
 
 
 class _StubStream:

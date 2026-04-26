@@ -63,6 +63,43 @@ def _wait_for(qtbot, predicate, timeout: int = 2000) -> None:
     qtbot.waitUntil(predicate, timeout=timeout)
 
 
+class _FakeResponse:
+    """Minimal `urllib.request.urlopen` stand-in for offline tests.
+
+    Hoisted from three duplicated in-test definitions. Carries the body
+    explicitly rather than capturing via closure so each test reads
+    self-contained.
+    """
+
+    def __init__(self, body: str | bytes = b"") -> None:
+        self._body = body.encode("utf-8") if isinstance(body, str) else body
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def _raising_urlopen(error_class: type[BaseException], message: str):
+    """Return an `urlopen`-shaped callable that always raises.
+
+    Replaces two near-identical `_boom` re-definitions that simulated a
+    failed network fetch. The third re-definition (in
+    `test_available_items_no_cache_no_network`) is intentionally kept
+    inline because that test additionally tracks call attempts to assert
+    the eager codepath never reaches the network.
+    """
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise error_class(message)
+
+    return _boom
+
+
 # --- service-level: eager catalog never touches the network ---------------
 
 
@@ -115,24 +152,9 @@ def test_refresh_remote_catalog_writes_cache_and_returns_union(tmp_path, monkeyp
     _touch_piper_voice(tmp_path, "en_US-ryan-high")
     payload = json.dumps({"en_US-remote-low": {}, "fr_FR-remote-high": {}})
 
-    class _FakeResponse:
-        def __init__(self, body: str) -> None:
-            self._body = body.encode("utf-8")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def read(self):
-            return self._body
-
-    def _fake_urlopen(url, timeout=None):
-        return _FakeResponse(payload)
-
     monkeypatch.setattr(
-        "voiceagent.services.tts.urllib.request.urlopen", _fake_urlopen
+        "voiceagent.services.tts.urllib.request.urlopen",
+        lambda *a, **k: _FakeResponse(payload),
     )
 
     service = _make_service(tmp_path)
@@ -148,11 +170,9 @@ def test_refresh_remote_catalog_writes_cache_and_returns_union(tmp_path, monkeyp
 def test_refresh_remote_catalog_network_failure_returns_eager(tmp_path, monkeypatch):
     _touch_piper_voice(tmp_path, "en_US-ryan-high")
 
-    def _boom(*_args, **_kwargs):
-        raise OSError("no route to host")
-
     monkeypatch.setattr(
-        "voiceagent.services.tts.urllib.request.urlopen", _boom
+        "voiceagent.services.tts.urllib.request.urlopen",
+        _raising_urlopen(OSError, "no route to host"),
     )
 
     service = _make_service(tmp_path)
@@ -172,19 +192,9 @@ def test_refresh_catalog_async_emits_once_on_success(tmp_path, monkeypatch, qtbo
         {"en_US-remote-low": {}, "en_US-ryan-high": {}, "fr_FR-remote-high": {}}
     )
 
-    class _FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def read(self):
-            return payload.encode("utf-8")
-
     monkeypatch.setattr(
         "voiceagent.services.tts.urllib.request.urlopen",
-        lambda *a, **k: _FakeResponse(),
+        lambda *a, **k: _FakeResponse(payload),
     )
 
     service = _make_service(tmp_path)
@@ -212,11 +222,9 @@ def test_refresh_catalog_async_emits_once_on_success(tmp_path, monkeypatch, qtbo
 def test_refresh_catalog_async_network_failure_is_silent(tmp_path, monkeypatch, qtbot):
     _touch_piper_voice(tmp_path, "en_US-ryan-high")
 
-    def _boom(*_args, **_kwargs):
-        raise OSError("offline")
-
     monkeypatch.setattr(
-        "voiceagent.services.tts.urllib.request.urlopen", _boom
+        "voiceagent.services.tts.urllib.request.urlopen",
+        _raising_urlopen(OSError, "offline"),
     )
 
     service = _make_service(tmp_path)
@@ -224,16 +232,21 @@ def test_refresh_catalog_async_network_failure_is_silent(tmp_path, monkeypatch, 
     received: list[list[str]] = []
     loader.catalog_changed.connect(lambda names: received.append(list(names)))
 
-    loader.refresh_catalog_async()
-    # Give the worker thread + queued signal time to land.
-    _wait_for(qtbot, lambda: loader.catalog_refresh_scheduled, timeout=500)
-    for _ in range(20):
-        QCoreApplication.instance().processEvents()
+    # Wait on the public lifecycle-end signal. The previous wait —
+    # `loader.catalog_refresh_scheduled` — was a no-op because that flag
+    # is set synchronously before submit and cleared on the queued
+    # completion slot, so by the time qtbot polled it could be either
+    # state without the worker actually running. `catalog_refresh_settled`
+    # fires AFTER the worker has settled and the queued slot has run.
+    with qtbot.waitSignal(loader.catalog_refresh_settled, timeout=2000):
+        loader.refresh_catalog_async()
 
-    # Refresh failed → eager catalog stays put, no broken signal.
+    # Refresh failed → eager catalog stays put, no `catalog_changed`.
     assert received == []
     # And the eager catalog is still reachable for QML.
     assert "en_US-ryan-high" in service.available_items()
+    # Latch released — a follow-up call could re-attempt.
+    assert loader.catalog_refresh_scheduled is False
     loader.shutdown()
 
 
@@ -242,19 +255,9 @@ def test_refresh_catalog_async_no_emit_when_nothing_changed(tmp_path, monkeypatc
     _touch_piper_voice(tmp_path, "en_US-ryan-high")
     payload = json.dumps({"en_US-ryan-high": {}})
 
-    class _FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def read(self):
-            return payload.encode("utf-8")
-
     monkeypatch.setattr(
         "voiceagent.services.tts.urllib.request.urlopen",
-        lambda *a, **k: _FakeResponse(),
+        lambda *a, **k: _FakeResponse(payload),
     )
 
     service = _make_service(tmp_path)
@@ -291,3 +294,74 @@ def test_refresh_catalog_async_after_shutdown_is_safe(tmp_path):
     # — this also documents that the early-return is the post-shutdown
     # branch, not the already-scheduled branch.
     assert loader._catalog_refresh_scheduled is False
+
+
+# --- catalog_refresh_settled fires on every settled outcome --------------
+
+
+def test_catalog_refresh_settled_fires_on_delta(tmp_path, monkeypatch, qtbot):
+    """Success path with a real delta: both `catalog_changed` AND
+    `catalog_refresh_settled` fire (in that order)."""
+    _touch_piper_voice(tmp_path, "en_US-ryan-high")
+    payload = json.dumps({"en_US-remote-low": {}})
+    monkeypatch.setattr(
+        "voiceagent.services.tts.urllib.request.urlopen",
+        lambda *a, **k: _FakeResponse(payload),
+    )
+
+    service = _make_service(tmp_path)
+    loader = TtsVoiceLoader(service)
+    events: list[str] = []
+    loader.catalog_changed.connect(lambda _names: events.append("changed"))
+    loader.catalog_refresh_settled.connect(lambda: events.append("settled"))
+
+    with qtbot.waitSignal(loader.catalog_refresh_settled, timeout=2000):
+        loader.refresh_catalog_async()
+
+    assert events == ["changed", "settled"]
+    loader.shutdown()
+
+
+def test_catalog_refresh_settled_fires_on_no_delta(tmp_path, monkeypatch, qtbot):
+    """Success path with no delta: only `catalog_refresh_settled` fires;
+    `catalog_changed` is suppressed so QML delegates don't churn."""
+    _touch_piper_voice(tmp_path, "en_US-ryan-high")
+    payload = json.dumps({"en_US-ryan-high": {}})
+    monkeypatch.setattr(
+        "voiceagent.services.tts.urllib.request.urlopen",
+        lambda *a, **k: _FakeResponse(payload),
+    )
+
+    service = _make_service(tmp_path)
+    loader = TtsVoiceLoader(service)
+    events: list[str] = []
+    loader.catalog_changed.connect(lambda _names: events.append("changed"))
+    loader.catalog_refresh_settled.connect(lambda: events.append("settled"))
+
+    with qtbot.waitSignal(loader.catalog_refresh_settled, timeout=2000):
+        loader.refresh_catalog_async()
+
+    assert events == ["settled"]
+    loader.shutdown()
+
+
+def test_catalog_refresh_settled_fires_on_failure(tmp_path, monkeypatch, qtbot):
+    """Failure path: `catalog_refresh_settled` still fires so callers
+    waiting on it don't deadlock; `catalog_changed` does not."""
+    _touch_piper_voice(tmp_path, "en_US-ryan-high")
+    monkeypatch.setattr(
+        "voiceagent.services.tts.urllib.request.urlopen",
+        _raising_urlopen(OSError, "no route to host"),
+    )
+
+    service = _make_service(tmp_path)
+    loader = TtsVoiceLoader(service)
+    events: list[str] = []
+    loader.catalog_changed.connect(lambda _names: events.append("changed"))
+    loader.catalog_refresh_settled.connect(lambda: events.append("settled"))
+
+    with qtbot.waitSignal(loader.catalog_refresh_settled, timeout=2000):
+        loader.refresh_catalog_async()
+
+    assert events == ["settled"]
+    loader.shutdown()

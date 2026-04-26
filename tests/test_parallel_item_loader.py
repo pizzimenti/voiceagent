@@ -146,10 +146,37 @@ def _process_events(times: int = 5) -> None:
         app.processEvents()
 
 
+@pytest.fixture
+def make_loader():
+    """Yield a factory that builds a `ParallelItemLoader` subclass and
+    registers it for unconditional shutdown.
+
+    Each test was previously calling `loader = _ConcreteLoader(backend);
+    ...; loader.shutdown()` with the shutdown trailing the body. If an
+    assertion in the middle raised, the loader's executor leaked into
+    the next test. Routing construction through this fixture moves the
+    teardown into a pytest finalizer that runs even on assertion failure.
+    """
+    loaders: list[ParallelItemLoader] = []
+
+    def _make(backend, loader_cls=_ConcreteLoader, **kwargs):
+        loader = loader_cls(backend, **kwargs)
+        loaders.append(loader)
+        return loader
+
+    yield _make
+
+    for loader in loaders:
+        try:
+            loader.shutdown()
+        except Exception:  # pragma: no cover - teardown best-effort
+            pass
+
+
 # --- tests ---------------------------------------------------------------
 
 
-def test_loading_changed_idle_to_busy_edge_only(qtbot):
+def test_loading_changed_idle_to_busy_edge_only(qtbot, make_loader):
     backend = FakeBackend()
     # Block the worker so we can observe the busy state synchronously.
     release = threading.Event()
@@ -161,7 +188,7 @@ def test_loading_changed_idle_to_busy_edge_only(qtbot):
         backend.mark_installed(name)
 
     backend.download_strategy = strategy
-    loader = _ConcreteLoader(backend)
+    loader = make_loader(backend)
 
     loading_signals: list[bool] = []
     loader.loading_changed.connect(loading_signals.append)
@@ -178,10 +205,9 @@ def test_loading_changed_idle_to_busy_edge_only(qtbot):
     _wait(qtbot, lambda: not loader.is_loading)
     # busy -> idle exactly once at the end
     assert loading_signals == [True, False]
-    loader.shutdown()
 
 
-def test_two_parallel_downloads_aggregate(qtbot):
+def test_two_parallel_downloads_aggregate(qtbot, make_loader):
     backend = FakeBackend()
     started = threading.Barrier(2)
     release = threading.Event()
@@ -201,7 +227,7 @@ def test_two_parallel_downloads_aggregate(qtbot):
         backend.mark_installed(name)
 
     backend.download_strategy = strategy
-    loader = _ConcreteLoader(backend)
+    loader = make_loader(backend)
 
     aggregate_updates: list[DownloadProgress] = []
     loader.progress_changed.connect(aggregate_updates.append)
@@ -219,10 +245,9 @@ def test_two_parallel_downloads_aggregate(qtbot):
 
     release.set()
     _wait(qtbot, lambda: not loader.is_loading)
-    loader.shutdown()
 
 
-def test_success_does_not_synthesize_terminal_progress_tick(qtbot):
+def test_success_does_not_synthesize_terminal_progress_tick(qtbot, make_loader):
     backend = FakeBackend()
 
     # Worker emits a single mid-download tick (30/100) and returns
@@ -235,7 +260,7 @@ def test_success_does_not_synthesize_terminal_progress_tick(qtbot):
         backend.mark_installed(name)
 
     backend.download_strategy = strategy
-    loader = _ConcreteLoader(backend)
+    loader = make_loader(backend)
 
     progress_events: list[tuple[str, DownloadProgress]] = []
     loader.item_progress_changed.connect(lambda n, p: progress_events.append((n, p)))
@@ -255,17 +280,16 @@ def test_success_does_not_synthesize_terminal_progress_tick(qtbot):
     ]
     # `item_loading_changed(False)` is the last lifecycle event.
     assert loading_events[-1] == ("a", False)
-    loader.shutdown()
 
 
-def test_idempotent_finish_failure(qtbot):
+def test_idempotent_finish_failure(qtbot, make_loader):
     backend = FakeBackend()
 
     def strategy(name, cb):
         raise RuntimeError("boom")
 
     backend.download_strategy = strategy
-    loader = _ConcreteLoader(backend)
+    loader = make_loader(backend)
 
     loading_signals: list[bool] = []
     loader.loading_changed.connect(loading_signals.append)
@@ -284,12 +308,11 @@ def test_idempotent_finish_failure(qtbot):
     assert loading_signals.count(False) == 1
     assert len(error_signals) == 2  # ["", "boom"] from the legitimate path
     assert error_signals[-1] == "boom"
-    loader.shutdown()
 
 
-def test_idempotent_finish_success(qtbot):
+def test_idempotent_finish_success(qtbot, make_loader):
     backend = FakeBackend()
-    loader = _ConcreteLoader(backend)
+    loader = make_loader(backend)
 
     loading_signals: list[bool] = []
     loader.loading_changed.connect(loading_signals.append)
@@ -305,12 +328,11 @@ def test_idempotent_finish_success(qtbot):
     assert item_loading_events == []
     # And no extra loading_changed.
     assert loading_signals == [True, False]
-    loader.shutdown()
 
 
-def test_progress_tick_from_worker_thread_is_safe(qtbot):
+def test_progress_tick_from_worker_thread_is_safe(qtbot, make_loader):
     backend = FakeBackend()
-    loader = _ConcreteLoader(backend)
+    loader = make_loader(backend)
 
     # Skip the executor entirely; manually mark item active so ticks
     # are accepted, and emit progress from a non-Qt thread.
@@ -340,12 +362,11 @@ def test_progress_tick_from_worker_thread_is_safe(qtbot):
 
     # The owner thread is the sole writer, and the last tick wins.
     assert loader._progress_by_item["a"].completed_bytes == 50
-    loader.shutdown()
 
 
-def test_progress_tick_after_finalization_is_dropped(qtbot):
+def test_progress_tick_after_finalization_is_dropped(qtbot, make_loader):
     backend = FakeBackend()
-    loader = _ConcreteLoader(backend)
+    loader = make_loader(backend)
 
     loader.download_item("a")
     _wait(qtbot, lambda: not loader.is_loading)
@@ -362,22 +383,20 @@ def test_progress_tick_after_finalization_is_dropped(qtbot):
     _process_events()
     assert received == []
     assert "a" not in loader._progress_by_item
-    loader.shutdown()
 
 
-def test_delete_clears_active_state(qtbot):
+def test_delete_clears_active_state(qtbot, make_loader):
     backend = FakeBackend()
     backend.mark_installed("a")
-    loader = _ConcreteLoader(backend)
+    loader = make_loader(backend)
 
     loader.delete_item("a")
     _wait(qtbot, lambda: not loader.is_loading)
     assert "a" not in loader._active_items
     assert ("remove", "a") in backend.calls
-    loader.shutdown()
 
 
-def test_handle_done_routes_failure_by_operation(qtbot):
+def test_handle_done_routes_failure_by_operation(qtbot, make_loader):
     """A catastrophic future failure must surface on the right signal.
 
     `_handle_done` is registered for both download and delete futures.
@@ -388,7 +407,7 @@ def test_handle_done_routes_failure_by_operation(qtbot):
     from concurrent.futures import Future
 
     backend = FakeBackend()
-    loader = _ConcreteLoader(backend)
+    loader = make_loader(backend)
     loader._active_items.add("a")  # simulate in-flight operation
 
     load_failed_spy: list[tuple[str, str]] = []
@@ -411,8 +430,6 @@ def test_handle_done_routes_failure_by_operation(qtbot):
     assert len(load_failed_spy) == 1 and load_failed_spy[0][0] == "b"
     assert len(delete_failed_spy) == 1  # unchanged
 
-    loader.shutdown()
-
 
 def test_subclass_missing_status_overrides_raises_at_class_build():
     # `__init_subclass__` enforces that every subclass overrides every
@@ -430,7 +447,73 @@ def test_subclass_missing_status_overrides_raises_at_class_build():
                 return "downloading"
 
 
-def test_subclass_with_all_overrides_inherited_via_intermediate_passes():
+def test_shutdown_bounded_join_waits_for_inflight_within_timeout(qtbot, make_loader):
+    """A worker that finishes within the bounded-join timeout is awaited
+    cleanly by `shutdown(timeout=...)`.
+    """
+    backend = FakeBackend()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def strategy(name, cb):
+        # Hold inside the worker until released.
+        release.wait(timeout=2.0)
+        cb(DownloadProgress(completed_bytes=100, total_bytes=100, download_speed_bytes_per_second=0))
+        backend.mark_installed(name)
+        finished.set()
+
+    backend.download_strategy = strategy
+    loader = make_loader(backend)
+    loader.download_item("a")
+    # Worker is now blocked inside the strategy. Release it just before
+    # shutdown so the bounded-join sees a worker about to finish.
+    release.set()
+    # `shutdown` should join cleanly within the timeout.
+    loader.shutdown(timeout=2.0)
+    # The released worker had time to complete before shutdown returned.
+    assert finished.is_set()
+
+
+def test_shutdown_bounded_join_does_not_hang_on_overrunning_worker(qtbot, make_loader):
+    """A worker that exceeds the bounded-join timeout is left to run in
+    the background; `shutdown()` returns within roughly `timeout`
+    seconds rather than blocking on the worker forever.
+    """
+    backend = FakeBackend()
+    release = threading.Event()
+
+    def strategy(name, cb):
+        # Park indefinitely until the post-test cleanup releases.
+        release.wait(timeout=5.0)
+        backend.mark_installed(name)
+
+    backend.download_strategy = strategy
+    loader = make_loader(backend)
+    loader.download_item("a")
+    # Don't release — force the bounded-join to time out.
+    start = time.monotonic()
+    loader.shutdown(timeout=0.2)
+    elapsed = time.monotonic() - start
+    # 0.2s timeout + a bit of slack for thread scheduling. If the join
+    # were unbounded this would hit the strategy's 5s wait.
+    assert elapsed < 1.5, (
+        f"shutdown blocked for {elapsed:.2f}s — bounded-join failed to honor timeout"
+    )
+    # Release the parked worker so the post-test cleanup (executor's
+    # final teardown) can proceed.
+    release.set()
+
+
+def test_shutdown_is_idempotent(make_loader):
+    """Calling `shutdown()` twice must be safe (the second call is a
+    no-op rather than re-running the bounded join)."""
+    backend = FakeBackend()
+    loader = make_loader(backend)
+    loader.shutdown(timeout=0.1)
+    loader.shutdown(timeout=0.1)  # must not raise
+
+
+def test_subclass_with_all_overrides_inherited_via_intermediate_passes(make_loader):
     # A subclass that inherits its overrides from an intermediate base
     # (rather than defining them directly) must also pass — the MRO
     # walk must look beyond `cls.__dict__`.
@@ -459,6 +542,5 @@ def test_subclass_with_all_overrides_inherited_via_intermediate_passes():
         pass
 
     backend = FakeBackend()
-    loader = _Leaf(backend)
+    loader = make_loader(backend, loader_cls=_Leaf)
     assert loader._status_checking() == "x"
-    loader.shutdown()
