@@ -49,8 +49,8 @@ Kirigami.ApplicationWindow {
     readonly property bool compactMode: width < Kirigami.Units.gridUnit * 25
     readonly property bool mediumMode: !compactMode
     readonly property bool ultraCompactMode: compactMode
-    readonly property int sttInstalledCount: countInstalled(voiceAgent.sttCatalog)
-    readonly property int ttsInstalledCount: countInstalled(voiceAgent.ttsCatalog)
+    readonly property int sttInstalledCount: voiceAgent.sttInstalledCount
+    readonly property int ttsInstalledCount: voiceAgent.ttsInstalledCount
     readonly property color micPulseColor: voiceAgent.talkReady ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
     readonly property color micButtonColor: voiceAgent.voiceConnectionEnabled ? Kirigami.Theme.highlightColor : Kirigami.Theme.alternateBackgroundColor
     readonly property bool micPulseActive: voiceAgent.voiceConnectionEnabled || voiceAgent.talkReady
@@ -64,16 +64,6 @@ Kirigami.ApplicationWindow {
             }
         }
         return -1;
-    }
-
-    function countInstalled(items) {
-        let count = 0;
-        for (let i = 0; i < items.length; i += 1) {
-            if (items[i].installed) {
-                count += 1;
-            }
-        }
-        return count;
     }
 
     function catalogMatches(name, filterText) {
@@ -302,8 +292,8 @@ Kirigami.ApplicationWindow {
                                 width: ListView.view ? ListView.view.width : 0
                                 visible: root.catalogMatches(model.name, modelManagerWindow.sttFilter)
                                 height: visible ? sttRow.implicitHeight + Kirigami.Units.mediumSpacing * 2 : 0
-                                readonly property bool downloading: voiceAgent.sttProgressMap[model.name] !== undefined
-                                readonly property real downloadProgress: voiceAgent.sttProgressMap[model.name] || 0
+                                readonly property bool downloading: model.loading
+                                readonly property real downloadProgress: model.progress
 
                                 RowLayout {
                                     id: sttRow
@@ -417,8 +407,8 @@ Kirigami.ApplicationWindow {
                                 width: ListView.view ? ListView.view.width : 0
                                 visible: root.catalogMatches(model.name, modelManagerWindow.ttsFilter)
                                 height: visible ? ttsRow.implicitHeight + Kirigami.Units.mediumSpacing * 2 : 0
-                                readonly property bool downloading: voiceAgent.ttsProgressMap[model.name] !== undefined
-                                readonly property real downloadProgress: voiceAgent.ttsProgressMap[model.name] || 0
+                                readonly property bool downloading: model.loading
+                                readonly property real downloadProgress: model.progress
 
                                 RowLayout {
                                     id: ttsRow

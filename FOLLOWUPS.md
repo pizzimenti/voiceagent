@@ -39,6 +39,22 @@ as the layered hook; subclasses would extend it. Keep the cheap
 layers (1, 2) in the default impl and the expensive layers (3, 4) in
 backend overrides.
 
+## Deferred from PR #8 round-1 review
+
+- **`services/tts.py:56-66` — memoize `known_voice_names`.** With
+  the per-row `_CatalogStateAdapter` introduced in PR #8,
+  `is_item_managed` and `is_item_downloadable` fire from QML's
+  `data()` for every visible row, and `refresh_row` triggers two
+  reads (`ManagedRole` + `DownloadableRole`) per transition. Each
+  call re-globs `model_root` (`_cached_voice_names`) and re-reads +
+  parses `voices.json` (`_voice_names_from_cache_file`). Catalog is
+  ~80 entries and on-thread today so it's not user-visible pain, but
+  the right shape is to cache the union on the `PiperTtsService`
+  instance and invalidate on `_on_tts_catalog_changed`, after a
+  successful `download_item` / `remove_item`, and (defensively) on a
+  TTL fallback. Worth doing alongside the next adjacent edit to
+  `tts.py`.
+
 ## Deferred review findings (PR #6)
 
 CodeRabbit's first pass on PR #6 surfaced 11 inline comments; five

@@ -43,14 +43,42 @@ _STATUS_LOG_LABELS: dict[str, str] = {
 }
 
 
+class _CatalogStateAdapter:
+    """Pulls per-row state for CatalogModel from the loader + backend.
+
+    Plain Python class (not a QObject) — lifetime is owned by MainWindow,
+    not the CatalogModel.
+    """
+
+    def __init__(self, *, loader, backend) -> None:
+        self._loader = loader
+        self._backend = backend
+
+    def is_installed(self, name: str) -> bool:
+        return bool(self._backend.is_item_available(name))
+
+    def is_loading(self, name: str) -> bool:
+        return bool(self._loader.is_item_loading(name))
+
+    def progress(self, name: str) -> float:
+        snapshot = self._loader.progress_for(name)
+        total = getattr(snapshot, "total_bytes", 0) or 0
+        if total <= 0:
+            return 0.0
+        completed = getattr(snapshot, "completed_bytes", 0) or 0
+        return max(0.0, min(1.0, completed / total))
+
+    def is_downloadable(self, name: str) -> bool:
+        return bool(self._backend.is_item_downloadable(name))
+
+    def is_managed(self, name: str) -> bool:
+        return bool(self._backend.is_item_managed(name))
+
+
 class MainWindow(QObject):
     ui_changed = Signal()
     progress_changed = Signal()
     conversation_changed = Signal()
-    # Per-row download visibility (active set membership). Fires only on start/end.
-    downloads_changed = Signal()
-    # Per-row download progress (fraction 0..1). Fires on every progress tick.
-    downloads_progress_changed = Signal()
 
     def __init__(
         self,
@@ -95,18 +123,21 @@ class MainWindow(QObject):
         self._tts_progress_value = 0.0
         self._tts_progress_indeterminate = False
         self._tts_progress_text = ""
-        # Per-model in-flight tracking for parallel installs and per-row progress bars.
-        self._stt_active_items: set[str] = set()
-        self._tts_active_items: set[str] = set()
-        self._stt_progress_by_item: dict[str, float] = {}
-        self._tts_progress_by_item: dict[str, float] = {}
-        # Incremental list models so per-row "installed" flips don't rebuild the whole
-        # ListView (which would reset contentY and jump to top).
+        # Incremental list models so per-row state flips don't rebuild the whole
+        # ListView (which would reset contentY and jump to top). The adapter
+        # pulls live state from the loader + backend so the model never owns
+        # duplicate copies of `_active_items` / progress.
+        self._stt_state_adapter = _CatalogStateAdapter(
+            loader=self.model_loader, backend=self.model_loader.transcriber
+        )
+        self._tts_state_adapter = _CatalogStateAdapter(
+            loader=self.tts_loader, backend=self.tts_loader.tts_service
+        )
         self._stt_catalog_model = CatalogModel(
-            self._stt_catalog, self._is_stt_downloaded, self
+            self._stt_catalog, self._stt_state_adapter, self
         )
         self._tts_catalog_model = CatalogModel(
-            self._tts_catalog, self._is_tts_downloaded, self
+            self._tts_catalog, self._tts_state_adapter, self
         )
 
         self.controller.status_changed.connect(self._set_status_message)
@@ -224,14 +255,6 @@ class MainWindow(QObject):
     def ttsOptions(self) -> list[str]:  # noqa: N802
         return [name for name in self._tts_catalog if self._is_tts_downloaded(name)]
 
-    @Property("QVariantList", notify=ui_changed)
-    def sttCatalog(self) -> list[dict[str, object]]:  # noqa: N802
-        return [{"name": name, "installed": self._is_stt_downloaded(name)} for name in self._stt_catalog]
-
-    @Property("QVariantList", notify=ui_changed)
-    def ttsCatalog(self) -> list[dict[str, object]]:  # noqa: N802
-        return [{"name": name, "installed": self._is_tts_downloaded(name)} for name in self._tts_catalog]
-
     @Property(QObject, constant=True)
     def sttCatalogModel(self) -> CatalogModel:  # noqa: N802
         return self._stt_catalog_model
@@ -240,21 +263,13 @@ class MainWindow(QObject):
     def ttsCatalogModel(self) -> CatalogModel:  # noqa: N802
         return self._tts_catalog_model
 
-    @Property("QVariantList", notify=downloads_changed)
-    def sttDownloadingList(self) -> list[str]:  # noqa: N802
-        return sorted(self._stt_active_items)
+    @Property(int, notify=ui_changed)
+    def sttInstalledCount(self) -> int:  # noqa: N802
+        return sum(1 for name in self._stt_catalog if self._is_stt_downloaded(name))
 
-    @Property("QVariantList", notify=downloads_changed)
-    def ttsDownloadingList(self) -> list[str]:  # noqa: N802
-        return sorted(self._tts_active_items)
-
-    @Property("QVariantMap", notify=downloads_progress_changed)
-    def sttProgressMap(self) -> dict[str, float]:  # noqa: N802
-        return dict(self._stt_progress_by_item)
-
-    @Property("QVariantMap", notify=downloads_progress_changed)
-    def ttsProgressMap(self) -> dict[str, float]:  # noqa: N802
-        return dict(self._tts_progress_by_item)
+    @Property(int, notify=ui_changed)
+    def ttsInstalledCount(self) -> int:  # noqa: N802
+        return sum(1 for name in self._tts_catalog if self._is_tts_downloaded(name))
 
     @Property(str, notify=ui_changed)
     def selectedSttModel(self) -> str:  # noqa: N802
@@ -570,9 +585,8 @@ class MainWindow(QObject):
 
     def _on_tts_catalog_changed(self, names: list[str]) -> None:
         # The deferred remote refresh landed new voices. Swap the list
-        # that drives ttsCatalog / ttsOptions and push the new names
-        # into the QAbstractListModel so the ComboBox / catalog list
-        # rebinds.
+        # that drives ttsOptions and push the new names into the
+        # QAbstractListModel so the ComboBox / catalog list rebinds.
         new_names = list(names)
         if new_names == self._tts_catalog:
             return
@@ -709,50 +723,24 @@ class MainWindow(QObject):
         )
         self.progress_changed.emit()
 
-    def _on_stt_item_loading_changed(self, model_name: str, is_loading: bool) -> None:
-        if is_loading:
-            self._stt_active_items.add(model_name)
-        else:
-            self._stt_active_items.discard(model_name)
-            self._stt_progress_by_item.pop(model_name, None)
-            # File may have just appeared/disappeared on disk; update only this row
-            # instead of invalidating the whole catalog.
-            self._stt_catalog_model.refresh_installed(model_name)
-        self.downloads_changed.emit()
-        self.downloads_progress_changed.emit()
+    def _on_stt_item_loading_changed(self, model_name: str, _is_loading: bool) -> None:
+        # Per-row state flip: installed/loading/downloadable can all change
+        # together. Adapter pulls live state from the loader + backend.
+        self._stt_catalog_model.refresh_row(model_name)
+        # `*InstalledCount` and `sttOptions` watch ui_changed.
+        self.ui_changed.emit()
 
-    def _on_stt_item_progress_changed(self, model_name: str, progress) -> None:
-        # The loader emits a terminal item_progress_changed in _finish_success
-        # *after* item_loading_changed(False) has already cleared this row.
-        # Drop the post-finalization tick so the row doesn't re-enter the
-        # downloading-set lookup map and stick on "Installing…".
-        if not self.model_loader.is_item_loading(model_name):
-            return
-        total = getattr(progress, "total_bytes", 0) or 0
-        completed = getattr(progress, "completed_bytes", 0) or 0
-        fraction = (completed / total) if total > 0 else 0.0
-        self._stt_progress_by_item[model_name] = max(0.0, min(1.0, fraction))
-        self.downloads_progress_changed.emit()
+    def _on_stt_item_progress_changed(self, model_name: str, _progress) -> None:
+        # Narrow the dataChanged role list to ProgressRole only; sibling
+        # bindings on installed/loading stay asleep between aria2 ticks.
+        self._stt_catalog_model.refresh_progress(model_name)
 
-    def _on_tts_item_loading_changed(self, model_name: str, is_loading: bool) -> None:
-        if is_loading:
-            self._tts_active_items.add(model_name)
-        else:
-            self._tts_active_items.discard(model_name)
-            self._tts_progress_by_item.pop(model_name, None)
-            self._tts_catalog_model.refresh_installed(model_name)
-        self.downloads_changed.emit()
-        self.downloads_progress_changed.emit()
+    def _on_tts_item_loading_changed(self, model_name: str, _is_loading: bool) -> None:
+        self._tts_catalog_model.refresh_row(model_name)
+        self.ui_changed.emit()
 
-    def _on_tts_item_progress_changed(self, model_name: str, progress) -> None:
-        # See _on_stt_item_progress_changed — same post-finalization-tick guard.
-        if not self.tts_loader.is_item_loading(model_name):
-            return
-        total = getattr(progress, "total_bytes", 0) or 0
-        completed = getattr(progress, "completed_bytes", 0) or 0
-        fraction = (completed / total) if total > 0 else 0.0
-        self._tts_progress_by_item[model_name] = max(0.0, min(1.0, fraction))
-        self.downloads_progress_changed.emit()
+    def _on_tts_item_progress_changed(self, model_name: str, _progress) -> None:
+        self._tts_catalog_model.refresh_progress(model_name)
 
     def _apply_state(self, state: str) -> None:
         self._state = state

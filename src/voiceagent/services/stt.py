@@ -109,6 +109,12 @@ class WhisperTranscriber(SpeechToTextBackend):
     def is_item_available(self, item_name: str) -> bool:
         return self.is_model_available(self.model_root, item_name)
 
+    def is_item_managed(self, item_name: str) -> bool:
+        return item_name in self.MODEL_REPOSITORIES
+
+    def is_item_downloadable(self, item_name: str) -> bool:
+        return self.is_item_managed(item_name)
+
     @property
     def selected_item(self) -> str:
         return self.model_name

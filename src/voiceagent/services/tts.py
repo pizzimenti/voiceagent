@@ -54,6 +54,18 @@ class PiperTtsService(TextToSpeechBackend):
         return bool(self.model_path and self._looks_like_voice_name(self.model_path))
 
     @classmethod
+    def known_voice_names(cls, model_root: Path) -> set[str]:
+        """Union of on-disk installed voices and remote-cache catalog.
+
+        Single source of truth for "is this name a Piper voice we know
+        about" — used by `available_voice_names` (sorted listing) and by
+        `is_item_managed` (membership check). `_looks_like_voice_name`
+        is a syntactic guess on user-typed strings and is intentionally
+        NOT folded in here.
+        """
+        return cls._cached_voice_names(model_root) | cls._voice_names_from_cache_file(model_root)
+
+    @classmethod
     def available_voice_names(cls, model_root: Path, configured_model: str | None = None) -> list[str]:
         """Return the eager on-disk catalog (installed + cached + configured).
 
@@ -63,13 +75,9 @@ class PiperTtsService(TextToSpeechBackend):
         `refresh_remote_catalog`, which is expected to run after the QML
         window has painted.
         """
-        voices: set[str] = set()
+        voices: set[str] = set(cls.known_voice_names(model_root))
         if configured_model:
             voices.add(configured_model)
-
-        voices.update(cls._cached_voice_names(model_root))
-        voices.update(cls._voice_names_from_cache_file(model_root))
-
         return sorted(voices)
 
     @classmethod
@@ -116,6 +124,12 @@ class PiperTtsService(TextToSpeechBackend):
 
     def is_item_available(self, item_name: str) -> bool:
         return self.is_voice_available(self.model_root, item_name)
+
+    def is_item_managed(self, item_name: str) -> bool:
+        return item_name in self.known_voice_names(self.model_root)
+
+    def is_item_downloadable(self, item_name: str) -> bool:
+        return self.is_item_managed(item_name)
 
     @property
     def selected_item(self) -> str | None:
