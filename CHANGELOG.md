@@ -2,6 +2,46 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.6.2 — 2026-04-26
+
+**Loader hardening release.** Five backend-only fixes drained from
+the PR #5 (CodeRabbit) and PR #6 review queues. Defensive,
+structural, and a perf flag — no user-visible behavior changes.
+
+### Changed
+- **Failed-install cleanup rmdirs per-item nested directories.**
+  `parallel_item_loader._cleanup_failed_download` now best-effort
+  removes the empty per-item subdirectory after artifact unlinks
+  for nested-layout backends (Whisper's
+  `<model_root>/<item_name>/`). Gated on `parent.name == name` so
+  flat-layout backends (Piper, where artifacts share `model_root`
+  directly) cannot have their shared root removed — that would
+  break the next `voices.json` refresh.
+- **Subclass status hooks enforced at class-build time.**
+  `ParallelItemLoader.__init_subclass__` walks every subclass's
+  MRO at definition time and refuses to construct a class that
+  hasn't overridden every required `_status_*` hook. Surfaces
+  forgotten overrides as a clean `TypeError` at import rather
+  than as a lazy `NotImplementedError` whenever the state machine
+  reaches that specific transition. `@abstractmethod` would be
+  canonical but `QObject`'s metaclass conflicts with `ABCMeta`.
+- **`_verify_download` docstring** clarifies up front that this
+  is a *post-download one-shot check*, not a generic readiness
+  probe. Subclass overrides may run heavy work (Piper's
+  `onnxruntime.InferenceSession` is ~30-50 ms) and must not be
+  invoked from per-row availability paths like
+  `is_item_available` or `_CatalogStateAdapter.is_installed`.
+- **Piper smoke-load skips graph optimization.** `tts_loader`
+  passes `SessionOptions(graph_optimization_level=ORT_DISABLE_ALL)`
+  to the verification `InferenceSession`. Verification only
+  needs protobuf parse + graph build; the optimizer pass adds
+  ~20-50 ms per voice install with no signal.
+- **`single_instance` per-connection state moves to closures.**
+  Replaces the `id(connection)`-keyed `self._buffers` dict with
+  closure-local `bytearray` + `finalized` bool. Lifetimes match
+  the connection's exactly; eliminates the (theoretical) id-reuse
+  hazard and the manual cleanup paths.
+
 ## 0.6.1 — 2026-04-26
 
 **Review-cleanup release.** Drains five small deferred fixes from the
