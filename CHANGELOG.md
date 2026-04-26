@@ -2,6 +2,54 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.5.0 — 2026-04-26
+
+**CatalogModel role extension.** The Model Manager's per-row state
+(installed flag, in-flight loading flag, download progress) now flows
+through proper Qt roles on the catalog model instead of through
+parallel `QVariantMap` / `QVariantList` snapshots rebuilt on every
+event. Same UX, lighter signal traffic on the hot path during model
+installs, and the foundation for the deferred custom-STT-path
+catalog work.
+
+### Added
+- **`loading`, `progress`, `downloadable`, `managed` roles on
+  `CatalogModel`** alongside `name` and `installed`. QML delegates
+  bind directly to `model.loading` / `model.progress`; the previous
+  `voiceAgent.sttProgressMap[model.name]` lookups are gone.
+- **`CatalogStateProvider` Protocol** decouples `CatalogModel` from
+  loaders and backends. The window-side `_CatalogStateAdapter`
+  pulls live state from the loader + service so `MainWindow` no
+  longer carries duplicate `_active_items` / per-item progress
+  dicts.
+- **`refresh_row(name)` and `refresh_progress(name)`** on
+  `CatalogModel`. The narrow-role variant emits `dataChanged` with
+  only `[ProgressRole]`, keeping `installed`/`loading`-driven
+  sibling bindings asleep between sub-second aria2 ticks.
+- **`is_item_managed` and `is_item_downloadable`** on
+  `WhisperTranscriber` and `PiperTtsService`. `PiperTtsService`
+  also gains a new `known_voice_names()` classmethod that
+  consolidates installed + cached unions as a single source of
+  truth.
+- **`sttInstalledCount` / `ttsInstalledCount` Q_PROPERTYs** on
+  `MainWindow`. Replaces the QML-side `countInstalled()` JS helper
+  that iterated `sttCatalog`/`ttsCatalog` on every `ui_changed`.
+
+### Changed
+- **`ParallelItemLoader._finish_success` no longer emits a synthetic
+  terminal `item_progress_changed`.** That frame existed only to
+  keep the dropped `*ProgressMap` "busy" predicate honest; the
+  `refresh_row` triggered by `item_loading_changed(name, False)`
+  now drives the row back to idle through the adapter.
+
+### Removed
+- **`MainWindow.downloads_changed` / `downloads_progress_changed`
+  signals** and the matching `sttCatalog`, `ttsCatalog`,
+  `sttProgressMap`, `ttsProgressMap`, `sttDownloadingList`,
+  `ttsDownloadingList` properties. Per-row state now flows through
+  `CatalogModel`'s roles. The `*DownloadingList` properties had no
+  remaining QML consumers.
+
 ## 0.4.0 — 2026-04-26
 
 **UI shaping release.** Toolbar tightens up with symbolic icons, the
