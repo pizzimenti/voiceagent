@@ -46,8 +46,16 @@ export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
   "${ROOT_DIR}/src/voiceagent/window.py" \
   "${ROOT_DIR}/src/voiceagent/controller.py"
 
+# Lint MainWindow.qml in full (with the stub `voiceAgent` defined
+# below) AND each extracted component standalone. The standalone
+# invocations catch errors local to a component (missing import,
+# malformed binding) without the stub having to be kept perfectly
+# in sync — the stub only resolves `voiceAgent` references inside
+# MainWindow.qml's nested usage.
 qmllint \
-  "${ROOT_DIR}/src/voiceagent/qml/MainWindow.qml"
+  "${ROOT_DIR}/src/voiceagent/qml/MainWindow.qml" \
+  "${ROOT_DIR}/src/voiceagent/qml/MicButton.qml" \
+  "${ROOT_DIR}/src/voiceagent/qml/ConversationPane.qml"
 
 "${VENV_PYTHON}" -c '
 from pathlib import Path
@@ -152,6 +160,14 @@ class StubCatalogModel(QAbstractListModel):
     def roleNames(self):
         return self._roles
 
+# StubVoiceAgent mirrors the property / slot surface that QML reads
+# off voiceAgent. Drift between this stub and the real MainWindow is
+# silent: qmllint accepts any property that exists on the stub even
+# if MainWindow no longer exposes it, and vice versa. When a
+# property/slot is added or removed on MainWindow, update this stub
+# in the same commit. The standalone qmllint runs above
+# (MicButton.qml, ConversationPane.qml) catch component-local errors
+# without depending on this stub.
 class StubVoiceAgent(QObject):
     ui_changed = Signal()
     conversation_changed = Signal()

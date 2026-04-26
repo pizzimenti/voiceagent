@@ -18,6 +18,15 @@ class TtsVoiceLoader(ParallelItemLoader):
     # so QML doesn't churn its delegates on a no-op refresh.
     catalog_changed = Signal(list)
 
+    # Lifecycle-end sentinel — fires whenever a catalog refresh worker
+    # settles, regardless of outcome (delta-with-payload, no-change,
+    # exception). No payload. Tests use this to wait on "the refresh is
+    # done" without having to introspect `_catalog_refresh_scheduled`,
+    # which is set synchronously *before* the worker runs and so makes a
+    # poor wait predicate. UI code typically wants `catalog_changed`
+    # instead — the delta-only emit.
+    catalog_refresh_settled = Signal()
+
     # Worker-thread → owner-thread bridge for the catalog refresh. The
     # done-callback runs on the executor thread; this queued signal lands
     # the result on the owner thread, matching the `_progress_tick`
@@ -77,6 +86,10 @@ class TtsVoiceLoader(ParallelItemLoader):
                 "TTS catalog refresh skipped: executor already shut down"
             )
             return
+        # Track for the bounded-join in `shutdown()` so a refresh
+        # mid-flight at shutdown time gets a chance to settle within
+        # the timeout window.
+        self._track_inflight(future)
         # Invariant: flag set ⇔ work scheduled. Set only after submit
         # succeeded.
         self._catalog_refresh_scheduled = True
@@ -140,9 +153,13 @@ class TtsVoiceLoader(ParallelItemLoader):
         # delta — an empty payload means "no change / failure, just
         # release the flag."
         self._catalog_refresh_scheduled = False
-        if not names:
-            return
-        self.catalog_changed.emit(list(names))
+        if names:
+            self.catalog_changed.emit(list(names))
+        # Public lifecycle-end signal — fires AFTER the latch clears and
+        # AFTER any `catalog_changed` emit so subscribers can rely on
+        # "settled" meaning the loader is fully back to idle for this
+        # refresh cycle.
+        self.catalog_refresh_settled.emit()
 
     @property
     def is_enabled(self) -> bool:

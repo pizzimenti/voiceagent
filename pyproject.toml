@@ -33,6 +33,11 @@ test = [
   "pytest>=8",
   "pytest-qt>=4",
 ]
+dev = [
+  "pytest>=8",
+  "pytest-qt>=4",
+  "ruff>=0.5",
+]
 
 [project.scripts]
 voiceagent = "voiceagent.__main__:main"
@@ -52,3 +57,13 @@ voiceagent = ["qml/*.qml"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 qt_api = "pyside6"
+
+# Ruff is a development convenience (CodeRabbit references its rule
+# codes in PR reviews — RUF012, FBT001, BLE001, etc.). The vendor tree
+# carries third-party code we do not own; excluding it keeps
+# `ruff check .` focused on first-party sources. Rule selection stays
+# at Ruff's default for now.
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["src/vendor"]
