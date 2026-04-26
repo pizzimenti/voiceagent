@@ -31,6 +31,12 @@ class PiperTtsService(TextToSpeechBackend):
         self._logger = logging.getLogger(__name__)
         self._loaded_voice_path: Path | None = None
         self._voice: PiperVoice | None = None
+        # Per-instance cache for `known_voice_names()`. Each `is_item_managed`
+        # call (and via the catalog adapter, every per-row state read) used
+        # to re-glob `model_root` and re-parse `voices.json`. The cache is
+        # invalidated on every event that mutates the underlying disk state:
+        # remote-catalog refresh, voice download, voice delete.
+        self._known_voice_names_cache: set[str] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -99,7 +105,12 @@ class PiperTtsService(TextToSpeechBackend):
 
     def refresh_catalog(self) -> list[str]:
         """Worker-thread entry point for the deferred catalog refresh."""
-        return self.refresh_remote_catalog(self.model_root, self.model_path)
+        names = self.refresh_remote_catalog(self.model_root, self.model_path)
+        # `_fetch_and_cache_voice_names` may have rewritten `voices.json`;
+        # invalidate so the next `is_item_managed` read pulls the new
+        # union from disk.
+        self.invalidate_known_voice_names_cache()
+        return names
 
     @classmethod
     def is_voice_available(cls, model_root: Path, model_path: str | None) -> bool:
@@ -125,8 +136,16 @@ class PiperTtsService(TextToSpeechBackend):
     def is_item_available(self, item_name: str) -> bool:
         return self.is_voice_available(self.model_root, item_name)
 
+    def invalidate_known_voice_names_cache(self) -> None:
+        self._known_voice_names_cache = None
+
+    def _get_known_voice_names(self) -> set[str]:
+        if self._known_voice_names_cache is None:
+            self._known_voice_names_cache = type(self).known_voice_names(self.model_root)
+        return self._known_voice_names_cache
+
     def is_item_managed(self, item_name: str) -> bool:
-        return item_name in self.known_voice_names(self.model_root)
+        return item_name in self._get_known_voice_names()
 
     def is_item_downloadable(self, item_name: str) -> bool:
         # A name is downloadable when we know about it (cached in
@@ -216,6 +235,13 @@ class PiperTtsService(TextToSpeechBackend):
         if self.model_path == item_name:
             self._loaded_voice_path = None
             self._voice = None
+
+        # On-disk inventory shifted; invalidate so the next
+        # `is_item_managed` read reflects the deletion. The voice may
+        # remain "known" via `voices.json` (a remote-catalog entry doesn't
+        # disappear when the user deletes the local file) — that's
+        # correct: the row stays downloadable.
+        self.invalidate_known_voice_names_cache()
 
     def artifact_paths(self, item_name: str) -> list[Path]:
         """Return the two files a Piper voice install is made of.
@@ -317,6 +343,10 @@ class PiperTtsService(TextToSpeechBackend):
         callback(DownloadProgress(completed_bytes=0, total_bytes=sum(file.size_bytes for file in files), download_speed_bytes_per_second=0))
         self.downloader.download(files, progress_callback=callback)
         self._logger.info("Piper voice download completed voice=%s model_root=%s", voice_name, self.model_root)
+        # New on-disk voice — invalidate so subsequent `is_item_managed`
+        # reads pick up the new entry without waiting for a catalog
+        # refresh.
+        self.invalidate_known_voice_names_cache()
 
     def _missing_model_message(self) -> str:
         assert self.model_path is not None
@@ -358,7 +388,14 @@ class PiperTtsService(TextToSpeechBackend):
 
             voices = set(json.loads(payload).keys())
             cache_path = model_root / "voices.json"
-            cache_path.write_text(payload, encoding="utf-8")
+            # Atomic replace: write to a sibling tempfile then `os.replace`
+            # so a process kill mid-write leaves the previous (valid)
+            # `voices.json` in place. A direct `write_text` could leave a
+            # truncated file that the JSON parser silently treats as
+            # "empty cache", losing the entire catalog.
+            tmp_path = cache_path.with_suffix(".json.tmp")
+            tmp_path.write_text(payload, encoding="utf-8")
+            os.replace(tmp_path, cache_path)
             return voices
         except Exception:
             return set()

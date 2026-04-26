@@ -668,8 +668,13 @@ Kirigami.ApplicationWindow {
                                 Layout.minimumWidth: Kirigami.Units.gridUnit * 9
                                 Layout.preferredWidth: Kirigami.Units.gridUnit * 10
                                 text: voiceAgent.llmConnectionButtonText
+                                // Always require !llmConnectionBusy. The previous
+                                // `(!llmServerConnected || !llmConnectionBusy)` clause
+                                // let the user spam-click Connect while a refresh
+                                // was already in flight, queueing extra
+                                // _start_refresh() calls in LlmController.
                                 enabled: !!llmUrlBox.editText.trim() && !voiceAgent.llmModelBusy
-                                    && (!voiceAgent.llmServerConnected || !voiceAgent.llmConnectionBusy)
+                                    && !voiceAgent.llmConnectionBusy
                                 onClicked: voiceAgent.toggleLlmServerConnection(llmUrlBox.editText)
                             }
                         }

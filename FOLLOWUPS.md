@@ -39,22 +39,6 @@ as the layered hook; subclasses would extend it. Keep the cheap
 layers (1, 2) in the default impl and the expensive layers (3, 4) in
 backend overrides.
 
-## Deferred from PR #8 round-1 review
-
-- **`services/tts.py:56-66` — memoize `known_voice_names`.** With
-  the per-row `_CatalogStateAdapter` introduced in PR #8,
-  `is_item_managed` and `is_item_downloadable` fire from QML's
-  `data()` for every visible row, and `refresh_row` triggers two
-  reads (`ManagedRole` + `DownloadableRole`) per transition. Each
-  call re-globs `model_root` (`_cached_voice_names`) and re-reads +
-  parses `voices.json` (`_voice_names_from_cache_file`). Catalog is
-  ~80 entries and on-thread today so it's not user-visible pain, but
-  the right shape is to cache the union on the `PiperTtsService`
-  instance and invalidate on `_on_tts_catalog_changed`, after a
-  successful `download_item` / `remove_item`, and (defensively) on a
-  TTL fallback. Worth doing alongside the next adjacent edit to
-  `tts.py`.
-
 ## Deferred review findings (PR #6)
 
 CodeRabbit's first pass on PR #6 surfaced 11 inline comments; five
@@ -76,12 +60,6 @@ deferred:
   overrides like Piper's smoke-load run a one-shot
   `onnxruntime.InferenceSession` (~50–100 ms) and shouldn't be
   invoked from any general "is this ready?" path.
-- **`services/tts.py:94`** — `_fetch_and_cache_voice_names` writes
-  `voices.json` directly via `cache_path.write_text(...)`. If the
-  process is killed mid-write, the cache can end up truncated and
-  the next `available_voice_names` call silently loses the entire
-  cached catalog (the JSON-parse fallback returns an empty set).
-  Tmp-write-then-rename for atomic replacement.
 - **`tts_loader.py:210`** — Optional perf tweak: pass a
   pre-configured `onnxruntime.SessionOptions` with
   `graph_optimization_level=ORT_DISABLE_ALL` to the smoke-load
@@ -106,10 +84,6 @@ surrounding code.
 
 ### From Codex
 
-- **`MainWindow.qml:21`, `window.py:190`** — Catalog counts rebuild
-  full `QVariantList`s and perform per-item availability checks on
-  every `ui_changed`. At ~20 items it's immeasurable, but it's wasted
-  work; cache and invalidate on actual catalog deltas.
 - **`voiceagent-compiletest.sh:49,329`** — QML compile-test stub
   `voiceAgent` has slot/property signatures that drift from the real
   `MainWindow`, and the script doesn't lint the extracted QML
@@ -119,14 +93,6 @@ surrounding code.
 
 ### From CodeRabbit
 
-- **`conversation_model.py:60`, `catalog_model.py:45`** —
-  `roleNames()` returns the class-level `_ROLE_NAMES` dict directly.
-  PySide6 doesn't guarantee Qt treats the returned dict as read-only.
-  Same pattern in both files; same fix — return a copy or wrap with
-  `MappingProxyType`.
-- **`conversation_model.py:91`** — `update_message` does an O(R)
-  reverse lookup over `_ROLE_KEYS` per updated key. Inverse map at
-  class build time removes the inner loop.
 - **`model_loader.py:57`** — `_emit_initial_state` only branches on
   ready/not-ready. TTS has the third branch (`_status_idle_prompt`)
   for the unselected case. If the Whisper backend ever surfaces a
@@ -216,21 +182,6 @@ surfaced these architectural items. Each is its own cycle.
   remove the risk of the next caller re-introducing the same
   duplicate-append regression we just fixed.
 
-- **Custom STT path support in `CatalogModel`.** Backend already
-  supports `WHISPER_MODEL=/path/to/model`, but
-  `WhisperTranscriber.available_items()`
-  (`src/voiceagent/services/stt.py:60`) only lists managed names, so
-  the UI catalog and `selectedSttModel`
-  (`src/voiceagent/window.py:243`, `:553`) cannot select a direct
-  custom path. The path either looks unavailable or gets silently
-  replaced by a fallback.
-
-- **`CatalogModel` role extension.** Add `installed`, `loading`,
-  `progress`, `downloadable`, and `managed`/`custom` as proper Qt
-  roles. Removes the QML-side `QVariantMap`/`Array.indexOf` lookup
-  maps and lets the model invalidate per-row instead of rebuilding
-  full `QVariantList`s on every `ui_changed`.
-
 - **Extract QML components.** `MainWindow.qml` is ~800 lines and
   `window.py` is ~860 lines. Pull `CatalogList.qml` (replaces the
   duplicated STT/TTS catalog ListViews), `SessionSetupPane.qml`,
@@ -250,13 +201,6 @@ surfaced these architectural items. Each is its own cycle.
   with and without a draft, replay error handling
   (`replayMessage` raise paths), custom STT path selection, and the
   connect spam-click guard below.
-
-- **Connect spam-click guard.** `MainWindow.qml:681` allows the
-  Connect action when `!llmServerConnected`, even if
-  `llmConnectionBusy` is `true`. Each click queues another refresh
-  via `_start_refresh()`
-  (`src/voiceagent/services/llm_controller.py:271`). Gate the QML
-  `enabled` on `!llmConnectionBusy` too.
 
 - **`replayMessage` defensive layer.** Round-2 added a try/except
   and an `is_available()` readiness check; a deeper pass should

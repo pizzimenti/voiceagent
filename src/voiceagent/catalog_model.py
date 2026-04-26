@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import ClassVar, Protocol, runtime_checkable
+from types import MappingProxyType
+from typing import ClassVar, Mapping, Protocol, runtime_checkable
 
 from PySide6.QtCore import (
     QAbstractListModel,
@@ -55,6 +56,10 @@ class CatalogModel(QAbstractListModel):
         DownloadableRole,
         ManagedRole,
     ]
+    # Read-only view handed to Qt so the framework cannot mutate the
+    # class-level dict (PySide6 doesn't guarantee read-only semantics
+    # on the returned mapping).
+    _ROLE_NAMES_VIEW: ClassVar[Mapping[int, QByteArray]] = MappingProxyType(_ROLE_NAMES)
 
     def __init__(
         self,
@@ -91,8 +96,8 @@ class CatalogModel(QAbstractListModel):
             return bool(self._state.is_managed(name))
         return None
 
-    def roleNames(self) -> dict[int, QByteArray]:  # noqa: N802
-        return self._ROLE_NAMES
+    def roleNames(self) -> Mapping[int, QByteArray]:  # noqa: N802
+        return self._ROLE_NAMES_VIEW
 
     def refresh_row(self, name: str) -> None:
         """Emit dataChanged for all dynamic roles on the matching row.
