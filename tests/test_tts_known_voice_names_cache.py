@@ -87,7 +87,7 @@ def test_refresh_catalog_invalidates_cache(service, model_root, monkeypatch):
     monkeypatch.setattr(
         PiperTtsService,
         "_fetch_and_cache_voice_names",
-        classmethod(lambda cls, root: set()),
+        classmethod(lambda _cls, _root: set()),
     )
 
     service.refresh_catalog()

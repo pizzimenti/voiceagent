@@ -179,9 +179,10 @@ def test_role_names_returns_a_real_dict(model):
     assert model.roleNames() is not role_names
 
 
-def test_update_message_uses_inverse_role_map(model):
+def test_update_message_uses_inverse_role_map():
     # `_KEY_TO_ROLE` is an O(1) inverse of `_ROLE_KEYS` built at
-    # class-build time. Spot-check the wiring.
+    # class-build time. Spot-check the wiring. Class-level inspection
+    # only — no instance / qtbot needed.
     assert ConversationModel._KEY_TO_ROLE['text'] == ConversationModel.TextRole
     assert ConversationModel._KEY_TO_ROLE['bubbleState'] == ConversationModel.BubbleStateRole
     assert ConversationModel._KEY_TO_ROLE['stateName'] == ConversationModel.StateNameRole

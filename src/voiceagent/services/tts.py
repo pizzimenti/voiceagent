@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import threading
 import urllib.request
 import wave
 
@@ -36,7 +37,15 @@ class PiperTtsService(TextToSpeechBackend):
         # to re-glob `model_root` and re-parse `voices.json`. The cache is
         # invalidated on every event that mutates the underlying disk state:
         # remote-catalog refresh, voice download, voice delete.
+        #
+        # The lock serializes reads (GUI-thread `is_item_managed` calls)
+        # against invalidations from the worker thread that runs
+        # `refresh_catalog`. Without it, a GUI read could re-populate the
+        # cache from disk concurrently with an invalidation that's about
+        # to set it back to `None`, leaving stale data until the next
+        # event.
         self._known_voice_names_cache: set[str] | None = None
+        self._known_voice_names_lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -137,12 +146,14 @@ class PiperTtsService(TextToSpeechBackend):
         return self.is_voice_available(self.model_root, item_name)
 
     def invalidate_known_voice_names_cache(self) -> None:
-        self._known_voice_names_cache = None
+        with self._known_voice_names_lock:
+            self._known_voice_names_cache = None
 
     def _get_known_voice_names(self) -> set[str]:
-        if self._known_voice_names_cache is None:
-            self._known_voice_names_cache = type(self).known_voice_names(self.model_root)
-        return self._known_voice_names_cache
+        with self._known_voice_names_lock:
+            if self._known_voice_names_cache is None:
+                self._known_voice_names_cache = type(self).known_voice_names(self.model_root)
+            return self._known_voice_names_cache
 
     def is_item_managed(self, item_name: str) -> bool:
         return item_name in self._get_known_voice_names()
@@ -388,14 +399,24 @@ class PiperTtsService(TextToSpeechBackend):
 
             voices = set(json.loads(payload).keys())
             cache_path = model_root / "voices.json"
-            # Atomic replace: write to a sibling tempfile then `os.replace`
-            # so a process kill mid-write leaves the previous (valid)
-            # `voices.json` in place. A direct `write_text` could leave a
-            # truncated file that the JSON parser silently treats as
-            # "empty cache", losing the entire catalog.
-            tmp_path = cache_path.with_suffix(".json.tmp")
-            tmp_path.write_text(payload, encoding="utf-8")
-            os.replace(tmp_path, cache_path)
+            # Atomic replace: write to a per-call unique tempfile in the
+            # same directory then `os.replace` onto `voices.json`. A
+            # process kill mid-write leaves the previous (valid) cache
+            # in place. The unique name (via `NamedTemporaryFile`) avoids
+            # collisions if two refreshes ever overlap, and the
+            # try/finally cleans up partials so a failed write doesn't
+            # leak `*.json.tmp` files in `model_root`.
+            fd, tmp_name = tempfile.mkstemp(
+                dir=model_root, prefix="voices.", suffix=".json.tmp"
+            )
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(payload)
+                os.replace(tmp_path, cache_path)
+            except Exception:
+                tmp_path.unlink(missing_ok=True)
+                raise
             return voices
         except Exception:
             return set()
