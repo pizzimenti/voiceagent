@@ -84,12 +84,18 @@ Kirigami.ApplicationWindow {
         return item.installed ? "Remove" : "Install";
     }
 
-    // Install / Remove acts on managed catalog entries. Custom-path rows
-    // (managed=false, installed via WHISPER_MODEL/TTS_MODEL pointing at a
-    // user-administered file) have no install/remove semantic — Voice
-    // Agent does not own the file lifecycle for those.
+    // Install / Remove acts on managed catalog entries. Two row shapes
+    // hide the action button:
+    //   * `installed && !managed` — custom path (e.g., WHISPER_MODEL=/dir).
+    //     Voice Agent does not own that file's lifecycle.
+    //   * `!installed && !downloadable` — a configured name we can't
+    //     resolve to a download source; clicking Install would fail.
+    // The `downloadable` branch matters for first-run TTS: a configured
+    // `TTS_MODEL=en_US-lessac-medium` may not be in `known_voice_names`
+    // yet (cache hasn't populated) but the name is still resolvable via
+    // Piper's URL convention, so the Install button must remain.
     function modelActionVisible(item) {
-        return item.managed;
+        return item.installed ? item.managed : item.downloadable;
     }
 
     function scrollList(listView, wheel) {
