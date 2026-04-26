@@ -109,9 +109,17 @@ class StubConversationModel(QAbstractListModel):
 class StubCatalogModel(QAbstractListModel):
     NameRole = Qt.ItemDataRole.UserRole + 1
     InstalledRole = Qt.ItemDataRole.UserRole + 2
+    LoadingRole = Qt.ItemDataRole.UserRole + 3
+    ProgressRole = Qt.ItemDataRole.UserRole + 4
+    DownloadableRole = Qt.ItemDataRole.UserRole + 5
+    ManagedRole = Qt.ItemDataRole.UserRole + 6
     _roles = {
         NameRole: QByteArray(b"name"),
         InstalledRole: QByteArray(b"installed"),
+        LoadingRole: QByteArray(b"loading"),
+        ProgressRole: QByteArray(b"progress"),
+        DownloadableRole: QByteArray(b"downloadable"),
+        ManagedRole: QByteArray(b"managed"),
     }
 
     def __init__(self, entries):
@@ -131,6 +139,14 @@ class StubCatalogModel(QAbstractListModel):
             return entry["name"]
         if role == self.InstalledRole:
             return bool(entry.get("installed", False))
+        if role == self.LoadingRole:
+            return bool(entry.get("loading", False))
+        if role == self.ProgressRole:
+            return float(entry.get("progress", 0.0))
+        if role == self.DownloadableRole:
+            return bool(entry.get("downloadable", True))
+        if role == self.ManagedRole:
+            return bool(entry.get("managed", True))
         return None
 
     def roleNames(self):
@@ -148,16 +164,13 @@ class StubVoiceAgent(QObject):
     def ttsOptions(self):
         return ["en_US-lessac-medium"]
 
-    @Property("QVariantList", notify=ui_changed)
-    def sttCatalog(self):
-        return [{"name": "large-v3", "installed": True}, {"name": "small", "installed": False}]
+    @Property(int, notify=ui_changed)
+    def sttInstalledCount(self):
+        return 1
 
-    @Property("QVariantList", notify=ui_changed)
-    def ttsCatalog(self):
-        return [
-            {"name": "en_US-lessac-medium", "installed": True},
-            {"name": "en_US-amy-medium", "installed": False},
-        ]
+    @Property(int, notify=ui_changed)
+    def ttsInstalledCount(self):
+        return 1
 
     @Property(str, notify=ui_changed)
     def selectedSttModel(self):
@@ -246,22 +259,6 @@ class StubVoiceAgent(QObject):
     @Property(str, notify=ui_changed)
     def micStatusLabel(self):
         return "Connected"
-
-    @Property("QVariantList", notify=ui_changed)
-    def sttDownloadingList(self):
-        return []
-
-    @Property("QVariantList", notify=ui_changed)
-    def ttsDownloadingList(self):
-        return []
-
-    @Property("QVariantMap", notify=ui_changed)
-    def sttProgressMap(self):
-        return {}
-
-    @Property("QVariantMap", notify=ui_changed)
-    def ttsProgressMap(self):
-        return {}
 
     @Property(bool, notify=ui_changed)
     def voiceConnectionEnabled(self):

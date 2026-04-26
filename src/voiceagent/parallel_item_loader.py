@@ -423,17 +423,9 @@ class ParallelItemLoader(QObject):
         if name not in self._active_items:
             return
         self._active_items.discard(name)
-        total = self._progress_by_item.pop(name, _EMPTY_PROGRESS).total_bytes or 1
+        self._progress_by_item.pop(name, None)
         self._log_state("finish_success")
         self.item_loading_changed.emit(name, False)
-        self.item_progress_changed.emit(
-            name,
-            DownloadProgress(
-                completed_bytes=total,
-                total_bytes=total,
-                download_speed_bytes_per_second=0,
-            ),
-        )
         if not self._active_items:
             self.loading_changed.emit(False)
         self.ready_changed.emit(self.is_ready)

@@ -222,22 +222,39 @@ def test_two_parallel_downloads_aggregate(qtbot):
     loader.shutdown()
 
 
-def test_success_finalizes_per_item_progress(qtbot):
+def test_success_does_not_synthesize_terminal_progress_tick(qtbot):
     backend = FakeBackend()
+
+    # Worker emits a single mid-download tick (30/100) and returns
+    # without ever sending a final 100/100. If `_finish_success`
+    # synthesized a terminal `item_progress_changed`, we'd see a
+    # second `(name, 30/30)` (or similar full-bar) emission after
+    # `item_loading_changed(name, False)`.
+    def strategy(name, cb):
+        cb(DownloadProgress(completed_bytes=30, total_bytes=100, download_speed_bytes_per_second=500))
+        backend.mark_installed(name)
+
+    backend.download_strategy = strategy
     loader = _ConcreteLoader(backend)
 
-    item_progress: list[tuple[str, DownloadProgress]] = []
-    loader.item_progress_changed.connect(lambda n, p: item_progress.append((n, p)))
+    progress_events: list[tuple[str, DownloadProgress]] = []
+    loader.item_progress_changed.connect(lambda n, p: progress_events.append((n, p)))
+    loading_events: list[tuple[str, bool]] = []
+    loader.item_loading_changed.connect(lambda n, b: loading_events.append((n, b)))
 
     loader.download_item("a")
     _wait(qtbot, lambda: not loader.is_loading and loader.is_ready)
 
-    # `_progress_by_item` is cleaned up by `_finish_success`.
     assert "a" not in loader._progress_by_item
-    # Final tick is total/total.
-    final = item_progress[-1]
-    assert final[0] == "a"
-    assert final[1].completed_bytes == final[1].total_bytes > 0
+    # `download_item` synchronously emits an initial 0/0 tick before the
+    # worker runs; the worker then emits 30/100. No synthetic terminal
+    # tick after `item_loading_changed("a", False)`.
+    assert progress_events == [
+        ("a", DownloadProgress(0, 0, 0)),
+        ("a", DownloadProgress(completed_bytes=30, total_bytes=100, download_speed_bytes_per_second=500)),
+    ]
+    # `item_loading_changed(False)` is the last lifecycle event.
+    assert loading_events[-1] == ("a", False)
     loader.shutdown()
 
 
