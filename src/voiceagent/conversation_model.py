@@ -49,6 +49,10 @@ class ConversationModel(QAbstractListModel):
         TimestampLabelRole: "timestampLabel",
         StateNameRole: "stateName",
     }
+    # Inverse of `_ROLE_KEYS` — built once at class-build time so
+    # `update_message` can resolve key → role in O(1) instead of an O(R)
+    # linear scan per updated key.
+    _KEY_TO_ROLE: ClassVar[dict[str, int]] = {v: k for k, v in _ROLE_KEYS.items()}
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -70,7 +74,14 @@ class ConversationModel(QAbstractListModel):
         return self._messages[index.row()].get(key)
 
     def roleNames(self) -> dict[int, QByteArray]:  # noqa: N802
-        return self._ROLE_NAMES
+        # Return a fresh dict copy. PySide6 strictly type-checks the
+        # `roleNames()` return — a `MappingProxyType` view raises a
+        # RuntimeWarning and Qt silently uses an empty role map, which
+        # makes QML bindings like `model.text` resolve to `undefined`
+        # and breaks all delegate rendering. The copy guards against Qt
+        # mutating the canonical class-level dict without sacrificing
+        # the QML interop.
+        return dict(self._ROLE_NAMES)
 
     def message(self, index: int) -> dict[str, object] | None:
         if index < 0 or index >= len(self._messages):
@@ -95,10 +106,9 @@ class ConversationModel(QAbstractListModel):
             if message.get(key) == value:
                 continue
             message[key] = value
-            for role, role_key in self._ROLE_KEYS.items():
-                if role_key == key:
-                    changed_roles.append(role)
-                    break
+            role = self._KEY_TO_ROLE.get(key)
+            if role is not None:
+                changed_roles.append(role)
         if changed_roles:
             model_index = self.index(index, 0)
             self.dataChanged.emit(model_index, model_index, changed_roles)

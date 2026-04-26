@@ -92,7 +92,14 @@ class CatalogModel(QAbstractListModel):
         return None
 
     def roleNames(self) -> dict[int, QByteArray]:  # noqa: N802
-        return self._ROLE_NAMES
+        # Return a fresh dict copy. PySide6 strictly type-checks the
+        # `roleNames()` return — a `MappingProxyType` view raises a
+        # RuntimeWarning and Qt silently uses an empty role map, which
+        # makes QML bindings like `model.name` resolve to `undefined`
+        # and breaks all delegate rendering. The copy guards against Qt
+        # mutating the canonical class-level dict without sacrificing
+        # the QML interop.
+        return dict(self._ROLE_NAMES)
 
     def refresh_row(self, name: str) -> None:
         """Emit dataChanged for all dynamic roles on the matching row.

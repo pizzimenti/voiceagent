@@ -188,3 +188,19 @@ def test_replace_names_swaps_underlying_list(model):
     model.replace_names(["delta", "epsilon"])
     assert model.rowCount() == 2
     assert model.data(model.index(0, 0), CatalogModel.NameRole) == "delta"
+
+
+def test_role_names_returns_a_real_dict(model):
+    # PySide6 strictly type-checks the `roleNames()` return value —
+    # anything that isn't a real `dict` (notably `MappingProxyType`)
+    # triggers a RuntimeWarning and Qt then uses an empty role map,
+    # which breaks every QML role binding silently. Lock the contract
+    # in.
+    role_names = model.roleNames()
+    assert type(role_names) is dict
+    # Returning the canonical class dict directly would let Qt mutate
+    # it. The implementation should hand out a fresh copy.
+    assert role_names is not CatalogModel._ROLE_NAMES
+    # Identity-distinct between calls — a copy each time, not a cached
+    # reference.
+    assert model.roleNames() is not role_names
