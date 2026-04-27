@@ -23,6 +23,7 @@ conversation model, LlmController) is real.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -402,11 +403,17 @@ def main_window_factory(qtbot, monkeypatch, tmp_path):
 
     yield _make
 
+    teardown_logger = logging.getLogger(__name__)
     for window, _ctrl, _ml, _tl, _tts, _tx in created:
         try:
             window.shutdown()
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 - teardown best-effort, but logged
+            # Log instead of swallowing: a regression in MainWindow.shutdown
+            # (leaked signal-disconnect, QObject lifetime bug, etc.) should
+            # surface in pytest output rather than vanish into a green bar.
+            teardown_logger.exception(
+                "MainWindow.shutdown() raised during fixture teardown"
+            )
 
 
 def _drain_events(times: int = 5) -> None:
@@ -649,22 +656,35 @@ def test_full_pipeline_ordering_stt_llm_tts(main_window_factory):
 # --- replayMessage paths -------------------------------------------------
 
 
-def test_replay_message_synthesizes_when_tts_ready(main_window_factory):
+def test_replay_message_synthesizes_and_forwards_to_player(main_window_factory):
     """Happy path: assistant message + TTS ready → synthesize called
-    with the assistant text + audio path forwarded to replay player.
+    with the assistant text AND the resulting audio path forwarded
+    into the replay player. The player call is the half this test
+    exists to lock in — a future regression that synthesizes but
+    skips the play_file dispatch must fail this test.
+
+    `window.replay_player` is a real `AudioPlayer` (constructed inside
+    `MainWindow.__init__`), so we monkeypatch its `play_file` to a
+    recording stand-in. That bypasses the wave-parse step (the fake
+    TTS doesn't emit valid WAV bytes) without compromising the
+    "did the dispatch happen?" assertion.
     """
     window = main_window_factory()
     tts = window.tts_loader.tts_service
     tts.set_available(True)
-    player = window.replay_player
-    played: list = []
-    player.playback_started.connect(lambda path: played.append(("started", path)))
+
+    play_calls: list = []
+    window.replay_player.play_file = lambda path: (
+        play_calls.append(path) or True
+    )
 
     window._append_assistant_message("hello user")
     window.replayMessage(0)
     _drain_events()
 
     assert tts.synthesize_calls == ["hello user"]
+    assert len(play_calls) == 1
+    assert str(play_calls[0]).endswith("replay-1.wav")
 
 
 def test_replay_message_skipped_when_tts_not_ready(main_window_factory):
@@ -735,7 +755,9 @@ def test_replay_message_synthesis_failure_preserves_draft(main_window_factory):
 # --- custom STT path selection -------------------------------------------
 
 
-def test_custom_stt_path_appears_in_catalog_at_startup(main_window_factory):
+def test_custom_stt_path_appears_in_catalog_at_startup(
+    main_window_factory, tmp_path,
+):
     """A path-shaped `WHISPER_MODEL` env var (resolved into the
     transcriber at construction time) surfaces as a catalog row from
     the moment the window opens. The custom path lives alongside the
@@ -745,14 +767,18 @@ def test_custom_stt_path_appears_in_catalog_at_startup(main_window_factory):
     isn't in `available_items()`, and `available_items()` returns the
     custom path when `_custom_path` is set.
     """
-    custom = "/tmp/my-fine-tuned/model.bin"
+    # tmp_path-derived path keeps the test hermetic + portable;
+    # `_is_custom_path` triggers on `Path(name).is_absolute()` which
+    # an arbitrary tmp_path subdirectory satisfies.
+    custom = str(tmp_path / "my-fine-tuned" / "model.bin")
 
-    # The custom path is on disk in this test scenario — without that,
-    # `sttOptions` (filtered by `is_item_available`) would not include
-    # the custom row, the syncer would fall back to a managed model,
-    # and `_custom_path` would be cleared. Mirrors the production
-    # invariant: a `WHISPER_MODEL=/path/...` only sticks if the file
-    # actually exists.
+    # The custom path is "on disk" (in the fake's installed set) for
+    # this test scenario — without that, `sttOptions` (filtered by
+    # `is_item_available`) would not include the custom row, the
+    # syncer would fall back to a managed model, and `_custom_path`
+    # would be cleared. Mirrors the production invariant: a
+    # `WHISPER_MODEL=/path/...` only sticks if the file actually
+    # exists.
     window = main_window_factory(
         stt_model_name=custom,
         installed_stt=("tiny.en", custom),
@@ -764,14 +790,16 @@ def test_custom_stt_path_appears_in_catalog_at_startup(main_window_factory):
     assert window.selectedSttModel == custom
 
 
-def test_managed_selection_clears_custom_row_from_catalog(main_window_factory):
+def test_managed_selection_clears_custom_row_from_catalog(
+    main_window_factory, tmp_path,
+):
     """When the user picks a managed model after launching with a
     custom-path STT, `_handle_inventory_change` rebuilds the catalog
     without the custom row (because `_custom_path` is cleared by
     `set_model_name`). The selection_changed → catalog-refresh wire
     is what drives this; the test pins it down.
     """
-    custom = "/tmp/legacy-model.bin"
+    custom = str(tmp_path / "legacy-model.bin")
     window = main_window_factory(
         stt_model_name=custom,
         installed_stt=("tiny.en", "base.en", custom),
