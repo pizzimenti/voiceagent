@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import threading
+from typing import TYPE_CHECKING
 import urllib.request
 import wave
 
@@ -15,6 +16,9 @@ from piper import PiperVoice
 from voiceagent.backends import TextToSpeechBackend
 from voiceagent.downloaders import AriaDownloader, DownloadFile, DownloadProgress
 from voiceagent.paths import default_tts_model_root
+
+if TYPE_CHECKING:
+    from voiceagent.parallel_item_loader import ArtifactManifestEntry
 
 
 class PiperTtsService(TextToSpeechBackend):
@@ -265,6 +269,109 @@ class PiperTtsService(TextToSpeechBackend):
         onnx_path = self.model_root / f"{item_name}.onnx"
         json_path = self.model_root / f"{item_name}.onnx.json"
         return [onnx_path, json_path]
+
+    def artifact_manifest(
+        self, item_name: str
+    ) -> dict[Path, ArtifactManifestEntry]:
+        """Per-file size + md5 from a fresh upstream `voices.json`.
+
+        Read by `ParallelItemLoader._verify_download` for layers 2
+        (size) and 3 (checksum). The on-disk `voices.json` cache is
+        refreshed from upstream before being read, because Piper
+        layers 2/3 fail closed: if upstream republishes a voice with
+        a new size/md5 between our last refresh and the user's
+        install, a stale cache could reject a healthy download.
+
+        On refresh failure (network outage, HF 5xx, etc.) we return
+        an empty manifest rather than fall back to the cached file —
+        a stale cache is the exact production-regression risk we are
+        avoiding here. Layer 1 (sidecar) and Piper's layer 4
+        (smoke-load) are still authoritative; the verifier degrades
+        to those.
+
+        voices.json is the upstream `rhasspy/piper-voices` manifest;
+        each voice entry's `files` map keys are repo-relative paths
+        (`ar/ar_JO/kareem/low/ar_JO-kareem-low.onnx`) but the values
+        carry `size_bytes` and `md5_digest` per file. We map
+        manifest entries onto local artifact paths by basename.
+
+        **Known TOCTOU window** — both `_download_voice` and the
+        refresh below resolve against the `main` branch of
+        `rhasspy/piper-voices`. If upstream pushes an update in the
+        few-second window between aria2 fetching the file bytes and
+        this method fetching the manifest, the size/md5 in the new
+        manifest won't match the bytes on disk and `_verify_download`
+        will fail-close on a healthy install. Layer 4 (smoke-load)
+        catches *real* corruption, so the user can retry and
+        succeed; this is a self-healing false-positive, not data
+        loss. Proper fix is to pin both download and manifest to
+        the same commit SHA — tracked in FOLLOWUPS as a future
+        cycle (the change cuts across `_voice_remote_prefix`,
+        `download_voice`, and this method).
+        """
+        from voiceagent.parallel_item_loader import ArtifactManifestEntry
+
+        # Refresh upstream → on-disk cache. The classmethod returns
+        # the union of voice names on success and an empty set on
+        # any failure (timeout, 5xx, JSON parse error, etc.).
+        # `_fetch_and_cache_voice_names` rewrites `voices.json`
+        # atomically on success, so a successful refresh guarantees
+        # the cache we read below is current.
+        try:
+            voice_names = type(self)._fetch_and_cache_voice_names(self.model_root)
+        except Exception:
+            self._logger.warning(
+                "Piper voices.json refresh raised during verification; "
+                "skipping layers 2/3 (layers 1 + 4 still apply)",
+                exc_info=True,
+            )
+            return {}
+
+        if not voice_names:
+            self._logger.warning(
+                "Piper voices.json refresh returned empty during "
+                "verification (network failure or empty upstream); "
+                "skipping layers 2/3 to avoid fail-closing against "
+                "stale cache (layers 1 + 4 still apply)"
+            )
+            return {}
+
+        # Re-read the freshly-written cache to get full per-file
+        # metadata (the classmethod only returns the set of names).
+        cache_path = self.model_root / "voices.json"
+        try:
+            import json
+
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            self._logger.warning(
+                "Piper voices.json read-after-refresh failed; skipping "
+                "layers 2/3",
+                exc_info=True,
+            )
+            return {}
+
+        entry = payload.get(item_name)
+        if not isinstance(entry, dict):
+            return {}
+        files = entry.get("files")
+        if not isinstance(files, dict):
+            return {}
+
+        manifest: dict[Path, ArtifactManifestEntry] = {}
+        for repo_path, meta in files.items():
+            if not isinstance(meta, dict):
+                continue
+            basename = repo_path.rsplit("/", 1)[-1]
+            local_path = self.model_root / basename
+            size = meta.get("size_bytes")
+            md5 = meta.get("md5_digest")
+            manifest[local_path] = ArtifactManifestEntry(
+                expected_size=size if isinstance(size, int) else None,
+                expected_checksum_hex=md5 if isinstance(md5, str) else None,
+                checksum_algorithm="md5" if isinstance(md5, str) else None,
+            )
+        return manifest
 
     def _resolve_existing_model_path(self) -> Path | None:
         assert self.model_path is not None

@@ -4,13 +4,16 @@ import logging
 import os
 from pathlib import Path
 import shutil
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from huggingface_hub import HfApi, hf_hub_url
 
 from voiceagent.backends import SpeechToTextBackend
 from voiceagent.downloaders import AriaDownloader, DownloadFile
 from voiceagent.paths import default_stt_model_root
+
+if TYPE_CHECKING:
+    from voiceagent.parallel_item_loader import ArtifactManifestEntry
 
 
 class WhisperTranscriber(SpeechToTextBackend):
@@ -197,6 +200,61 @@ class WhisperTranscriber(SpeechToTextBackend):
             local_dir / filename
             for filename in (*self.REQUIRED_MODEL_FILES, *self.VOCABULARY_FILES)
         ]
+
+    def artifact_manifest(
+        self, item_name: str
+    ) -> dict[Path, ArtifactManifestEntry]:
+        """Per-file size + sha256 (LFS only) from `HfApi.repo_info`.
+
+        Read by `ParallelItemLoader._verify_download` for layers 2
+        (size) and 3 (checksum). HF exposes `siblings[*].size` for
+        every file and `siblings[*].lfs.sha256` for LFS-tracked files
+        — Whisper's `model.bin` (and on some repos, the tokenizer
+        artifacts) are LFS; small text/JSON files are plain git
+        blobs and only carry size, no sha256. The verifier handles
+        partial entries (size-only) gracefully.
+
+        Custom-path / unmanaged items have no upstream manifest;
+        they return an empty dict. Network failure during the
+        metadata fetch is fail-soft per the verifier contract:
+        return empty so the install completes with layer 1 only.
+        """
+        from voiceagent.parallel_item_loader import ArtifactManifestEntry
+
+        repo_id = self.MODEL_REPOSITORIES.get(item_name)
+        if repo_id is None:
+            return {}
+
+        local_dir = self.model_root / item_name
+        try:
+            api = HfApi()
+            hf_token = os.environ.get("HF_TOKEN", "").strip() or None
+            siblings = api.repo_info(
+                repo_id, files_metadata=True, token=hf_token
+            ).siblings
+        except Exception:
+            self._logger.warning(
+                "HfApi.repo_info failed for repo=%s; verifier will run "
+                "layer 1 only",
+                repo_id,
+            )
+            return {}
+
+        manifest: dict[Path, ArtifactManifestEntry] = {}
+        for sibling in siblings:
+            filename = getattr(sibling, "rfilename", None)
+            if not filename or "/" in filename:
+                # Mirror `_prepare_model_source`: top-level files only.
+                continue
+            size = getattr(sibling, "size", None)
+            lfs = getattr(sibling, "lfs", None)
+            sha256 = getattr(lfs, "sha256", None) if lfs is not None else None
+            manifest[local_dir / filename] = ArtifactManifestEntry(
+                expected_size=size if isinstance(size, int) else None,
+                expected_checksum_hex=sha256 if isinstance(sha256, str) else None,
+                checksum_algorithm="sha256" if isinstance(sha256, str) else None,
+            )
+        return manifest
 
     def download_and_load(self, progress_callback=None) -> None:
         model_source = self._prepare_model_source(item_name=self.model_name, progress_callback=progress_callback)

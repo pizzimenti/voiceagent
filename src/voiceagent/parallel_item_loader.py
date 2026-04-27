@@ -35,6 +35,8 @@ Three properties of the shared machinery worth highlighting:
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor, wait as futures_wait
+from dataclasses import dataclass
+import hashlib
 import logging
 from pathlib import Path
 import threading
@@ -48,6 +50,42 @@ from voiceagent.downloaders import DownloadProgress
 _EMPTY_PROGRESS = DownloadProgress(
     completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0
 )
+
+# Module-level logger so verifier helpers (which are static methods on
+# the loader class) can emit operator-visible warnings without needing
+# an instance handle. The instance-level `self._logger` is still used
+# from non-static paths so log records carry the subclass name.
+_module_logger = logging.getLogger(__name__)
+
+# Chunk size for streaming-checksum reads. 1 MiB is large enough that
+# the per-call hashlib.update overhead is negligible relative to the
+# disk read, and small enough that holding it in memory is trivial
+# even for the largest Whisper artifacts (`large-v3` model.bin is
+# ~3 GiB — read in ~3000 chunks).
+_CHECKSUM_READ_CHUNK = 1 << 20
+
+# Algorithms the verifier accepts. Piper's voices.json carries md5
+# hex digests; HuggingFace LFS pointers carry sha256. The integrity
+# threat model here is transfer/disk corruption (not adversarial
+# replacement), so md5 is fit for purpose alongside sha256.
+_SUPPORTED_CHECKSUM_ALGORITHMS = frozenset({"md5", "sha256"})
+
+
+@dataclass(frozen=True)
+class ArtifactManifestEntry:
+    """Authoritative size + checksum for one artifact path.
+
+    Either field may be `None` when the manifest source doesn't
+    publish that piece of metadata for this file (e.g. HuggingFace
+    non-LFS blobs only carry size, not sha256). The verifier skips
+    layers it doesn't have data for instead of failing closed —
+    this keeps installs working when only a partial manifest is
+    available.
+    """
+
+    expected_size: int | None = None
+    expected_checksum_hex: str | None = None
+    checksum_algorithm: str | None = None  # "md5" | "sha256" | None
 
 
 @runtime_checkable
@@ -360,27 +398,41 @@ class ParallelItemLoader(QObject):
 
         It is **not** safe to call from a generic "is this ready?"
         codepath. Subclass overrides may run heavy probes — the Piper
-        loader runs a one-shot `onnxruntime.InferenceSession` (~50–100
+        loader runs a one-shot `onnxruntime.InferenceSession` (~30–50
         ms) — that are appropriate for a one-time post-download gate
         but would be a serious cost regression if invoked from any
         per-row availability check (`is_item_available`,
         `_CatalogStateAdapter.is_installed`, etc.).
 
-        The default implementation runs **layer 1** (cheapest): for
-        every artifact path reported by the backend, reject the
-        download if a `<path>.aria2` sidecar is still present — aria2
-        writes this control file during active transfers and removes it
-        on clean completion, so a leftover sidecar means the transfer
-        was interrupted.
+        The default implementation runs the cheap-and-generic layers:
+
+        - **Layer 1 — aria2 sidecar.** For every artifact path
+          reported by the backend, reject the download if a
+          `<path>.aria2` sidecar is still present. aria2 writes this
+          control file during active transfers and removes it on
+          clean completion, so a leftover sidecar means the transfer
+          was interrupted.
+        - **Layer 2 — file size vs manifest.** If the backend exposes
+          an `artifact_manifest(name)` method, every entry with a
+          non-`None` `expected_size` is compared against the on-disk
+          file size. A mismatch fails closed.
+        - **Layer 3 — checksum vs manifest.** Same source. Every
+          entry with a non-`None` `expected_checksum_hex` +
+          `checksum_algorithm` is streamed through the named hash
+          (md5 or sha256) and compared. A mismatch fails closed.
+
+        Manifest entries with `None` fields are skipped at the
+        respective layer — that allows a backend to publish only the
+        data it actually has (e.g. HF non-LFS blobs carry size but
+        not sha256) without a missing piece collapsing the whole
+        check. A backend that doesn't implement `artifact_manifest`
+        at all simply gets layer 1.
 
         Subclasses may override to add expensive layers on top (e.g.
-        the Piper loader runs a smoke-load via onnxruntime). Overrides
-        should run the base check first (via `super()._verify_download`)
-        and only continue to their own checks when the base returns
-        `None`.
-
-        # TODO: layer 2 — file size vs voice / HF manifest
-        # TODO: layer 3 — sha256 verification
+        the Piper loader runs a smoke-load via onnxruntime — layer
+        4). Overrides should run the base check first (via
+        `super()._verify_download`) and only continue to their own
+        checks when the base returns `None`.
         """
         try:
             paths = list(self._backend.artifact_paths(name))
@@ -392,6 +444,7 @@ class ParallelItemLoader(QObject):
             )
             return f"could not determine artifact paths: {exc}"
 
+        # Layer 1 — aria2 sidecar.
         for path in paths:
             sidecar = path.with_name(path.name + ".aria2")
             if sidecar.exists():
@@ -400,6 +453,145 @@ class ParallelItemLoader(QObject):
                     f"— download did not complete cleanly"
                 )
 
+        # Layers 2 + 3 — only run when the backend ships a manifest.
+        # `getattr` over hard-typing the `_ItemBackend` protocol so
+        # third-party / test backends that don't carry manifests
+        # degrade gracefully to layer 1 only.
+        manifest_getter = getattr(self._backend, "artifact_manifest", None)
+        if manifest_getter is None or not callable(manifest_getter):
+            return None
+
+        try:
+            manifest = manifest_getter(name)
+        except Exception as exc:
+            # Fail-soft on manifest-source errors (e.g. HF API timeout
+            # mid-install). The user just successfully downloaded
+            # gigabytes; aborting the install on a metadata blip
+            # would be terrible UX. Layer 1 already passed.
+            self._logger.warning(
+                "%s artifact_manifest raised for item=%s; skipping layers 2/3: %s",
+                self.__class__.__name__,
+                name,
+                exc,
+            )
+            return None
+
+        if not manifest:
+            return None
+
+        for path in paths:
+            entry = manifest.get(path)
+            if entry is None:
+                continue
+            size_error = self._verify_size(path, entry, name)
+            if size_error is not None:
+                return size_error
+            checksum_error = self._verify_checksum(path, entry, name)
+            if checksum_error is not None:
+                return checksum_error
+
+        return None
+
+    @staticmethod
+    def _verify_size(
+        path: Path, entry: ArtifactManifestEntry, name: str
+    ) -> Optional[str]:
+        """Compare on-disk file size against the manifest entry.
+
+        Fails closed when the manifest lists this file but it isn't
+        on disk: a manifest-covered artifact MUST be present after
+        a successful download, so a missing one is a real
+        verification failure (not the optional-file tolerance that
+        `manifest.get(path) is None` already handles upstream).
+
+        Returns `None` when the size matches or when the entry has
+        no expected size; an error string on size mismatch or a
+        manifest-listed-but-absent file.
+        """
+        if entry.expected_size is None:
+            return None
+        try:
+            actual_size = path.stat().st_size
+        except FileNotFoundError:
+            return (
+                f"missing artifact for {path.name} (item={name}): "
+                f"manifest lists this file but it is absent on disk"
+            )
+        if actual_size != entry.expected_size:
+            return (
+                f"size mismatch for {path.name} (item={name}): "
+                f"expected {entry.expected_size} bytes, got {actual_size}"
+            )
+        return None
+
+    @staticmethod
+    def _verify_checksum(
+        path: Path, entry: ArtifactManifestEntry, name: str
+    ) -> Optional[str]:
+        """Stream the file through the named hash and compare.
+
+        Fails closed on missing-but-manifest-listed files (same
+        rationale as `_verify_size`). Unknown algorithm names log
+        a warning and skip layer 3 — that's a backend-config bug,
+        not a corrupted download, and the operator-visible warning
+        prevents silent integrity-check regressions if a backend
+        ships a typo'd algorithm name.
+        """
+        expected_hex = entry.expected_checksum_hex
+        algorithm = entry.checksum_algorithm
+        if expected_hex is None or algorithm is None:
+            return None
+        if algorithm not in _SUPPORTED_CHECKSUM_ALGORITHMS:
+            _module_logger.warning(
+                "Skipping layer 3 for %s (item=%s): unsupported "
+                "checksum algorithm %r — supported: %s",
+                path.name,
+                name,
+                algorithm,
+                sorted(_SUPPORTED_CHECKSUM_ALGORITHMS),
+            )
+            return None
+        # Construct the hasher BEFORE opening the file so a
+        # provider-unavailable error (notably md5 on FIPS-mode
+        # OpenSSL builds, which raises `ValueError: [digital envelope
+        # routines] unsupported`) is treated like the unsupported-
+        # algorithm case: warn and skip layer 3, don't fail closed
+        # against a healthy artifact. Without this, the worker's
+        # broad `except Exception` would convert the ValueError into
+        # a generic "verification hook raised" install failure.
+        try:
+            hasher = hashlib.new(algorithm)
+        except (ValueError, TypeError) as exc:
+            _module_logger.warning(
+                "Skipping layer 3 for %s (item=%s): hashlib.new(%r) "
+                "raised %s — this is typically FIPS-mode OpenSSL "
+                "rejecting md5. Layers 1/2 still apply.",
+                path.name,
+                name,
+                algorithm,
+                exc,
+            )
+            return None
+        try:
+            with path.open("rb") as fh:
+                while True:
+                    chunk = fh.read(_CHECKSUM_READ_CHUNK)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+        except FileNotFoundError:
+            return (
+                f"missing artifact for {path.name} (item={name}): "
+                f"manifest lists this file but it is absent on disk "
+                f"(cannot verify {algorithm} checksum)"
+            )
+        actual_hex = hasher.hexdigest().lower()
+        expected_norm = expected_hex.lower()
+        if actual_hex != expected_norm:
+            return (
+                f"{algorithm} mismatch for {path.name} (item={name}): "
+                f"expected {expected_norm}, got {actual_hex}"
+            )
         return None
 
     def _cleanup_failed_download(self, name: str) -> None:
