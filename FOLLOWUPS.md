@@ -13,8 +13,9 @@ buffers, hoisted test helpers, `ruff` dev extra, `QApplication`
 fixture, standalone qmllint, `catalog_refresh_settled` signal, ORT
 `DISABLE_ALL` for verifier, atomic `voices.json` writes,
 `known_voice_names` cache + lock, root-deletion guard) landed across
-PRs #11, #12, #13. What remains is feature-shaped work plus
-lower-severity review items still parked behind UI / design judgment.
+PRs #11, #12, #13. Download verification layers 2 (size vs manifest)
+and 3 (md5 / sha256 vs manifest) landed in v0.7.0 (PR #14). What
+remains is UI / design judgment work.
 
 ## Future feature work
 
@@ -26,26 +27,6 @@ in PR #5. Designing a real inertial implementation that preserves
 sticky-bottom behavior is non-trivial (per AGENTS.md, native
 `Flickable.flick()` can detach the sticky-bottom state machine).
 Worth scoping if user feedback asks for it.
-
-### Download verification — layers 2 and 3
-
-PR #6 landed layer 1 (`.aria2` sidecar rejection) and layer 4
-(Piper smoke-load via `onnxruntime.InferenceSession`). The middle
-layers are still TODO:
-
-- **Layer 2 — file size vs manifest.** Piper voices have a
-  `voice.json` sidecar with expected size; HF model files have
-  `.json` metadata. Where authoritative size is available, mismatch
-  is a hard fail before the smoke-load even runs.
-- **Layer 3 — SHA-256 verification.** HF model files have `sha256` in
-  the LFS pointer; piper-tts repo has hashes per voice. Compute on
-  disk, compare, fail closed.
-
-Wire-in points: `ParallelItemLoader._verify_download` already exists
-as the layered hook; subclasses would extend it. Keep the cheap
-layers (1, 2) in the default impl and the expensive layers (3, 4) in
-backend overrides. **Note:** capability addition → minor bump per
-the version policy, not patch.
 
 ## Deferred review items still open
 

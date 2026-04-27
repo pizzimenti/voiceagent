@@ -266,6 +266,59 @@ class PiperTtsService(TextToSpeechBackend):
         json_path = self.model_root / f"{item_name}.onnx.json"
         return [onnx_path, json_path]
 
+    def artifact_manifest(
+        self, item_name: str
+    ) -> "dict[Path, ArtifactManifestEntry]":
+        """Per-file size + md5 from the on-disk `voices.json` cache.
+
+        Read by `ParallelItemLoader._verify_download` for layers 2
+        (size) and 3 (checksum). voices.json is the upstream
+        rhasspy/piper-voices manifest; each voice entry's `files`
+        map keys are repo-relative paths (`ar/ar_JO/kareem/low/
+        ar_JO-kareem-low.onnx`) but the values carry `size_bytes`
+        and `md5_digest` per file. We only need the basename to map
+        manifest entries onto local artifact paths.
+
+        Returns an empty dict when the cache file is missing, the
+        voice isn't in the manifest, or the JSON is malformed —
+        the verifier degrades gracefully to layer 1 only in those
+        cases rather than failing the install.
+        """
+        from voiceagent.parallel_item_loader import ArtifactManifestEntry
+
+        cache_path = self.model_root / "voices.json"
+        if not cache_path.exists():
+            return {}
+
+        try:
+            import json
+
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+        entry = payload.get(item_name)
+        if not isinstance(entry, dict):
+            return {}
+        files = entry.get("files")
+        if not isinstance(files, dict):
+            return {}
+
+        manifest: dict[Path, ArtifactManifestEntry] = {}
+        for repo_path, meta in files.items():
+            if not isinstance(meta, dict):
+                continue
+            basename = repo_path.rsplit("/", 1)[-1]
+            local_path = self.model_root / basename
+            size = meta.get("size_bytes")
+            md5 = meta.get("md5_digest")
+            manifest[local_path] = ArtifactManifestEntry(
+                expected_size=size if isinstance(size, int) else None,
+                expected_checksum_hex=md5 if isinstance(md5, str) else None,
+                checksum_algorithm="md5" if isinstance(md5, str) else None,
+            )
+        return manifest
+
     def _resolve_existing_model_path(self) -> Path | None:
         assert self.model_path is not None
 

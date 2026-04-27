@@ -2,6 +2,76 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.7.0 — 2026-04-27
+
+**Download verification capability completion.** Closes the layers 2
+and 3 gaps that have been parked since the v0.3.2 verifier shipped
+with only layers 1 (aria2 sidecar) and 4 (Piper smoke-load). Both
+backends now publish a per-file manifest with authoritative size +
+checksum; the base verifier checks both before declaring an install
+healthy.
+
+Minor bump per the project's version policy: capability addition
+visible to backends and observable via a new failure mode (a
+size/checksum mismatch now routes through `load_failed` + cleanup).
+No public-API break.
+
+### Added
+
+- **`ParallelItemLoader._verify_download` runs layers 2 + 3.**
+  - Layer 2 — file size vs manifest. Fail-closed on mismatch.
+  - Layer 3 — checksum vs manifest. Streams the file in 1 MiB chunks
+    through `hashlib.new(algorithm)` (md5 or sha256). Fail-closed on
+    mismatch; unsupported algorithm names skip layer 3 (treated as
+    a backend-config bug, not corruption).
+  - Generic helpers: `_verify_size(path, entry, name)` and
+    `_verify_checksum(path, entry, name)` are public-on-the-class
+    static methods so subclasses can compose differently if they
+    need to.
+  - New module-level dataclass
+    `voiceagent.parallel_item_loader.ArtifactManifestEntry` with
+    `expected_size`, `expected_checksum_hex`, `checksum_algorithm`
+    fields. All optional — partial entries (e.g. HF non-LFS files
+    that carry size but no sha256) skip the layer they don't cover
+    instead of failing closed.
+- **`PiperTtsService.artifact_manifest(name)`** reads the on-disk
+  `voices.json` cache and returns size + md5 per file (basename →
+  local path mapping). Empty dict on missing/malformed cache.
+- **`WhisperTranscriber.artifact_manifest(name)`** calls
+  `HfApi.repo_info(repo_id, files_metadata=True)` and returns size
+  for every file plus sha256 for LFS files. Reads `HF_TOKEN` from
+  the environment for parity with `_prepare_model_source`. Empty
+  dict on network failure or unmanaged custom path.
+
+### Changed
+
+- **Manifest fetch is fail-soft.** A backend whose
+  `artifact_manifest` raises (e.g. HF API timeout mid-install) gets
+  a warning log and the verifier degrades to layer 1 only. The user
+  just successfully downloaded gigabytes; aborting the install on a
+  metadata blip would be terrible UX. Layer 1 already passed.
+- **Backends without `artifact_manifest` degrade gracefully.** The
+  base verifier reads the method via `getattr` so the `_ItemBackend`
+  protocol stays unchanged and third-party / test fakes continue to
+  work without modification.
+
+### Tests
+
+- 19 new tests (158 passing total, was 139):
+  - 9 in `tests/test_parallel_item_loader.py` covering the base
+    verifier extension: passing case (size + checksum match), size
+    mismatch fail, checksum mismatch fail, sha256 path mirrors md5
+    path, partial entries skip only the missing layer, no manifest
+    method skips both, manifest-getter raise is fail-soft, paths
+    not in manifest are silently skipped, unsupported algorithm
+    names don't fail closed.
+  - 10 in `tests/test_artifact_manifest.py` covering per-backend
+    construction: Piper basename mapping, missing cache, missing
+    voice in cache, malformed JSON, partial metadata fields;
+    Whisper LFS-vs-blob distinction, nested-path skip parity with
+    `_prepare_model_source`, network-failure fail-soft, custom-path
+    short-circuit, `HF_TOKEN` propagation.
+
 ## 0.6.4 — 2026-04-27
 
 **Cleanup-path correctness fix.** Single bug from the PR #11 review

@@ -646,3 +646,271 @@ def test_cleanup_does_not_rmdir_flat_layout_root(tmp_path, make_loader):
 
     assert not artifact.exists()
     assert model_root.exists()
+
+
+# --- _verify_download: layers 2 + 3 (size + checksum) -------------------
+
+import hashlib
+
+from voiceagent.parallel_item_loader import ArtifactManifestEntry
+
+
+class _ManifestBackend(_LayoutBackend):
+    """`_LayoutBackend` plus an `artifact_manifest` hook.
+
+    The default base-class verifier reads `artifact_manifest` via
+    `getattr` so backends without one degrade to layer 1; this fake
+    publishes a per-item manifest dict so layer 2 / 3 can be exercised
+    directly.
+    """
+
+    def __init__(
+        self,
+        model_root: Path,
+        artifacts_for: dict[str, list[Path]],
+        manifest_for: dict[str, dict[Path, ArtifactManifestEntry]] | None = None,
+        manifest_raises: bool = False,
+    ) -> None:
+        super().__init__(model_root=model_root, artifacts_for=artifacts_for)
+        self._manifest_for = manifest_for or {}
+        self._manifest_raises = manifest_raises
+
+    def artifact_manifest(self, name: str) -> dict[Path, ArtifactManifestEntry]:
+        if self._manifest_raises:
+            raise RuntimeError("simulated manifest source failure")
+        return dict(self._manifest_for.get(name, {}))
+
+
+def _payload_with_md5(data: bytes) -> tuple[bytes, str]:
+    return data, hashlib.md5(data).hexdigest()
+
+
+def test_verify_download_passes_when_size_and_checksum_match(
+    tmp_path, make_loader,
+):
+    """Happy path — every artifact matches its manifest entry."""
+    item = "en_US-ryan-high"
+    payload, md5 = _payload_with_md5(b"matching-payload-bytes")
+    artifact = tmp_path / f"{item}.onnx"
+    artifact.write_bytes(payload)
+
+    backend = _ManifestBackend(
+        model_root=tmp_path,
+        artifacts_for={item: [artifact]},
+        manifest_for={
+            item: {
+                artifact: ArtifactManifestEntry(
+                    expected_size=len(payload),
+                    expected_checksum_hex=md5,
+                    checksum_algorithm="md5",
+                )
+            }
+        },
+    )
+    loader = make_loader(backend)
+
+    assert loader._verify_download(item) is None
+
+
+def test_verify_download_fails_closed_on_size_mismatch(tmp_path, make_loader):
+    """Layer 2 — file size diverges from the manifest. Fail closed."""
+    item = "en_US-ryan-high"
+    payload = b"actual-bytes-on-disk"
+    artifact = tmp_path / f"{item}.onnx"
+    artifact.write_bytes(payload)
+
+    backend = _ManifestBackend(
+        model_root=tmp_path,
+        artifacts_for={item: [artifact]},
+        manifest_for={
+            item: {
+                artifact: ArtifactManifestEntry(
+                    expected_size=len(payload) + 100,  # divergent
+                )
+            }
+        },
+    )
+    loader = make_loader(backend)
+
+    error = loader._verify_download(item)
+    assert error is not None and "size mismatch" in error
+    assert str(len(payload)) in error
+    assert str(len(payload) + 100) in error
+
+
+def test_verify_download_fails_closed_on_checksum_mismatch(
+    tmp_path, make_loader,
+):
+    """Layer 3 — checksum diverges. Fail closed."""
+    item = "en_US-ryan-high"
+    payload = b"the-real-payload"
+    artifact = tmp_path / f"{item}.onnx"
+    artifact.write_bytes(payload)
+
+    backend = _ManifestBackend(
+        model_root=tmp_path,
+        artifacts_for={item: [artifact]},
+        manifest_for={
+            item: {
+                artifact: ArtifactManifestEntry(
+                    # Size is correct so layer 2 passes; only layer 3
+                    # should fire.
+                    expected_size=len(payload),
+                    expected_checksum_hex="0" * 32,  # nonsense md5
+                    checksum_algorithm="md5",
+                )
+            }
+        },
+    )
+    loader = make_loader(backend)
+
+    error = loader._verify_download(item)
+    assert error is not None and "md5 mismatch" in error
+
+
+def test_verify_download_passes_with_sha256_when_manifest_uses_sha256(
+    tmp_path, make_loader,
+):
+    """Algorithm switch — sha256 path mirrors md5 path; same plumbing."""
+    item = "large-v3"
+    payload = b"whisper-model-bytes"
+    sha256 = hashlib.sha256(payload).hexdigest()
+    artifact = tmp_path / "model.bin"
+    artifact.write_bytes(payload)
+
+    backend = _ManifestBackend(
+        model_root=tmp_path,
+        artifacts_for={item: [artifact]},
+        manifest_for={
+            item: {
+                artifact: ArtifactManifestEntry(
+                    expected_size=len(payload),
+                    expected_checksum_hex=sha256,
+                    checksum_algorithm="sha256",
+                )
+            }
+        },
+    )
+    loader = make_loader(backend)
+
+    assert loader._verify_download(item) is None
+
+
+def test_verify_download_skips_layers_when_manifest_entry_is_partial(
+    tmp_path, make_loader,
+):
+    """A manifest entry with `None` checksum (HF non-LFS case) skips
+    only layer 3, not layer 2 — and vice versa.
+    """
+    item = "en_US-ryan-high"
+    payload = b"some-bytes"
+    artifact = tmp_path / f"{item}.onnx"
+    artifact.write_bytes(payload)
+
+    # Size known, checksum unknown — layer 2 runs (passes), layer 3 skips.
+    backend = _ManifestBackend(
+        model_root=tmp_path,
+        artifacts_for={item: [artifact]},
+        manifest_for={
+            item: {
+                artifact: ArtifactManifestEntry(
+                    expected_size=len(payload),
+                    expected_checksum_hex=None,
+                    checksum_algorithm=None,
+                )
+            }
+        },
+    )
+    loader = make_loader(backend)
+    assert loader._verify_download(item) is None
+
+
+def test_verify_download_skips_layers_2_3_when_no_manifest_method(
+    tmp_path, make_loader,
+):
+    """A backend without `artifact_manifest` falls through to layer 1
+    only. The base `FakeBackend` has none and must still verify clean.
+    """
+    backend = FakeBackend()
+    loader = make_loader(backend)
+    # FakeBackend.artifact_paths returns []; verifier returns None.
+    assert loader._verify_download("a") is None
+    assert not hasattr(backend, "artifact_manifest")
+
+
+def test_verify_download_fail_soft_when_manifest_getter_raises(
+    tmp_path, make_loader, caplog,
+):
+    """Manifest source error mid-install (e.g. HF API timeout) must NOT
+    abort an otherwise-good download. Layers 1 already passed; degrade
+    to no-op for layers 2/3 with a warning log.
+    """
+    item = "en_US-ryan-high"
+    artifact = tmp_path / f"{item}.onnx"
+    artifact.write_bytes(b"bytes")
+
+    backend = _ManifestBackend(
+        model_root=tmp_path,
+        artifacts_for={item: [artifact]},
+        manifest_raises=True,
+    )
+    loader = make_loader(backend)
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        error = loader._verify_download(item)
+
+    assert error is None
+    assert any("artifact_manifest raised" in r.message for r in caplog.records)
+
+
+def test_verify_download_skips_paths_not_in_manifest(tmp_path, make_loader):
+    """`artifact_paths` may include optional files (e.g. either of two
+    vocabulary files for Whisper) that the manifest doesn't list. The
+    verifier must silently skip those rather than erroring.
+    """
+    item = "tiny.en"
+    listed_artifact = tmp_path / "model.bin"
+    listed_artifact.write_bytes(b"data")
+    optional_artifact = tmp_path / "vocabulary.json"  # not on disk
+
+    backend = _ManifestBackend(
+        model_root=tmp_path,
+        artifacts_for={item: [listed_artifact, optional_artifact]},
+        manifest_for={
+            item: {
+                listed_artifact: ArtifactManifestEntry(expected_size=4),
+                # optional_artifact intentionally absent from manifest
+            }
+        },
+    )
+    loader = make_loader(backend)
+
+    assert loader._verify_download(item) is None
+
+
+def test_verify_download_unsupported_algorithm_does_not_fail_closed(
+    tmp_path, make_loader,
+):
+    """An unknown algorithm name in the manifest is a backend-config
+    bug, not a corrupted download. Skip layer 3 rather than fail."""
+    item = "en_US-ryan-high"
+    artifact = tmp_path / f"{item}.onnx"
+    artifact.write_bytes(b"bytes")
+
+    backend = _ManifestBackend(
+        model_root=tmp_path,
+        artifacts_for={item: [artifact]},
+        manifest_for={
+            item: {
+                artifact: ArtifactManifestEntry(
+                    expected_size=5,
+                    expected_checksum_hex="deadbeef",
+                    checksum_algorithm="crc32",  # unsupported
+                )
+            }
+        },
+    )
+    loader = make_loader(backend)
+
+    assert loader._verify_download(item) is None
