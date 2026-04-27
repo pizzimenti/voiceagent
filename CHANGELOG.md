@@ -9,6 +9,7 @@ queue (P2, two rounds of evidence). No new surface, no behavior change
 on the happy path.
 
 ### Fixed
+
 - **`ParallelItemLoader._cleanup_failed_download` no longer rmdirs the
   shared model root** when its basename happens to match the item name
   being installed. The 0.6.3 guard (`parent.name == name`) covered the
@@ -23,6 +24,7 @@ on the happy path.
   `getattr` so the `_ItemBackend` protocol stays unchanged.
 
 ### Tests
+
 - Three new regression tests in `tests/test_parallel_item_loader.py`:
   the bug case (shared root with matching basename survives), the
   Whisper-style nested layout (per-item subdir is still cleaned up),

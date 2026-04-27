@@ -60,13 +60,6 @@ them up.
   code — defer until/unless the Whisper backend can actually surface
   a no-selection state.
 
-- **`parallel_item_loader.py:319` — terminal `item_progress_changed`
-  design pass.** `_finish_success` emits a terminal tick carrying
-  `DownloadProgress(1, 1, 0)` when the worker never reported real
-  progress. The 0.3.x rounds patched the immediate symptom; a deeper
-  question is whether the terminal tick should exist at all. Needs
-  design judgment on the lifecycle contract.
-
 - **`MicButton.qml` — `required property var voiceAgent`.** Tried
   CodeRabbit's suggestion in PR #5 but reverted: it triggers
   first-paint TypeErrors because internal `text:`/`enabled:`
