@@ -51,6 +51,12 @@ _EMPTY_PROGRESS = DownloadProgress(
     completed_bytes=0, total_bytes=0, download_speed_bytes_per_second=0
 )
 
+# Module-level logger so verifier helpers (which are static methods on
+# the loader class) can emit operator-visible warnings without needing
+# an instance handle. The instance-level `self._logger` is still used
+# from non-static paths so log records carry the subclass name.
+_module_logger = logging.getLogger(__name__)
+
 # Chunk size for streaming-checksum reads. 1 MiB is large enough that
 # the per-call hashlib.update overhead is negligible relative to the
 # disk read, and small enough that holding it in memory is trivial
@@ -492,18 +498,25 @@ class ParallelItemLoader(QObject):
     ) -> Optional[str]:
         """Compare on-disk file size against the manifest entry.
 
-        Returns `None` when the size matches, when the entry has no
-        expected size, or when the path doesn't exist (artifact_paths
-        listed an optional file the backend didn't actually
-        download — same tolerance as layer 1, which also `.exists()`
-        - guards). Returns an error string on a real mismatch.
+        Fails closed when the manifest lists this file but it isn't
+        on disk: a manifest-covered artifact MUST be present after
+        a successful download, so a missing one is a real
+        verification failure (not the optional-file tolerance that
+        `manifest.get(path) is None` already handles upstream).
+
+        Returns `None` when the size matches or when the entry has
+        no expected size; an error string on size mismatch or a
+        manifest-listed-but-absent file.
         """
         if entry.expected_size is None:
             return None
         try:
             actual_size = path.stat().st_size
         except FileNotFoundError:
-            return None
+            return (
+                f"missing artifact for {path.name} (item={name}): "
+                f"manifest lists this file but it is absent on disk"
+            )
         if actual_size != entry.expected_size:
             return (
                 f"size mismatch for {path.name} (item={name}): "
@@ -517,17 +530,26 @@ class ParallelItemLoader(QObject):
     ) -> Optional[str]:
         """Stream the file through the named hash and compare.
 
-        Returns `None` when the checksum matches, when the entry
-        doesn't carry a checksum, when the algorithm is unsupported
-        (logged at the call site rather than failing closed — an
-        unknown algorithm is a backend-config bug, not a corrupted
-        download), or when the path doesn't exist.
+        Fails closed on missing-but-manifest-listed files (same
+        rationale as `_verify_size`). Unknown algorithm names log
+        a warning and skip layer 3 — that's a backend-config bug,
+        not a corrupted download, and the operator-visible warning
+        prevents silent integrity-check regressions if a backend
+        ships a typo'd algorithm name.
         """
         expected_hex = entry.expected_checksum_hex
         algorithm = entry.checksum_algorithm
         if expected_hex is None or algorithm is None:
             return None
         if algorithm not in _SUPPORTED_CHECKSUM_ALGORITHMS:
+            _module_logger.warning(
+                "Skipping layer 3 for %s (item=%s): unsupported "
+                "checksum algorithm %r — supported: %s",
+                path.name,
+                name,
+                algorithm,
+                sorted(_SUPPORTED_CHECKSUM_ALGORITHMS),
+            )
             return None
         try:
             hasher = hashlib.new(algorithm)
@@ -538,7 +560,11 @@ class ParallelItemLoader(QObject):
                         break
                     hasher.update(chunk)
         except FileNotFoundError:
-            return None
+            return (
+                f"missing artifact for {path.name} (item={name}): "
+                f"manifest lists this file but it is absent on disk "
+                f"(cannot verify {algorithm} checksum)"
+            )
         actual_hex = hasher.hexdigest().lower()
         expected_norm = expected_hex.lower()
         if actual_hex != expected_norm:

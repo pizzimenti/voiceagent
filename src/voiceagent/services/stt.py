@@ -4,13 +4,16 @@ import logging
 import os
 from pathlib import Path
 import shutil
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from huggingface_hub import HfApi, hf_hub_url
 
 from voiceagent.backends import SpeechToTextBackend
 from voiceagent.downloaders import AriaDownloader, DownloadFile
 from voiceagent.paths import default_stt_model_root
+
+if TYPE_CHECKING:
+    from voiceagent.parallel_item_loader import ArtifactManifestEntry
 
 
 class WhisperTranscriber(SpeechToTextBackend):
@@ -200,7 +203,7 @@ class WhisperTranscriber(SpeechToTextBackend):
 
     def artifact_manifest(
         self, item_name: str
-    ) -> "dict[Path, 'ArtifactManifestEntry']":
+    ) -> dict[Path, ArtifactManifestEntry]:
         """Per-file size + sha256 (LFS only) from `HfApi.repo_info`.
 
         Read by `ParallelItemLoader._verify_download` for layers 2

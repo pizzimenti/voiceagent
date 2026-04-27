@@ -48,13 +48,36 @@ def _write_voices_json(model_root: Path, payload: dict) -> None:
     (model_root / "voices.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_piper_manifest_maps_basenames_to_local_paths(piper_service):
+def _stub_voices_json_refresh(monkeypatch, payload: dict) -> None:
+    """Make `artifact_manifest`'s refresh-before-read a no-op that
+    "lands" the test fixture as the fresh upstream payload.
+
+    The production path now refreshes `voices.json` from upstream
+    before reading it (so a stale cache can't fail-close a healthy
+    install). For tests we monkeypatch the classmethod to write the
+    fixture into `voices.json` and return its voice names — same
+    contract as a successful real refresh, no network needed.
+    """
+
+    def _fake_fetch(cls, model_root):
+        cache_path = model_root / "voices.json"
+        cache_path.write_text(json.dumps(payload), encoding="utf-8")
+        return set(payload.keys())
+
+    monkeypatch.setattr(
+        PiperTtsService,
+        "_fetch_and_cache_voice_names",
+        classmethod(_fake_fetch),
+    )
+
+
+def test_piper_manifest_maps_basenames_to_local_paths(piper_service, monkeypatch):
     """The voices.json keys are repo-relative paths (`ar/ar_JO/.../X.onnx`);
     the manifest must map by basename to local `<model_root>/X.onnx`.
     """
     name = "ar_JO-kareem-low"
-    _write_voices_json(
-        piper_service.model_root,
+    _stub_voices_json_refresh(
+        monkeypatch,
         {
             name: {
                 "files": {
@@ -95,30 +118,79 @@ def test_piper_manifest_maps_basenames_to_local_paths(piper_service):
     assert card_path in manifest
 
 
-def test_piper_manifest_returns_empty_when_cache_missing(piper_service):
-    assert piper_service.artifact_manifest("any-voice") == {}
+def test_piper_manifest_returns_empty_when_refresh_fails(
+    piper_service, monkeypatch, caplog,
+):
+    """Network failure during the manifest refresh degrades to layer
+    1 + 4 — we must NOT fall back to a possibly-stale cache file
+    because layers 2/3 fail closed.
+    """
+    def _fail(cls, model_root):
+        return set()  # mirrors the real fetch's failure-mode contract
+
+    monkeypatch.setattr(
+        PiperTtsService,
+        "_fetch_and_cache_voice_names",
+        classmethod(_fail),
+    )
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        result = piper_service.artifact_manifest("any-voice")
+
+    assert result == {}
+    assert any("refresh" in r.message.lower() for r in caplog.records)
 
 
-def test_piper_manifest_returns_empty_when_voice_not_in_cache(piper_service):
-    _write_voices_json(piper_service.model_root, {"other-voice": {"files": {}}})
+def test_piper_manifest_does_not_fall_back_to_stale_cache(
+    piper_service, monkeypatch,
+):
+    """The P1 regression: a stale cache must never be used as the
+    authoritative manifest source for fail-closed verification.
+
+    Pre-existing cache file on disk + refresh fails → empty manifest
+    (NOT the cached data, which could be arbitrarily old and would
+    mass-reject healthy upstream-republished voices).
+    """
+    name = "stale-voice"
+    _write_voices_json(
+        piper_service.model_root,
+        {
+            name: {
+                "files": {
+                    f"x/y/z/{name}.onnx": {
+                        "size_bytes": 1,
+                        "md5_digest": "00000000000000000000000000000000",
+                    }
+                }
+            }
+        },
+    )
+
+    monkeypatch.setattr(
+        PiperTtsService,
+        "_fetch_and_cache_voice_names",
+        classmethod(lambda cls, root: set()),
+    )
+
+    assert piper_service.artifact_manifest(name) == {}
+
+
+def test_piper_manifest_returns_empty_when_voice_not_in_refreshed_payload(
+    piper_service, monkeypatch,
+):
+    _stub_voices_json_refresh(monkeypatch, {"other-voice": {"files": {}}})
     assert piper_service.artifact_manifest("missing-voice") == {}
 
 
-def test_piper_manifest_returns_empty_on_malformed_json(piper_service):
-    (piper_service.model_root / "voices.json").write_text(
-        "{not valid json", encoding="utf-8"
-    )
-    assert piper_service.artifact_manifest("any") == {}
-
-
-def test_piper_manifest_handles_missing_metadata_fields(piper_service):
+def test_piper_manifest_handles_missing_metadata_fields(piper_service, monkeypatch):
     """A voice entry whose `files` map is missing one of size/md5 should
     yield an entry where the corresponding field is `None` (the verifier
     skips that layer for that file rather than failing closed).
     """
     name = "en_US-ryan-high"
-    _write_voices_json(
-        piper_service.model_root,
+    _stub_voices_json_refresh(
+        monkeypatch,
         {
             name: {
                 "files": {

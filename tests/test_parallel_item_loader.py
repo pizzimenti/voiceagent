@@ -890,10 +890,13 @@ def test_verify_download_skips_paths_not_in_manifest(tmp_path, make_loader):
 
 
 def test_verify_download_unsupported_algorithm_does_not_fail_closed(
-    tmp_path, make_loader,
+    tmp_path, make_loader, caplog,
 ):
     """An unknown algorithm name in the manifest is a backend-config
-    bug, not a corrupted download. Skip layer 3 rather than fail."""
+    bug, not a corrupted download. Skip layer 3 rather than fail —
+    but emit a warning so the operator sees the silent integrity
+    regression rather than discovering it later via a corrupt file.
+    """
     item = "en_US-ryan-high"
     artifact = tmp_path / f"{item}.onnx"
     artifact.write_bytes(b"bytes")
@@ -913,4 +916,74 @@ def test_verify_download_unsupported_algorithm_does_not_fail_closed(
     )
     loader = make_loader(backend)
 
-    assert loader._verify_download(item) is None
+    import logging
+    with caplog.at_level(logging.WARNING):
+        result = loader._verify_download(item)
+
+    assert result is None
+    assert any(
+        "unsupported checksum algorithm" in r.message
+        and "crc32" in r.message
+        for r in caplog.records
+    )
+
+
+def test_verify_size_fails_closed_on_missing_manifest_file(
+    tmp_path, make_loader,
+):
+    """If the manifest lists a file but it is absent on disk, that's a
+    real verification failure — not an "optional file" tolerance.
+    The verifier must fail closed so `load_completed` doesn't fire
+    for an incomplete install.
+    """
+    item = "tiny.en"
+    listed_path = tmp_path / "model.bin"
+    # Deliberately do NOT write the file. The manifest claims it
+    # exists with a known size; on-disk reality says otherwise.
+
+    backend = _ManifestBackend(
+        model_root=tmp_path,
+        artifacts_for={item: [listed_path]},
+        manifest_for={
+            item: {
+                listed_path: ArtifactManifestEntry(expected_size=1234),
+            }
+        },
+    )
+    loader = make_loader(backend)
+
+    error = loader._verify_download(item)
+    assert error is not None
+    assert "missing artifact" in error
+    assert "model.bin" in error
+
+
+def test_verify_checksum_fails_closed_on_missing_manifest_file(
+    tmp_path, make_loader,
+):
+    """Same fail-closed rule applies to layer 3: a manifest-listed
+    file that's missing on disk must fail rather than silently pass.
+    """
+    item = "tiny.en"
+    listed_path = tmp_path / "model.bin"
+
+    backend = _ManifestBackend(
+        model_root=tmp_path,
+        artifacts_for={item: [listed_path]},
+        manifest_for={
+            item: {
+                # No size — only checksum — so layer 2 short-circuits
+                # and we exercise the layer 3 missing-file path.
+                listed_path: ArtifactManifestEntry(
+                    expected_checksum_hex="deadbeef",
+                    checksum_algorithm="md5",
+                ),
+            }
+        },
+    )
+    loader = make_loader(backend)
+
+    error = loader._verify_download(item)
+    assert error is not None
+    assert "missing artifact" in error
+    assert "md5" in error
