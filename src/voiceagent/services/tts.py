@@ -294,6 +294,20 @@ class PiperTtsService(TextToSpeechBackend):
         (`ar/ar_JO/kareem/low/ar_JO-kareem-low.onnx`) but the values
         carry `size_bytes` and `md5_digest` per file. We map
         manifest entries onto local artifact paths by basename.
+
+        **Known TOCTOU window** — both `_download_voice` and the
+        refresh below resolve against the `main` branch of
+        `rhasspy/piper-voices`. If upstream pushes an update in the
+        few-second window between aria2 fetching the file bytes and
+        this method fetching the manifest, the size/md5 in the new
+        manifest won't match the bytes on disk and `_verify_download`
+        will fail-close on a healthy install. Layer 4 (smoke-load)
+        catches *real* corruption, so the user can retry and
+        succeed; this is a self-healing false-positive, not data
+        loss. Proper fix is to pin both download and manifest to
+        the same commit SHA — tracked in FOLLOWUPS as a future
+        cycle (the change cuts across `_voice_remote_prefix`,
+        `download_voice`, and this method).
         """
         from voiceagent.parallel_item_loader import ArtifactManifestEntry
 

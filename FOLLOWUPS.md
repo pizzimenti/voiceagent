@@ -28,6 +28,35 @@ sticky-bottom behavior is non-trivial (per AGENTS.md, native
 `Flickable.flick()` can detach the sticky-bottom state machine).
 Worth scoping if user feedback asks for it.
 
+## Future feature work
+
+### Pin Piper download + verify manifest to the same revision
+
+`_download_voice` and `artifact_manifest` both resolve against the
+`main` branch of `rhasspy/piper-voices`. If upstream pushes a voice
+update in the few-second window between aria2 fetching the file
+bytes and the manifest refresh, layer 2 / 3 verification will
+fail-close against a healthy download. Layer 4 (smoke-load) catches
+real corruption so the user can retry, but the false-positive is
+visible.
+
+Proper fix needs design judgment between three viable shapes:
+
+- **Pin to a SHA.** Capture upstream commit SHA at download start;
+  rewrite URLs to `https://huggingface.co/rhasspy/piper-voices/
+  resolve/<sha>/<filepath>`; refetch manifest from the same SHA.
+  Most robust, biggest URL refactor.
+- **Capture-at-start.** Snapshot manifest payload before aria2
+  fetches files; thread the snapshot through the loader to
+  `_verify_download`. Avoids second HTTP call entirely. Touches
+  the verifier interface.
+- **Piper layers 2/3 advisory.** Make Piper override convert
+  size/md5 mismatch to warning logs; let layer 4 be the
+  authoritative gate. Smallest change but loses defense-in-depth
+  for the (rare) bytes-look-fine-but-wrong-version case.
+
+Tracked from PR #14 round-2 review (CodeRabbit P2).
+
 ## Deferred review items still open
 
 Items that survived the 0.6.3 / 0.6.4 hardening sweeps. Each needs a

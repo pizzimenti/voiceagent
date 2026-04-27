@@ -928,6 +928,60 @@ def test_verify_download_unsupported_algorithm_does_not_fail_closed(
     )
 
 
+def test_verify_checksum_does_not_fail_closed_when_hashlib_rejects_algorithm(
+    tmp_path, make_loader, monkeypatch, caplog,
+):
+    """Regression: on FIPS-enabled OpenSSL builds, `hashlib.new("md5")`
+    raises `ValueError: [digital envelope routines] unsupported`. That
+    must NOT bubble up as a verification failure rejecting healthy
+    Piper installs — it should be treated like the unsupported-
+    algorithm case (warn + skip layer 3, layers 1/2/4 still apply).
+    """
+    item = "en_US-ryan-high"
+    artifact = tmp_path / f"{item}.onnx"
+    payload = b"healthy-onnx-bytes"
+    artifact.write_bytes(payload)
+
+    real_hashlib_new = hashlib.new
+
+    def _fake_hashlib_new(name, *args, **kwargs):
+        if name == "md5":
+            raise ValueError(
+                "[digital envelope routines] unsupported (simulated FIPS)"
+            )
+        return real_hashlib_new(name, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "voiceagent.parallel_item_loader.hashlib.new", _fake_hashlib_new
+    )
+
+    backend = _ManifestBackend(
+        model_root=tmp_path,
+        artifacts_for={item: [artifact]},
+        manifest_for={
+            item: {
+                artifact: ArtifactManifestEntry(
+                    expected_size=len(payload),
+                    expected_checksum_hex=hashlib.sha256(payload).hexdigest(),
+                    checksum_algorithm="md5",  # FIPS would reject this
+                )
+            }
+        },
+    )
+    loader = make_loader(backend)
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        result = loader._verify_download(item)
+
+    # Layer 3 skipped (FIPS rejected the hasher), layers 1/2 passed.
+    assert result is None
+    assert any(
+        "FIPS" in r.message or "hashlib.new" in r.message
+        for r in caplog.records
+    )
+
+
 def test_verify_size_fails_closed_on_missing_manifest_file(
     tmp_path, make_loader,
 ):

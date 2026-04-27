@@ -551,8 +551,28 @@ class ParallelItemLoader(QObject):
                 sorted(_SUPPORTED_CHECKSUM_ALGORITHMS),
             )
             return None
+        # Construct the hasher BEFORE opening the file so a
+        # provider-unavailable error (notably md5 on FIPS-mode
+        # OpenSSL builds, which raises `ValueError: [digital envelope
+        # routines] unsupported`) is treated like the unsupported-
+        # algorithm case: warn and skip layer 3, don't fail closed
+        # against a healthy artifact. Without this, the worker's
+        # broad `except Exception` would convert the ValueError into
+        # a generic "verification hook raised" install failure.
         try:
             hasher = hashlib.new(algorithm)
+        except (ValueError, TypeError) as exc:
+            _module_logger.warning(
+                "Skipping layer 3 for %s (item=%s): hashlib.new(%r) "
+                "raised %s — this is typically FIPS-mode OpenSSL "
+                "rejecting md5. Layers 1/2 still apply.",
+                path.name,
+                name,
+                algorithm,
+                exc,
+            )
+            return None
+        try:
             with path.open("rb") as fh:
                 while True:
                     chunk = fh.read(_CHECKSUM_READ_CHUNK)
