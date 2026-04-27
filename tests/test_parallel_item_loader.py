@@ -544,3 +544,105 @@ def test_subclass_with_all_overrides_inherited_via_intermediate_passes(make_load
     backend = FakeBackend()
     loader = make_loader(backend, loader_cls=_Leaf)
     assert loader._status_checking() == "x"
+
+
+# --- _cleanup_failed_download: rmdir guard regression coverage ----------
+
+
+class _LayoutBackend(FakeBackend):
+    """`FakeBackend` plus on-disk `model_root` and configurable artifact paths.
+
+    Real backends (PiperTtsService, WhisperTranscriber) carry a
+    `model_root: Path`. The cleanup rmdir guard reads it via `getattr`,
+    so the test fake also exposes it.
+    """
+
+    def __init__(self, model_root: Path, artifacts_for: dict[str, list[Path]]) -> None:
+        super().__init__()
+        self.model_root = model_root
+        self._artifacts_for = artifacts_for
+
+    def artifact_paths(self, name: str) -> list[Path]:
+        return list(self._artifacts_for.get(name, []))
+
+
+def test_cleanup_does_not_rmdir_shared_model_root_with_matching_basename(
+    tmp_path, make_loader,
+):
+    """Bug case from PR #11 review (P2, two rounds of evidence).
+
+    If `VOICEAGENT_TTS_MODEL_ROOT` is set to a path whose basename
+    matches the item name being installed, the 0.6.3 `parent.name == name`
+    guard alone allowed `rmdir` of the shared root on failed verification.
+    Recovery requires a human to recreate the directory.
+
+    Scenario: Piper-style flat layout with `model_root.name == item_name`.
+    """
+    item = "en_US-ryan-high"
+    model_root = tmp_path / item
+    model_root.mkdir()
+    artifact = model_root / f"{item}.onnx"
+    artifact.write_bytes(b"fake")
+
+    backend = _LayoutBackend(
+        model_root=model_root, artifacts_for={item: [artifact]}
+    )
+    loader = make_loader(backend)
+
+    loader._cleanup_failed_download(item)
+
+    assert not artifact.exists(), "artifact must be unlinked"
+    assert model_root.exists(), (
+        "shared model_root must survive cleanup even when its basename "
+        "matches the item name"
+    )
+
+
+def test_cleanup_rmdirs_per_item_subdirectory_when_safe(tmp_path, make_loader):
+    """Whisper-style nested layout: the per-item subdir IS removed.
+
+    Regression guard against over-tightening the rmdir condition — the
+    shared-root guard must not also block the legitimate per-item
+    cleanup.
+    """
+    item = "large"
+    model_root = tmp_path
+    item_dir = model_root / item
+    item_dir.mkdir()
+    artifact = item_dir / "model.bin"
+    artifact.write_bytes(b"fake")
+
+    backend = _LayoutBackend(
+        model_root=model_root, artifacts_for={item: [artifact]}
+    )
+    loader = make_loader(backend)
+
+    loader._cleanup_failed_download(item)
+
+    assert not artifact.exists()
+    assert not item_dir.exists(), "empty per-item subdir should be rmdir'd"
+    assert model_root.exists(), "model_root itself must survive"
+
+
+def test_cleanup_does_not_rmdir_flat_layout_root(tmp_path, make_loader):
+    """Piper-style flat layout, no basename collision.
+
+    `parent.name` ("voices") differs from `item` ("en_US-ryan-high"), so
+    the original 0.6.3 guard already protected this case. Pin it down
+    so the new shared-root guard doesn't accidentally regress it.
+    """
+    item = "en_US-ryan-high"
+    model_root = tmp_path / "voices"
+    model_root.mkdir()
+    artifact = model_root / f"{item}.onnx"
+    artifact.write_bytes(b"fake")
+
+    backend = _LayoutBackend(
+        model_root=model_root, artifacts_for={item: [artifact]}
+    )
+    loader = make_loader(backend)
+
+    loader._cleanup_failed_download(item)
+
+    assert not artifact.exists()
+    assert model_root.exists()

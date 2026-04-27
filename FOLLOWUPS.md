@@ -6,8 +6,15 @@ they ship.**
 The high-priority bug list that previously lived here — TTS first-paint
 blocking, VoiceController thread-safety, AudioPlayer race, LlmController
 stale-refresh ordering, download verification (layers 1 + 4), TTS
-`is_available` inconsistency — all landed in PR #6 (v0.3.2). What
-remains is feature-shaped work plus lower-severity review nits.
+`is_available` inconsistency — all landed in PR #6 (v0.3.2). The
+infrastructure-hardening sweep (clean-shutdown bounded join,
+`__init_subclass__` enforcement, closure-local `single_instance`
+buffers, hoisted test helpers, `ruff` dev extra, `QApplication`
+fixture, standalone qmllint, `catalog_refresh_settled` signal, ORT
+`DISABLE_ALL` for verifier, atomic `voices.json` writes,
+`known_voice_names` cache + lock, root-deletion guard) landed across
+PRs #11, #12, #13. What remains is feature-shaped work plus
+lower-severity review items still parked behind UI / design judgment.
 
 ## Future feature work
 
@@ -37,97 +44,37 @@ layers are still TODO:
 Wire-in points: `ParallelItemLoader._verify_download` already exists
 as the layered hook; subclasses would extend it. Keep the cheap
 layers (1, 2) in the default impl and the expensive layers (3, 4) in
-backend overrides.
+backend overrides. **Note:** capability addition → minor bump per
+the version policy, not patch.
 
-## Deferred review findings (PR #6)
+## Deferred review items still open
 
-CodeRabbit's first pass on PR #6 surfaced 11 inline comments; five
-landed in the PR itself (vocabulary in `artifact_paths`, fail-closed
-onnxruntime smoke-load, refresh-flag reset on worker error,
-flag-set ordering vs eager snapshot, Ruff E712). The rest are
-deferred:
+Items that survived the 0.6.3 / 0.6.4 hardening sweeps. Each needs a
+design or UI judgment, so they sit until the matching cycle picks
+them up.
 
-- **`parallel_item_loader.py:321`** — `_cleanup_failed_download`
-  unlinks each artifact path, but for nested-layout backends (like
-  Whisper, where artifacts live under
-  `<model_root>/<item_name>/`) the now-empty directory is left
-  behind. Best-effort `rmdir` on parents that became empty after
-  unlink. Not catastrophic — the next pass treats the directory as
-  empty — but cleaner.
-- **`parallel_item_loader.py:360`** — Documentation: clarify in a
-  comment near the `_verify_download` callsite that this hook is
-  *post-download*, not a generic readiness check. Subclass
-  overrides like Piper's smoke-load run a one-shot
-  `onnxruntime.InferenceSession` (~50–100 ms) and shouldn't be
-  invoked from any general "is this ready?" path.
-- **`tts_loader.py:210`** — Optional perf tweak: pass a
-  pre-configured `onnxruntime.SessionOptions` with
-  `graph_optimization_level=ORT_DISABLE_ALL` to the smoke-load
-  `InferenceSession`. Verification only checks that the file
-  parses and produces a valid graph; full optimization isn't
-  needed and wastes 20–50 ms per voice install.
-- **`tests/test_tts_catalog_first_paint.py:132`** — Helper
-  duplication: `_FakeResponse` is redefined three times,
-  `_boom` twice. Hoist into a module-level fixture.
-- **`tests/test_tts_catalog_first_paint.py:232`** — `_wait_for(qtbot,
-  lambda: loader.catalog_refresh_scheduled, ...)` is essentially a
-  no-op because the flag is set synchronously before submit (the
-  `processEvents()` loop below is what actually drains the work).
-  Replace with a wait on a post-completion sentinel signal once
-  one is exposed.
+- **`model_loader.py:50` — `_emit_initial_state` third branch.**
+  TTS has `_status_idle_prompt` for the unselected case; Whisper does
+  not. Today the Whisper backend's `selected_item` is always
+  populated by config defaults, so adding the branch would be dead
+  code — defer until/unless the Whisper backend can actually surface
+  a no-selection state.
 
-## Deferred review findings (PR #5)
-
-Lower-severity items from the PR #5 review that were out of scope for
-that PR. Still valid; apply opportunistically when touching the
-surrounding code.
-
-### From Codex
-
-- **`voiceagent-compiletest.sh:49,329`** — QML compile-test stub
-  `voiceAgent` has slot/property signatures that drift from the real
-  `MainWindow`, and the script doesn't lint the extracted QML
-  components (`MicButton.qml`, `ConversationPane.qml`) directly —
-  only via `MainWindow.qml`. Make the stub generation programmatic
-  or at minimum add explicit qmllint invocations.
-
-### From CodeRabbit
-
-- **`model_loader.py:57`** — `_emit_initial_state` only branches on
-  ready/not-ready. TTS has the third branch (`_status_idle_prompt`)
-  for the unselected case. If the Whisper backend ever surfaces a
-  no-selection state, the user sees "Download …" instead of
-  "Select a …". Wire the third branch symmetrically.
-- **`parallel_item_loader.py:153`** — `shutdown(wait=False)` lets
-  in-flight workers continue. PySide6's queued connections make
-  deleted-receiver emissions safe (per CodeRabbit's own analysis on
-  `llm_controller.py:217`), but a clean-shutdown story (per-worker
-  cancel events, bounded join) is nicer than relying on the safety
-  net.
-- **`parallel_item_loader.py:235`** — `_status_*` hooks raise
-  `NotImplementedError` lazily at call time. Consider an
-  `__init_subclass__` check that asserts every override is present
-  (standard `@abstractmethod` is awkward because `QObject`'s
-  metaclass conflicts with `ABCMeta`).
-- **`parallel_item_loader.py:319`** — `_finish_success` emits a
-  terminal `item_progress_changed` carrying `DownloadProgress(1, 1, 0)`
-  when the worker never reported real progress (the `or 1` fallback).
-  Pairs with the round-1 fix landed in PR #5; a deeper design pass on
-  whether the terminal tick should exist at all is worth doing.
-- **`single_instance.py:65`** — `_buffers` keyed by `id(connection)`.
-  Closure-local state would be cleaner: each connection's `readyRead`
-  and `disconnected` handlers already capture `connection` by closure,
-  so the buffer can live in the closure too.
-- **`MicButton.qml`** — Tried CodeRabbit's `required property var
-  voiceAgent` suggestion in PR #5 but reverted: it triggers
-  first-paint TypeErrors because internal `text:`/`enabled:` bindings
-  evaluate before the parent's `voiceAgent: voiceAgent` binding lands.
-  A correct fix needs lazy binding evaluation (wrap affected bindings
-  in `voiceAgent ? ... : null`, or move them under
+- **`MicButton.qml` — `required property var voiceAgent`.** Tried
+  CodeRabbit's suggestion in PR #5 but reverted: it triggers
+  first-paint TypeErrors because internal `text:`/`enabled:`
+  bindings evaluate before the parent's `voiceAgent: voiceAgent`
+  binding lands. A correct fix needs lazy binding evaluation (wrap
+  in `voiceAgent ? ... : null`, or move under
   `Component.onCompleted`) before declaring the property `required`.
-- **`tests/test_parallel_item_loader.py:354`** — Hoist loader
-  construction + shutdown into a pytest fixture so cleanup is
-  unconditional even if an assertion fails before `loader.shutdown()`.
+  Needs UI verification post-change.
+
+- **`voiceagent-compiletest.sh` programmatic stub.** PR #12 added
+  standalone qmllint of `MicButton.qml` / `ConversationPane.qml`,
+  but the in-script `voiceAgent` stub still drifts from the real
+  `MainWindow` slot/property surface. Generate the stub
+  programmatically from the real Q_PROPERTY surface to remove the
+  silent-drift risk entirely.
 
 ## Forward-looking refactors (not bugs)
 
@@ -143,16 +90,6 @@ not user-visible.
 - Add MainWindow-level integration tests covering: conversation
   ordering across STT→LLM→TTS, draft-to-final user-bubble promotion,
   and the "thinking is status, not bubble" invariant from AGENTS.md.
-- Normalize tests to use `QApplication` consistently. Test runs
-  currently emit a Qt warning about `QCoreApplication` vs
-  `QApplication` because some tests instantiate the bare core app
-  while others (or QML-touching code under test) need the full GUI
-  application. Pick one (`QApplication`, since QML/widgets are in
-  scope) and route every test through a shared fixture.
-- Add `ruff` to a `dev` extra in `pyproject.toml` if linting is part
-  of the project's expected workflow. (Several CodeRabbit nitpicks
-  reference Ruff rules that aren't being enforced locally because
-  ruff isn't in the venv.)
 
 ## Deferred from PR #7 round-2 review
 
@@ -206,17 +143,6 @@ surfaced these architectural items. Each is its own cycle.
   and an `is_available()` readiness check; a deeper pass should
   surface synthesis errors via a transient toast or status rather
   than silently logging.
-
-- **Test fixture normalization.** Existing pytest run emits a
-  `QApplication is not an instance of qapp_cls` warning because some
-  tests use bare `QCoreApplication` while others need
-  `QApplication`. Pick `QApplication` in `tests/conftest.py` and
-  route every test through a shared fixture.
-
-- **Add `ruff` to the dev extra in `pyproject.toml`.** Several
-  CodeRabbit nitpicks reference Ruff rules (BLE001, FBT001, FBT003)
-  that aren't enforced locally because ruff isn't in the venv.
-  Decide whether linting is part of the project workflow.
 
 - **KDE polish.** Migrate the session-setup grid to
   `Kirigami.FormLayout` (Kirigami's documented pattern for
