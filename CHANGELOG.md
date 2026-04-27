@@ -2,6 +2,33 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.6.4 — 2026-04-27
+
+**Cleanup-path correctness fix.** Single bug from the PR #11 review
+queue (P2, two rounds of evidence). No new surface, no behavior change
+on the happy path.
+
+### Fixed
+- **`ParallelItemLoader._cleanup_failed_download` no longer rmdirs the
+  shared model root** when its basename happens to match the item name
+  being installed. The 0.6.3 guard (`parent.name == name`) covered the
+  default flat-vs-nested layout split but failed when
+  `VOICEAGENT_TTS_MODEL_ROOT` / `VOICEAGENT_STT_MODEL_ROOT` was set to
+  a path whose basename collided with an item name (e.g.
+  `/srv/voices/en_US-ryan-high/` for item `en_US-ryan-high`). A failed
+  verification then deleted the entire root and the next
+  `voices.json` refresh failed inside `tempfile.mkstemp(dir=model_root)`
+  until a human recreated the directory by hand. The new guard also
+  requires `parent != backend.model_root`, read defensively via
+  `getattr` so the `_ItemBackend` protocol stays unchanged.
+
+### Tests
+- Three new regression tests in `tests/test_parallel_item_loader.py`:
+  the bug case (shared root with matching basename survives), the
+  Whisper-style nested layout (per-item subdir is still cleaned up),
+  and the Piper-style flat layout (no basename collision still
+  preserved). `pytest -q`: 139 passing (was 136).
+
 ## 0.6.3 — 2026-04-26
 
 **Infra hardening release.** Seven deferred items drained from the

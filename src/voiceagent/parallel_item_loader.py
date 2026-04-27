@@ -440,16 +440,24 @@ class ParallelItemLoader(QObject):
                     )
 
         # Best-effort rmdir on per-item nested directories that became
-        # empty after the artifact unlinks. The `parent.name == name`
-        # gate restricts this to layouts where each item lives in a
-        # dedicated subdirectory (e.g. Whisper's
-        # `<model_root>/<item_name>/`). Flat-layout backends like Piper
-        # store all voices directly under `<model_root>/` — the parent
-        # is the shared root and MUST NOT be removed (a downstream
-        # `tempfile.mkstemp(dir=model_root)` call in
-        # `_fetch_and_cache_voice_names` would silently fail and the
-        # voices.json refresh would stop working until the user
-        # recreated the dir by hand).
+        # empty after the artifact unlinks. Two guards must both hold:
+        #
+        # 1. `parent.name == name` — restricts rmdir to layouts where
+        #    each item lives in a dedicated subdirectory (Whisper's
+        #    `<model_root>/<item_name>/`).
+        # 2. `parent != backend_root` — the basename check alone is
+        #    not enough. If the configured `VOICEAGENT_TTS_MODEL_ROOT`
+        #    or `VOICEAGENT_STT_MODEL_ROOT` is a path whose basename
+        #    happens to equal the item being installed (e.g.
+        #    `/srv/voices/en_US-ryan-high/` for item `en_US-ryan-high`),
+        #    Piper's flat-layout artifacts live directly under that
+        #    root, so `parent.name == name` is satisfied AND `parent`
+        #    is the shared root. Without this second guard, a failed
+        #    verification deletes the entire model root and the next
+        #    `voices.json` refresh fails inside
+        #    `tempfile.mkstemp(dir=model_root)` until a human
+        #    recreates the dir.
+        backend_root = getattr(self._backend, "model_root", None)
         seen_parents: set[Path] = set()
         for path in paths:
             parent = path.parent
@@ -457,6 +465,8 @@ class ParallelItemLoader(QObject):
                 continue
             seen_parents.add(parent)
             if parent.name != name:
+                continue
+            if backend_root is not None and parent == backend_root:
                 continue
             try:
                 if parent.is_dir() and not any(parent.iterdir()):
