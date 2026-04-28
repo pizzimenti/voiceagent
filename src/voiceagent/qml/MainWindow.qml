@@ -57,6 +57,30 @@ Kirigami.ApplicationWindow {
     readonly property real pageContentMargin: root.compactMode ? Kirigami.Units.smallSpacing : (root.mediumMode ? Kirigami.Units.mediumSpacing : Kirigami.Units.largeSpacing)
     readonly property real pageContentSpacing: root.compactMode ? Kirigami.Units.smallSpacing : Kirigami.Units.largeSpacing
 
+    // Wheel handler with two scrolling modes, gated on the ListView's
+    // sticky-to-bottom state (see AGENTS.md "KDE/QML implementation
+    // memory" — sticky-state owner must not fight Flickable movement):
+    //
+    //   Mode A (direct, when stickToBottom or no state-machine present):
+    //     Direct `contentY` assignment with bounds clamp. Bypasses
+    //     Flickable.flick() so the sticky-bottom state machine never
+    //     sees movementStarted / movementEnded firings it would treat
+    //     as the user manually detaching from bottom.
+    //
+    //   Mode B (inertial, when user has scrolled up off the tail):
+    //     Convert wheel delta into a pixels-per-second velocity and
+    //     call `Flickable.flick(0, velocity)` for native momentum
+    //     scrolling. The existing onMovementEnded handler in
+    //     ConversationPane reattaches stickToBottom if the flick
+    //     lands at-or-near bottom (bottomEpsilon = 3 px), so
+    //     auto-restore falls out of the existing state machine.
+    //
+    // Velocity scale: pixelDelta path uses ~40 px/wheel-pixel, angleDelta
+    // path uses gridUnit*60 px/sec per 120-unit notch (one notch ≈ 18
+    // gridUnits at 1800 px/s² deceleration, comparable to one direct-
+    // assignment tick of gridUnit*12). Sign: Qt's positive yVelocity
+    // moves content toward the start (scrolls view up), matching the
+    // direct path's `contentY -= delta`.
     function scrollList(listView, wheel) {
         if (!listView) {
             return;
@@ -66,6 +90,17 @@ Kirigami.ApplicationWindow {
         const delta = pdy !== 0
             ? pdy * 8
             : (ady / 120) * Kirigami.Units.gridUnit * 12;
+        const useInertial = (listView.stickToBottom !== undefined)
+            ? !listView.stickToBottom
+            : !listView.atYEnd;
+        if (useInertial && delta !== 0) {
+            const velocity = pdy !== 0
+                ? pdy * 40
+                : (ady / 120) * Kirigami.Units.gridUnit * 60;
+            listView.flick(0, velocity);
+            wheel.accepted = true;
+            return;
+        }
         const minY = listView.originY || 0;
         const maxY = minY + Math.max(0, listView.contentHeight - listView.height);
         listView.contentY = Math.max(minY, Math.min(maxY, listView.contentY - delta));
