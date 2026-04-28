@@ -39,260 +39,19 @@ if str(_SRC) not in sys.path:
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QObject, Signal
+from PySide6.QtCore import QCoreApplication
 
+from tests.fakes import (
+    FakeChatClient,
+    FakePlayer,
+    FakeRecorder,
+    FakeTranscriber,
+    FakeTts,
+)
 from voiceagent.controller import VoiceController
 from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.models import AppState
 from voiceagent.tts_loader import TtsVoiceLoader
-
-
-# --- test doubles --------------------------------------------------------
-
-
-class _FakeRecorder:
-    """Minimal MicrophoneRecorder stand-in."""
-
-    def __init__(self) -> None:
-        self.sample_rate = 16000
-        self.is_recording = False
-
-    def start(self, *, segment_ready_callback=None) -> None:
-        self.is_recording = True
-
-    def stop(self, *, discard: bool = False) -> None:
-        self.is_recording = False
-
-    def take_pending_segment(self):
-        return None
-
-    def snapshot_active_segment(self):
-        return None
-
-    def force_finalize_active_segment(self, reason: str) -> bool:
-        return False
-
-    def suspend_input(self) -> None:
-        pass
-
-    def resume_input(self, warmup_seconds: float = 0.0, reason: str = "") -> None:
-        pass
-
-
-class _FakeChatClient:
-    """LmStudioClient stand-in covering the surface LlmController reads."""
-
-    def __init__(self) -> None:
-        self.base_url = ""
-        self.model = ""
-
-    def complete(self, text: str) -> str:
-        return ""
-
-    def set_base_url(self, url: str) -> None:
-        self.base_url = self.normalize_base_url(url)
-
-    def set_model(self, model: str) -> None:
-        self.model = model
-
-    @staticmethod
-    def normalize_base_url(value: str) -> str:
-        return (value or "").strip().rstrip("/")
-
-
-class _FakePlayer(QObject):
-    """AudioPlayer signal-shape stand-in."""
-
-    playback_started = Signal(str)
-    playback_finished = Signal(str)
-    playback_failed = Signal(str, str)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.played_paths: list[Path] = []
-
-    def stop(self) -> None:
-        pass
-
-    def play_file(self, path) -> bool:
-        self.played_paths.append(path)
-        return True
-
-    def set_muted(self, muted: bool) -> None:
-        self._muted = muted
-
-
-class _FakeTranscriber:
-    """`SpeechToTextBackend` stand-in covering both protocol surfaces:
-    the basic backend interface AND the WhisperTranscriber-specific
-    methods MainWindow's catalog adapter calls.
-    """
-
-    backend_name = "Fake-Whisper"
-    selection_label = "Model"
-    is_loaded = True
-
-    MODEL_REPOSITORIES: dict[str, str] = {
-        "tiny.en": "Systran/faster-whisper-tiny.en",
-        "base.en": "Systran/faster-whisper-base.en",
-    }
-
-    def __init__(self, model_root: Path, model_name: str = "tiny.en") -> None:
-        self.model_root = model_root
-        self.model_name = model_name
-        self._installed: set[str] = set()
-        self._custom_path: str | None = (
-            model_name if self._is_custom_path(model_name) else None
-        )
-
-    @classmethod
-    def _is_custom_path(cls, name: str | None) -> bool:
-        if not name:
-            return False
-        if name in cls.MODEL_REPOSITORIES:
-            return False
-        return "/" in name or name.startswith("~") or Path(name).is_absolute()
-
-    @classmethod
-    def available_model_names(cls) -> list[str]:
-        return list(cls.MODEL_REPOSITORIES.keys())
-
-    def available_items(self) -> list[str]:
-        names = self.available_model_names()
-        if self._custom_path:
-            names.append(self._custom_path)
-        return names
-
-    @property
-    def selected_item(self) -> str:
-        return self.model_name
-
-    @property
-    def is_available(self) -> bool:
-        return self.is_item_available(self.model_name)
-
-    def set_model_name(self, model_name: str) -> None:
-        if self.model_name == model_name:
-            return
-        self.model_name = model_name
-        self._custom_path = (
-            model_name if self._is_custom_path(model_name) else None
-        )
-
-    def set_selected_item(self, item_name: str) -> None:
-        self.set_model_name(item_name)
-
-    def is_item_available(self, name: str) -> bool:
-        return name in self._installed
-
-    def is_item_managed(self, name: str) -> bool:
-        return name in self.MODEL_REPOSITORIES
-
-    def is_item_downloadable(self, name: str) -> bool:
-        return self.is_item_managed(name)
-
-    def download_item(self, name: str, progress_callback=None) -> None:
-        self._installed.add(name)
-
-    def remove_item(self, name: str) -> None:
-        self._installed.discard(name)
-
-    def artifact_paths(self, name: str) -> list[Path]:
-        return []
-
-    def ensure_loaded(self) -> None:
-        pass
-
-    def transcribe(self, path: Path) -> str:
-        return ""
-
-
-class _FakeTts:
-    """`TextToSpeechBackend` stand-in covering the surface MainWindow
-    + TtsVoiceLoader expect.
-    """
-
-    backend_name = "Fake-Piper"
-    selection_label = "Voice"
-
-    def __init__(self, model_root: Path) -> None:
-        self.model_root = model_root
-        self.command = ["piper"]
-        self.model_path: str | None = None
-        self._installed: set[str] = set()
-        self._available_flag = False
-        # Counters for replay-path tests.
-        self.synthesize_calls: list[str] = []
-        # If set, synthesize raises with this exception.
-        self.synthesize_raises: Exception | None = None
-
-    # -- properties ----------------------------------------------------
-
-    @property
-    def enabled(self) -> bool:
-        return bool(self.command and self.model_path)
-
-    @property
-    def is_available(self) -> bool:
-        return self._available_flag
-
-    def set_available(self, value: bool) -> None:
-        self._available_flag = value
-
-    @property
-    def selected_item(self) -> str | None:
-        return self.model_path
-
-    def set_selected_item(self, item_name: str | None) -> None:
-        self.model_path = item_name
-
-    # -- catalog protocol ---------------------------------------------
-
-    def available_items(self) -> list[str]:
-        return sorted(self._installed)
-
-    def is_item_available(self, name: str) -> bool:
-        return name in self._installed
-
-    def is_item_managed(self, name: str) -> bool:
-        return True
-
-    def is_item_downloadable(self, name: str) -> bool:
-        return True
-
-    def download_item(self, name: str, progress_callback=None) -> None:
-        self._installed.add(name)
-
-    def remove_item(self, name: str) -> None:
-        self._installed.discard(name)
-
-    def artifact_paths(self, name: str) -> list[Path]:
-        return []
-
-    def refresh_catalog(self) -> list[str]:
-        return self.available_items()
-
-    def describe_selection_state(self) -> dict:
-        return {
-            "selected_model": self.model_path or "",
-            "available": self._available_flag,
-            "can_download": False,
-            "resolved_model_path": "",
-            "direct_candidate": "",
-            "local_candidate": "",
-            "onnx_candidate": "",
-            "json_candidate": "",
-        }
-
-    # -- synthesis ----------------------------------------------------
-
-    def synthesize(self, text: str, progress_callback=None) -> Path | None:
-        self.synthesize_calls.append(text)
-        if self.synthesize_raises is not None:
-            raise self.synthesize_raises
-        out = self.model_root / f"replay-{len(self.synthesize_calls)}.wav"
-        out.write_bytes(b"fake-wav")
-        return out
 
 
 # --- QML stub ------------------------------------------------------------
@@ -371,7 +130,7 @@ def main_window_factory(qtbot, monkeypatch, tmp_path):
     ) -> Any:
         from voiceagent.window import MainWindow  # imported AFTER monkeypatch
 
-        transcriber = _FakeTranscriber(
+        transcriber = FakeTranscriber(
             model_root=tmp_path, model_name=stt_model_name
         )
         # Pre-install requested models so `_sync_installed_selections`
@@ -382,14 +141,14 @@ def main_window_factory(qtbot, monkeypatch, tmp_path):
         for name in installed_stt:
             transcriber.download_item(name)
 
-        tts_service = _FakeTts(model_root=tmp_path)
+        tts_service = FakeTts(model_root=tmp_path)
 
         controller = VoiceController(
-            recorder=_FakeRecorder(),
+            recorder=FakeRecorder(),
             transcriber=transcriber,
-            chat_client=_FakeChatClient(),
+            chat_client=FakeChatClient(),
             tts_service=tts_service,
-            player=_FakePlayer(),
+            player=FakePlayer(),
         )
         model_loader = WhisperModelLoader(transcriber)
         tts_loader = TtsVoiceLoader(tts_service)
