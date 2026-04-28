@@ -352,7 +352,7 @@ Kirigami.ApplicationWindow {
                             onActivated: voiceAgent.selectSttModel(currentText)
                         }
 
-                        Item {
+                        MicButtonFrame {
                             id: mediumMicButtonFrame
                             visible: root.mediumMode
                             Layout.row: 0
@@ -362,61 +362,18 @@ Kirigami.ApplicationWindow {
                             Layout.fillHeight: true
                             Layout.minimumWidth: Kirigami.Units.gridUnit * 9
                             Layout.preferredWidth: Kirigami.Units.gridUnit * 10
-                            property real glowOpacity: root.micPulseActive ? 0.5 : 0.2
-                            property real glowScale: 1.0
-
-                            SequentialAnimation {
-                                running: root.micPulseActive
-                                loops: Animation.Infinite
-
-                                ParallelAnimation {
-                                    NumberAnimation {
-                                        target: mediumMicButtonFrame
-                                        property: "glowOpacity"
-                                        to: voiceAgent.voiceConnectionEnabled ? 1.0 : 0.78
-                                        duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
-                                        easing.type: Easing.InOutSine
-                                    }
-                                    NumberAnimation {
-                                        target: mediumMicButtonFrame
-                                        property: "glowScale"
-                                        to: 1.02
-                                        duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
-                                        easing.type: Easing.InOutSine
-                                    }
-                                }
-
-                                ParallelAnimation {
-                                    NumberAnimation {
-                                        target: mediumMicButtonFrame
-                                        property: "glowOpacity"
-                                        to: voiceAgent.voiceConnectionEnabled ? 0.45 : 0.35
-                                        duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
-                                        easing.type: Easing.InOutSine
-                                    }
-                                    NumberAnimation {
-                                        target: mediumMicButtonFrame
-                                        property: "glowScale"
-                                        to: 1.0
-                                        duration: voiceAgent.voiceConnectionEnabled ? 700 : 1200
-                                        easing.type: Easing.InOutSine
-                                    }
-                                }
-                            }
-
-                            MicButton {
-                                anchors.fill: parent
-                                anchors.margins: 0
-                                voiceAgent: root.voiceAgent
-                                iconSize: 34
-                                fontPixel: 11
-                                borderWidth: 3
-                                glowOpacity: mediumMicButtonFrame.glowOpacity
-                                glowScaleSource: mediumMicButtonFrame.glowScale
-                                buttonColor: root.micButtonColor
-                                pulseColor: root.micPulseColor
-                                pulseActive: root.micPulseActive
-                            }
+                            voiceAgent: root.voiceAgent
+                            iconSize: 34
+                            fontPixel: 11
+                            borderWidth: 3
+                            buttonColor: root.micButtonColor
+                            pulseColor: root.micPulseColor
+                            pulseActive: root.micPulseActive
+                            animatePulse: true
+                            // Initial glow values are overwritten by the
+                            // SequentialAnimation as soon as it starts.
+                            glowOpacity: root.micPulseActive ? 0.5 : 0.2
+                            glowScale: 1.0
                         }
 
                         Label {

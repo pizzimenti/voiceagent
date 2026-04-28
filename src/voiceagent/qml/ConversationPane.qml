@@ -317,7 +317,7 @@ Pane {
             }
         }
 
-        MicButton {
+        MicButtonFrame {
             visible: root.compactMode
             Layout.fillWidth: true
             Layout.preferredHeight: Kirigami.Units.gridUnit * 5
@@ -327,10 +327,11 @@ Pane {
             borderWidth: root.compactMode ? 3 : 0
             buttonColor: root.micButtonColor
             pulseColor: root.micPulseColor
-            // No surrounding animation frame in compact mode; pin
-            // glow inputs to a fixed, opaque-looking state.
+            // No animation in compact mode; the inner MicButton receives
+            // pinned, opaque-looking glow values directly.
+            animatePulse: false
             glowOpacity: 0.85
-            glowScaleSource: 1.0
+            glowScale: 1.0
             pulseActive: true
         }
     }
