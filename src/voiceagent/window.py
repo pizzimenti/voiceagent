@@ -23,6 +23,7 @@ from voiceagent.controller import VoiceController
 from voiceagent.conversation_model import ConversationModel
 from voiceagent.conversation_turn_coordinator import ConversationTurnCoordinator
 from voiceagent.downloaders import format_bytes, format_transfer_rate
+from voiceagent.i18n import TranslatorContext
 from voiceagent.logging_utils import log_ui_timing
 from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.models import AppState
@@ -184,6 +185,14 @@ class MainWindow(QObject):
         self._apply_theme_mode(self.settings.value("theme_mode", "auto", str) or "auto")
 
         self.engine = QQmlApplicationEngine()
+        # i18n context: PyKF6.KI18n.KLocalizedContext is not available
+        # in this venv (no PyKF6 module at all on the host), so wire a
+        # tiny identity-pass translator under the `i18nCtx` context
+        # property name. QML call sites use `i18nCtx.i18n("...")` and
+        # the format-string shape `i18nCtx.i18n("Sent %1").arg(value)`,
+        # which is swappable for a real KLocalizedContext later.
+        self._translator = TranslatorContext(self)
+        self.engine.rootContext().setContextProperty("i18nCtx", self._translator)
         self.engine.setInitialProperties({"voiceAgent": self})
         qml_path = Path(__file__).with_name("qml") / "MainWindow.qml"
         self.engine.load(QUrl.fromLocalFile(str(qml_path)))

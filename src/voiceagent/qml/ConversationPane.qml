@@ -37,7 +37,7 @@ Pane {
 
             Kirigami.Heading {
                 visible: !root.compactMode
-                text: "Conversation"
+                text: i18nCtx.i18n("Conversation")
                 level: 2
             }
 
@@ -45,25 +45,15 @@ Pane {
                 Layout.fillWidth: true
             }
 
-            ToolButton {
-                visible: !root.compactMode
-                icon.name: (conversationPane.voiceAgent && conversationPane.voiceAgent.logVerboseMode)
-                    ? "view-visible-symbolic"
-                    : "view-hidden-symbolic"
-                ToolTip.visible: hovered
-                ToolTip.text: (conversationPane.voiceAgent && conversationPane.voiceAgent.logVerboseMode)
-                    ? "Hide pipeline activity in log"
-                    : "Show pipeline activity in log (new entries only)"
-                onClicked: {
-                    if (conversationPane.voiceAgent) {
-                        conversationPane.voiceAgent.setLogVerboseMode(!conversationPane.voiceAgent.logVerboseMode);
-                    }
-                }
-            }
+            // The verbose-log toggle that previously sat here became
+            // `verboseLogAction` on the page header in MainWindow.qml
+            // (Kirigami.Action conversion). Keeping all stateful page
+            // affordances on one command surface reads more naturally
+            // than scattering them across pane headers.
 
             Label {
                 visible: !root.compactMode
-                text: (conversationPane.voiceAgent && conversationPane.voiceAgent.voiceConnectionEnabled) ? "Live" : "Idle"
+                text: (conversationPane.voiceAgent && conversationPane.voiceAgent.voiceConnectionEnabled) ? i18nCtx.i18n("Live") : i18nCtx.i18n("Idle")
                 color: Kirigami.Theme.disabledTextColor
             }
         }
@@ -237,7 +227,7 @@ Pane {
 
                             Label {
                                 visible: !root.compactMode
-                                text: assistant ? "Assistant" : "You"
+                                text: assistant ? i18nCtx.i18n("Assistant") : i18nCtx.i18n("You")
                                 color: bubbleTextColor
                                 opacity: 0.8
                                 font.pixelSize: 12
@@ -265,7 +255,7 @@ Pane {
 
                     Button {
                         visible: !root.compactMode && model.replayable
-                        text: "Replay"
+                        text: i18nCtx.i18n("Replay")
                         Layout.alignment: Qt.AlignBottom
                         onClicked: {
                             if (conversationPane.voiceAgent) {
@@ -279,7 +269,7 @@ Pane {
                 footer: Kirigami.PlaceholderMessage {
                     width: conversationView.width
                     visible: conversationView.count === 0
-                    text: "Spoken turns will appear here once voice mode is active."
+                    text: i18nCtx.i18n("Spoken turns will appear here once voice mode is active.")
                 }
             }
 
@@ -298,7 +288,7 @@ Pane {
                 opacity: 0.85
                 z: 10
                 ToolTip.visible: hovered
-                ToolTip.text: "Scroll to bottom"
+                ToolTip.text: i18nCtx.i18n("Scroll to bottom")
                 onClicked: {
                     conversationView.scrollToBottom();
                 }
