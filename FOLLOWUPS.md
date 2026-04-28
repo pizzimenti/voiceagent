@@ -91,12 +91,6 @@ them up.
 Lower-priority code-organization improvements — not load-bearing,
 not user-visible.
 
-- Extract a reusable `qml/CatalogList.qml` to replace the duplicated
-  STT/TTS catalog ListView delegates inside the Model Manager.
-- Extract the repeated pulsing mic frame (`Item { id: ...MicButtonFrame }`
-  with its `SequentialAnimation`) into a sibling component alongside
-  `MicButton.qml`. Currently the frame still lives inline at each
-  callsite.
 - Add MainWindow-level integration tests covering: conversation
   ordering across STT→LLM→TTS, draft-to-final user-bubble promotion,
   and the "thinking is status, not bubble" invariant from AGENTS.md.
@@ -129,19 +123,12 @@ surfaced these architectural items. Each is its own cycle.
   remove the risk of the next caller re-introducing the same
   duplicate-append regression we just fixed.
 
-- **Extract QML components.** `MainWindow.qml` is ~800 lines and
-  `window.py` is ~860 lines. Pull `CatalogList.qml` (replaces the
-  duplicated STT/TTS catalog ListViews), `SessionSetupPane.qml`,
-  `MicButtonFrame.qml` (the inline pulsing-frame Item), and consider
-  a Kirigami dialog/page for model management. Kirigami's
-  `FormLayout` is the documented pattern for the settings/control
-  groups inside `sessionSetupGrid`.
-
-- **Tighten QML component dependencies.** `MicButton.qml` and
-  `ConversationPane.qml` rely on ambient `voiceAgent` and
-  `ApplicationWindow.window`. Pass them as `required property` so
-  the components are testable in isolation (and the compiletest stub
-  doesn't have to be kept in sync separately).
+- **Kirigami dialog/page for model management.** Today the Model
+  Manager is an inline `Window` inside `MainWindow.qml`. Kirigami's
+  dialog/page conventions would integrate better with the rest of
+  the QML tree. Kirigami's `FormLayout` is also the documented
+  pattern for the settings/control groups inside
+  `SessionSetupPane.qml`'s `sessionSetupGrid`.
 
 - **MainWindow-level integration tests.** Cover simple-vs-verbose
   transcript content per mode, draft-to-final user-bubble ordering

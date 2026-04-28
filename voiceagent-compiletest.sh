@@ -59,7 +59,8 @@ qmllint \
   "${ROOT_DIR}/src/voiceagent/qml/MicButton.qml" \
   "${ROOT_DIR}/src/voiceagent/qml/MicButtonFrame.qml" \
   "${ROOT_DIR}/src/voiceagent/qml/CatalogList.qml" \
-  "${ROOT_DIR}/src/voiceagent/qml/ConversationPane.qml"
+  "${ROOT_DIR}/src/voiceagent/qml/ConversationPane.qml" \
+  "${ROOT_DIR}/src/voiceagent/qml/SessionSetupPane.qml"
 
 # Compile-load the real MainWindow against the real
 # QQmlApplicationEngine. tests.fakes.build_compiletest_window wires
