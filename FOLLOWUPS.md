@@ -27,14 +27,6 @@ extraction all landed in PRs #16-#21.
   `Kirigami.PassiveNotification` toast (~3s auto-dismiss) rather than
   silently logging.
 
-- **True inertial scrolling.** `MainWindow.qml scrollList()` does
-  direct `contentY` assignment with bounds-checking. Implement a
-  mode-switch: when sticky-pinned to bottom, keep the existing
-  direct-assignment scroll; when the user has scrolled up, switch to
-  native `Flickable.flick()` for inertial behavior. Auto-restore
-  sticky-bottom when the user scrolls back to bottom. Per AGENTS.md,
-  this design keeps the two modes from fighting.
-
 ## Future feature work (lower priority)
 
 - **Kirigami dialog/page for model management.** The Model Manager is
