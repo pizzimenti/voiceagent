@@ -186,17 +186,29 @@ Kirigami.ApplicationWindow {
     }
 
     // Cycle 9: replay-failure toast. MainWindow.replayMessage(int) emits
-    // `replayFailed(QString reason)` when synthesis raises or the voice
+    // `replay_failed(QString reason)` when synthesis raises or the voice
     // is not yet `is_available`. Surface the reason via Kirigami's
     // standard passive notification (`"short"` ≈ 4s auto-dismiss) so a
     // failed replay click is visible without persisting in chrome.
     // The Python side already wraps static reasons via i18nCtx and
     // leaves dynamic exception text in English; we display the payload
     // as-is.
-    Connections {
-        target: voiceAgent
-        function onReplayFailed(reason) {
-            root.showPassiveNotification(reason, "short");
+    //
+    // Wiring uses `Component.onCompleted: signal.connect(handler)` rather
+    // than a `Connections { function onReplayFailed(...) }` block. The
+    // Python signal is `replay_failed` (snake_case, per the rest of the
+    // window.py surface), and Qt's QML Connections signal-handler name
+    // resolution does NOT auto-camelCase a snake_case Python signal name
+    // at runtime — `onReplayFailed` would silently never fire (and the
+    // QML parser warns "no signal of the target matches the name"). The
+    // direct `signal.connect(fn)` form binds at runtime regardless of
+    // the Python casing convention. The QA-automation suite's
+    // `tests/test_replay_toast.py` locks this in.
+    Component.onCompleted: {
+        if (voiceAgent && voiceAgent.replay_failed) {
+            voiceAgent.replay_failed.connect(function(reason) {
+                root.showPassiveNotification(reason, "short");
+            });
         }
     }
 

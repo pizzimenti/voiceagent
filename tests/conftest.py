@@ -4,6 +4,25 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Ensure the Kirigami / QtQuick.Controls QML modules are findable from
+# any test that loads real QML (e.g., `tests/test_replay_toast.py`).
+# `voiceagent-compiletest.sh` and `voiceagent-qatest.sh` set this from
+# the shell; conftest mirrors that for direct `pytest` invocations
+# (e.g., a developer running a single test file).
+def _ensure_qml_import_path() -> None:
+    candidates = ["/usr/lib/qt6/qml", "/usr/lib/qt/qml"]
+    extra = [c for c in candidates if Path(c).is_dir()]
+    if not extra:
+        return
+    for env_name in ("QML_IMPORT_PATH", "QML2_IMPORT_PATH"):
+        existing = os.environ.get(env_name, "")
+        existing_parts = existing.split(":") if existing else []
+        merged = extra + [p for p in existing_parts if p and p not in extra]
+        os.environ[env_name] = ":".join(merged)
+
+
+_ensure_qml_import_path()
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC = PROJECT_ROOT / "src"
 if str(SRC) not in sys.path:
