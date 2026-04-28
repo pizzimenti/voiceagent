@@ -68,7 +68,7 @@ Pane {
             RowLayout {
                 id: sessionSetupRow
                 width: parent.width
-                spacing: Kirigami.Units.mediumSpacing
+                spacing: Kirigami.Units.largeSpacing
 
                 Kirigami.FormLayout {
                     id: sessionSetupForm
@@ -80,7 +80,7 @@ Pane {
 
                     ComboBox {
                         id: sttSelector
-                        Kirigami.FormData.label: i18nCtx.i18n("Speech:") + " " + (sessionPane.voiceAgent ? sessionPane.voiceAgent.modelStatus : "")
+                        Kirigami.FormData.label: i18nCtx.i18n("Speech:")
                         Layout.fillWidth: true
                         Layout.minimumWidth: 0
                         Layout.preferredWidth: Kirigami.Units.gridUnit * 14
@@ -98,7 +98,7 @@ Pane {
 
                     ComboBox {
                         id: ttsSelector
-                        Kirigami.FormData.label: i18nCtx.i18n("Voice:") + " " + (sessionPane.voiceAgent ? sessionPane.voiceAgent.ttsStatus : "")
+                        Kirigami.FormData.label: i18nCtx.i18n("Voice:")
                         Layout.fillWidth: true
                         Layout.minimumWidth: 0
                         Layout.preferredWidth: Kirigami.Units.gridUnit * 14
