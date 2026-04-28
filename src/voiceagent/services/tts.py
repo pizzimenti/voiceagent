@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import urllib.request
 import wave
 
-from huggingface_hub import hf_hub_url
+from huggingface_hub import HfApi, hf_hub_url
 from piper import PiperVoice
 
 from voiceagent.backends import TextToSpeechBackend
@@ -25,6 +25,19 @@ class PiperTtsService(TextToSpeechBackend):
     backend_name = "Piper"
     selection_label = "Voice"
     VOICE_REPOSITORY = "rhasspy/piper-voices"
+    # `main`-anchored URL is used by the eager catalog-refresh path
+    # (`refresh_remote_catalog` / `_fetch_and_cache_voice_names`). The
+    # catalog wants the latest list of voices the user could browse to,
+    # so resolving against `main` is correct there.
+    #
+    # The download-verification path (`artifact_manifest`) does NOT use
+    # this constant — it pins to the upstream commit SHA captured at
+    # download start (see `_voices_json_url_for_sha`,
+    # `_current_download_sha`) so layer 2 (size) and layer 3 (md5)
+    # compare the on-disk bytes against the manifest entry that
+    # describes those exact bytes. Closes the TOCTOU window where
+    # upstream republished a voice between aria2 fetching it and the
+    # verifier reading the manifest.
     VOICES_JSON_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/voices.json?download=true"
 
     def __init__(self, command: list[str], model_path: str | None, extra_args: list[str] | None = None) -> None:
@@ -50,6 +63,24 @@ class PiperTtsService(TextToSpeechBackend):
         # event.
         self._known_voice_names_cache: set[str] | None = None
         self._known_voice_names_lock = threading.Lock()
+        # SHA of `rhasspy/piper-voices` captured at the start of
+        # `_download_voice` and consumed by `artifact_manifest` during
+        # the post-download verification pass. Both pin to the same
+        # upstream commit so layers 2/3 compare the downloaded bytes
+        # against the manifest entry that describes those exact bytes.
+        # `None` outside an active download — `artifact_manifest`
+        # skips layers 2/3 (returns empty) when unset rather than
+        # falling back to `main`, which would re-open the TOCTOU
+        # window this is closing.
+        #
+        # Single-shot scalar rather than a `_DownloadContext`
+        # dataclass: `_download_voice` and `artifact_manifest` are
+        # called sequentially on the same loader worker thread (see
+        # `ParallelItemLoader._download_worker`), so a per-instance
+        # field is the simplest plumbing that preserves the
+        # invariant without threading the SHA through three method
+        # signatures.
+        self._current_download_sha: str | None = None
 
     @property
     def enabled(self) -> bool:
@@ -273,81 +304,67 @@ class PiperTtsService(TextToSpeechBackend):
     def artifact_manifest(
         self, item_name: str
     ) -> dict[Path, ArtifactManifestEntry]:
-        """Per-file size + md5 from a fresh upstream `voices.json`.
+        """Per-file size + md5 from upstream `voices.json` at the pinned SHA.
 
         Read by `ParallelItemLoader._verify_download` for layers 2
-        (size) and 3 (checksum). The on-disk `voices.json` cache is
-        refreshed from upstream before being read, because Piper
-        layers 2/3 fail closed: if upstream republishes a voice with
-        a new size/md5 between our last refresh and the user's
-        install, a stale cache could reject a healthy download.
+        (size) and 3 (checksum). Fetches `voices.json` from
+        `rhasspy/piper-voices` at the commit SHA captured by
+        `_download_voice` at download start (`_current_download_sha`).
+        Both the file bytes on disk and the manifest entry that
+        describes them resolve against the same commit, so an
+        upstream republish during the download window cannot make
+        layers 2/3 fail-close on a healthy install.
 
-        On refresh failure (network outage, HF 5xx, etc.) we return
-        an empty manifest rather than fall back to the cached file —
-        a stale cache is the exact production-regression risk we are
-        avoiding here. Layer 1 (sidecar) and Piper's layer 4
-        (smoke-load) are still authoritative; the verifier degrades
-        to those.
+        **No SHA available** — `_current_download_sha` is `None`
+        outside an active download. We log and return an empty
+        manifest (verifier degrades to layer 1 + 4) rather than
+        falling back to `main`, which would re-open the TOCTOU
+        window this method exists to close. In practice the verifier
+        is only invoked from `_download_worker` immediately after
+        `_download_voice` sets the SHA, so this branch only fires
+        from defensive callers / tests.
+
+        **Network failure during the SHA-pinned fetch** — same
+        contract: empty manifest, warning log, layers 1 + 4 are
+        still authoritative.
 
         voices.json is the upstream `rhasspy/piper-voices` manifest;
         each voice entry's `files` map keys are repo-relative paths
-        (`ar/ar_JO/kareem/low/ar_JO-kareem-low.onnx`) but the values
+        (`ar/ar_JO/kareem/low/ar_JO-kareem-low.onnx`) and the values
         carry `size_bytes` and `md5_digest` per file. We map
         manifest entries onto local artifact paths by basename.
-
-        **Known TOCTOU window** — both `_download_voice` and the
-        refresh below resolve against the `main` branch of
-        `rhasspy/piper-voices`. If upstream pushes an update in the
-        few-second window between aria2 fetching the file bytes and
-        this method fetching the manifest, the size/md5 in the new
-        manifest won't match the bytes on disk and `_verify_download`
-        will fail-close on a healthy install. Layer 4 (smoke-load)
-        catches *real* corruption, so the user can retry and
-        succeed; this is a self-healing false-positive, not data
-        loss. Proper fix is to pin both download and manifest to
-        the same commit SHA — tracked in FOLLOWUPS as a future
-        cycle (the change cuts across `_voice_remote_prefix`,
-        `download_voice`, and this method).
         """
         from voiceagent.parallel_item_loader import ArtifactManifestEntry
 
-        # Refresh upstream → on-disk cache. The classmethod returns
-        # the union of voice names on success and an empty set on
-        # any failure (timeout, 5xx, JSON parse error, etc.).
-        # `_fetch_and_cache_voice_names` rewrites `voices.json`
-        # atomically on success, so a successful refresh guarantees
-        # the cache we read below is current.
+        sha = self._current_download_sha
+        if not sha:
+            self._logger.warning(
+                "Piper artifact_manifest called without a pinned SHA; "
+                "skipping layers 2/3 (layers 1 + 4 still apply). This "
+                "should only happen outside of an active download — "
+                "the production verifier path always sets the SHA."
+            )
+            return {}
+
         try:
-            voice_names = type(self)._fetch_and_cache_voice_names(self.model_root)
+            payload = type(self)._fetch_voices_json_at_sha(sha)
         except Exception:
             self._logger.warning(
-                "Piper voices.json refresh raised during verification; "
-                "skipping layers 2/3 (layers 1 + 4 still apply)",
+                "Piper voices.json SHA-pinned fetch raised during "
+                "verification (sha=%s); skipping layers 2/3 (layers "
+                "1 + 4 still apply)",
+                sha,
                 exc_info=True,
             )
             return {}
 
-        if not voice_names:
+        if not payload:
             self._logger.warning(
-                "Piper voices.json refresh returned empty during "
-                "verification (network failure or empty upstream); "
-                "skipping layers 2/3 to avoid fail-closing against "
-                "stale cache (layers 1 + 4 still apply)"
-            )
-            return {}
-
-        # Re-read the freshly-written cache to get full per-file
-        # metadata (the classmethod only returns the set of names).
-        cache_path = self.model_root / "voices.json"
-        try:
-            import json
-
-            payload = json.loads(cache_path.read_text(encoding="utf-8"))
-        except Exception:
-            self._logger.warning(
-                "Piper voices.json read-after-refresh failed; skipping "
-                "layers 2/3",
-                exc_info=True,
+                "Piper voices.json SHA-pinned fetch returned empty "
+                "during verification (sha=%s, network failure or "
+                "malformed JSON); skipping layers 2/3 (layers 1 + 4 "
+                "still apply)",
+                sha,
             )
             return {}
 
@@ -441,30 +458,88 @@ class PiperTtsService(TextToSpeechBackend):
         if onnx_path.exists() and json_path.exists():
             return
 
-        remote_prefix = self._voice_remote_prefix(voice_name)
-        onnx_url = hf_hub_url(self.VOICE_REPOSITORY, filename=f"{remote_prefix}.onnx")
-        json_url = hf_hub_url(self.VOICE_REPOSITORY, filename=f"{remote_prefix}.onnx.json")
-        self._logger.info("Downloading Piper voice voice=%s model_root=%s", voice_name, self.model_root)
-        files = [
-            DownloadFile(
-                url=onnx_url,
-                destination=onnx_path,
-                size_bytes=self.downloader.get_remote_size(onnx_url),
-            ),
-            DownloadFile(
-                url=json_url,
-                destination=json_path,
-                size_bytes=self.downloader.get_remote_size(json_url),
-            ),
-        ]
-        callback = progress_callback or (lambda progress: None)
-        callback(DownloadProgress(completed_bytes=0, total_bytes=sum(file.size_bytes for file in files), download_speed_bytes_per_second=0))
-        self.downloader.download(files, progress_callback=callback)
-        self._logger.info("Piper voice download completed voice=%s model_root=%s", voice_name, self.model_root)
-        # New on-disk voice — invalidate so subsequent `is_item_managed`
-        # reads pick up the new entry without waiting for a catalog
-        # refresh.
-        self.invalidate_known_voice_names_cache()
+        # Pin upstream commit SHA. Both the file fetch below and the
+        # `artifact_manifest` refresh that follows in
+        # `_verify_download` resolve against this exact revision, so a
+        # mid-download republish upstream cannot make layer 2/3 reject
+        # a healthy download. Fail-closed on capture failure: pinning
+        # is the whole point, falling back to `main` would re-open the
+        # TOCTOU window. The existing download-error UI surfaces the
+        # raise to the user the same as any network failure.
+        sha = self._capture_repo_sha()
+        self._current_download_sha = sha
+        try:
+            remote_prefix = self._voice_remote_prefix(voice_name)
+            onnx_url = hf_hub_url(
+                self.VOICE_REPOSITORY,
+                filename=f"{remote_prefix}.onnx",
+                revision=sha,
+            )
+            json_url = hf_hub_url(
+                self.VOICE_REPOSITORY,
+                filename=f"{remote_prefix}.onnx.json",
+                revision=sha,
+            )
+            self._logger.info(
+                "Downloading Piper voice voice=%s model_root=%s sha=%s",
+                voice_name,
+                self.model_root,
+                sha,
+            )
+            files = [
+                DownloadFile(
+                    url=onnx_url,
+                    destination=onnx_path,
+                    size_bytes=self.downloader.get_remote_size(onnx_url),
+                ),
+                DownloadFile(
+                    url=json_url,
+                    destination=json_path,
+                    size_bytes=self.downloader.get_remote_size(json_url),
+                ),
+            ]
+            callback = progress_callback or (lambda progress: None)
+            callback(DownloadProgress(completed_bytes=0, total_bytes=sum(file.size_bytes for file in files), download_speed_bytes_per_second=0))
+            self.downloader.download(files, progress_callback=callback)
+            self._logger.info(
+                "Piper voice download completed voice=%s model_root=%s sha=%s",
+                voice_name,
+                self.model_root,
+                sha,
+            )
+            # New on-disk voice — invalidate so subsequent `is_item_managed`
+            # reads pick up the new entry without waiting for a catalog
+            # refresh.
+            self.invalidate_known_voice_names_cache()
+        except Exception:
+            # On any download failure, clear the SHA so a stale value
+            # cannot leak into a follow-up `artifact_manifest` call
+            # from an unrelated codepath. The verifier won't run on a
+            # failed download (the worker emits `load_failed` and
+            # returns), but defense-in-depth.
+            self._current_download_sha = None
+            raise
+
+    def _capture_repo_sha(self) -> str:
+        """Resolve the current commit SHA of `rhasspy/piper-voices`.
+
+        Used at download-start to pin every URL constructed during
+        the install (file fetches AND the verifier's manifest
+        refetch) to the same revision. Fails-closed: any error
+        (network blip, HF 5xx, malformed response, missing `sha`
+        attribute) raises so the download never proceeds against an
+        unpinned `main` — the whole point of pinning is consistency.
+        """
+        api = HfApi()
+        info = api.repo_info(self.VOICE_REPOSITORY)
+        sha = getattr(info, "sha", None)
+        if not isinstance(sha, str) or not sha:
+            raise RuntimeError(
+                f"Could not capture upstream commit SHA for "
+                f"{self.VOICE_REPOSITORY}; refusing to download "
+                f"against an unpinned revision"
+            )
+        return sha
 
     def _missing_model_message(self) -> str:
         assert self.model_path is not None
@@ -492,6 +567,50 @@ class PiperTtsService(TextToSpeechBackend):
             return set(json.loads(cache_path.read_text(encoding="utf-8")).keys())
         except Exception:
             return set()
+
+    @classmethod
+    def _voices_json_url_for_sha(cls, sha: str) -> str:
+        """Construct the SHA-pinned `voices.json` URL.
+
+        Used by the download-verification path so the manifest read
+        for layers 2/3 resolves against the same commit as the file
+        bytes captured by `_download_voice`. The catalog-refresh
+        path uses `VOICES_JSON_URL` (resolves against `main`)
+        because it wants the latest set of browsable voices.
+        """
+        return (
+            f"https://huggingface.co/{cls.VOICE_REPOSITORY}/resolve/"
+            f"{sha}/voices.json?download=true"
+        )
+
+    @classmethod
+    def _fetch_voices_json_at_sha(cls, sha: str) -> dict | None:
+        """Fetch `voices.json` from upstream pinned to `sha`.
+
+        Returns the parsed top-level dict on success, `None` on any
+        failure (network, JSON parse, non-dict payload). Does NOT
+        write to the on-disk `voices.json` cache — that cache is
+        anchored to `main` for the eager catalog path, and writing
+        a SHA-pinned snapshot over it could rewind the user's view
+        of the catalog if upstream had advanced past `sha`.
+        """
+        url = cls._voices_json_url_for_sha(sha)
+        try:
+            with urllib.request.urlopen(url, timeout=5) as response:
+                payload = response.read().decode("utf-8")
+        except Exception:
+            return None
+
+        try:
+            import json
+
+            parsed = json.loads(payload)
+        except Exception:
+            return None
+
+        if not isinstance(parsed, dict):
+            return None
+        return parsed
 
     @classmethod
     def _fetch_and_cache_voice_names(cls, model_root: Path) -> set[str]:
