@@ -22,10 +22,8 @@ extraction all landed in PRs #16-#21.
 
 ## Pending cycles
 
-- **`replayMessage` failure UX.** Round-2 added a try/except and an
-  `is_available()` readiness check; surface synthesis errors via a
-  `Kirigami.PassiveNotification` toast (~3s auto-dismiss) rather than
-  silently logging.
+(none — both Cycle 9 items shipped: inertial wheel-scroll mode-switch
+in PR #23, `replayMessage` failure-toast in this PR.)
 
 ## Future feature work (lower priority)
 

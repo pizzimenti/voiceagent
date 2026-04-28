@@ -185,6 +185,21 @@ Kirigami.ApplicationWindow {
         onTriggered: voiceAgent.setLogVerboseMode(!voiceAgent.logVerboseMode)
     }
 
+    // Cycle 9: replay-failure toast. MainWindow.replayMessage(int) emits
+    // `replayFailed(QString reason)` when synthesis raises or the voice
+    // is not yet `is_available`. Surface the reason via Kirigami's
+    // standard passive notification (`"short"` ≈ 4s auto-dismiss) so a
+    // failed replay click is visible without persisting in chrome.
+    // The Python side already wraps static reasons via i18nCtx and
+    // leaves dynamic exception text in English; we display the payload
+    // as-is.
+    Connections {
+        target: voiceAgent
+        function onReplayFailed(reason) {
+            root.showPassiveNotification(reason, "short");
+        }
+    }
+
     Window {
         id: modelManagerWindow
 

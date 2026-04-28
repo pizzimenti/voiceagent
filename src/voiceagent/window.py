@@ -69,6 +69,17 @@ class MainWindow(QObject):
     ui_changed = Signal()
     progress_changed = Signal()
     conversation_changed = Signal()
+    # Fires when `replayMessage` cannot produce audio (synthesis raised
+    # or the selected TTS voice is not yet `is_available`). QML wires
+    # this to `Kirigami.ApplicationWindow.showPassiveNotification(...)`
+    # so the user gets a transient toast instead of a silent failure.
+    # The string payload is the human-readable reason. Exception-derived
+    # text is left in English source (exception messages aren't
+    # translatable). Static readiness reasons are wrapped through the
+    # `i18nCtx.i18n(...)` shim Python-side via `self._translator` so all
+    # translatable copy lives behind the same shim, swappable for a
+    # real `KLocalizedContext` later.
+    replay_failed = Signal(str)
 
     def __init__(
         self,
@@ -588,6 +599,13 @@ class MainWindow(QObject):
         # command + path). Without it, replay can call into a
         # half-installed voice and raise into the QML binding.
         if not self.tts_loader.tts_service.is_available:
+            # Cycle 9: surface a transient toast so the click isn't
+            # silent. Keep the log too — the toast doesn't replace it.
+            reason = self._translator.i18n(
+                "Replay unavailable: the selected voice is not ready."
+            )
+            self._logger.info("Replay skipped: TTS not available")
+            self.replay_failed.emit(reason)
             return
         try:
             audio_path = self.tts_loader.tts_service.synthesize(text)
@@ -596,7 +614,12 @@ class MainWindow(QObject):
             # Replay failures are unrelated to any active draft turn;
             # don't let the error surface tear down a user bubble the
             # user is currently dictating.
-            self._set_error_message(f"Replay failed: {exc}", discard_draft=False)
+            message = f"Replay failed: {exc}"
+            self._set_error_message(message, discard_draft=False)
+            # Also surface the failure as a transient toast. The error
+            # banner persists; the toast catches the user's attention
+            # at the moment of the click without occupying chrome.
+            self.replay_failed.emit(message)
             return
         if audio_path is not None:
             self.replay_player.play_file(audio_path)
