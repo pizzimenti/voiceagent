@@ -1,7 +1,7 @@
 # Maintainer: Bradley <bradley@gennakersystems.com>
 
 pkgname=voiceagent
-pkgver=0.8.0
+pkgver=0.8.1
 pkgrel=1
 pkgdesc='Push-to-talk KDE-friendly desktop voice assistant'
 arch=('x86_64')

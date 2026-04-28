@@ -24,6 +24,33 @@ former `ConversationLogController` design), three new QML components
 (FormLayout / i18n / Kirigami.Action), inertial wheel-scroll mode-
 switch, and replay-failure toast.
 
+## QA infrastructure
+
+- **v0.8.1 (2026-04-28) — QA automation infrastructure shipped.**
+  `voiceagent-qatest.sh` runs the headless QML/UI suite (Quick Tests
+  via `tests/qml/` + pytest-qt interaction tests). The user's manual
+  smoke test reduces to the subjective items below.
+
+### User smoke required (subjective only)
+
+These behaviors don't have automation analogues — they're
+visual/animation feel calls:
+
+- **Mic-button pulse breathing tempo** — the SequentialAnimation
+  pulse has the right rate and amplitude. Automation can verify the
+  animation runs; humans must judge whether it feels right.
+- **Compact-vs-medium layout shaping** — does the form-stack
+  collapse at the responsive breakpoint feel natural, do controls
+  have enough breathing room, does no widget visually clip at the
+  smallest supported width.
+- **Conversation-pane visual rhythm** — bubble spacing, font
+  weights, color contrast for the assistant-vs-user distinction
+  under both light and dark themes.
+
+Everything else the v0.8.0 smoke checklist covered (form labels,
+header actions, scroll mode behavior, replay-failure toast firing)
+is now in the automated suite.
+
 ## Future feature work (lower priority)
 
 - **Kirigami dialog/page for model management.** The Model Manager is

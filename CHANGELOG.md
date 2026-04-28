@@ -2,6 +2,83 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.8.1 — 2026-04-28
+
+**QA automation infrastructure.** Adds a headless QML/UI verification
+suite that closes the gap left by the v0.8.0 fast-path subagent
+workflow (where visual / interaction sanity was deferred to a manual
+post-merge smoke test). Patch bump: pure test tooling, no user-facing
+capability change. Per the project's version-bump policy, capability
+additions are minor; this is purely test infrastructure.
+
+The suite uncovered one real bug in the v0.8.0 release that the
+manual smoke test had been missing — see "Fixed" below.
+
+### Added
+
+- **`tests/qml/`** — Qt Quick Test (qmltestrunner) suite. Three
+  `tst_*.qml` files covering form-layout shape, page-header
+  actions, and the inertial wheel-scroll branching:
+  - `tst_session_setup_pane.qml` — verifies `SessionSetupPane.qml`
+    is a `Kirigami.FormLayout` (not the pre-PR-#22 GridLayout),
+    that each row carries the expected `Kirigami.FormData.label`,
+    and that `wideMode` flips correctly when `compactMode`
+    toggles.
+  - `tst_main_window.qml` — structural sanity: page-header
+    actions exist and the verbose-log toggle is reachable.
+  - `tst_scroll_mode.qml` — locks in PR #23's two-mode scroll
+    branching (direct `contentY` assignment when `stickToBottom`,
+    `flick(0, velocity)` when detached) against a mock
+    listView.
+- **`tests/qml/qmltest_main.py`** — Python driver that calls
+  `QtQuickTest.QUICK_TEST_MAIN_WITH_SETUP` with a setup object
+  that registers the `i18nCtx` translator on the test engine
+  before any `tst_*.qml` parses, mirroring the production wiring
+  in `MainWindow.__init__`. Without this, every `tst_*.qml`
+  loading a production QML file would fail with
+  `ReferenceError: i18nCtx is not defined`.
+- **`tests/qml/StubVoiceAgent.qml`** — minimal QML stub of
+  the `voiceAgent` surface for components that bind to it. Drift
+  between this stub and the real `MainWindow` class is caught by
+  `voiceagent-compiletest.sh` (which runs the *real* MainWindow
+  against the *real* engine), so the stub stays small and
+  test-scope-only.
+- **`tests/test_replay_toast.py`** — pytest verification of PR
+  #24's QML-side replay-failure toast wiring. Connects the
+  Python `replay_failed` emit through the real
+  `Kirigami.ApplicationWindow` to the passive-notifications
+  overlay model and reads the message back via
+  `QAbstractItemModel.data(index, role)`. This is the test that
+  caught the broken `Connections { onReplayFailed }` wiring (see
+  "Fixed" below).
+- **`voiceagent-qatest.sh`** — single-command headless QA gate.
+  Runs `pytest tests/` then `tests/qml/qmltest_main.py` with the
+  same QML-import-path setup as `voiceagent-compiletest.sh`.
+  Companion to compiletest:
+    - `voiceagent-compiletest.sh` = "does the QML load?" gate
+      (qmllint + real-engine load via fakes).
+    - `voiceagent-qatest.sh` = "does the QML behave correctly?"
+      gate (Quick Tests + pytest-qt interaction tests).
+- **QML-import-path fallback in `tests/conftest.py`.** The
+  shell scripts already prepend `/usr/lib/qt6/qml`; conftest now
+  mirrors that for direct `pytest` invocations so tests that
+  load real QML (e.g., `test_replay_toast`) work without first
+  sourcing one of the gate scripts.
+
+### Fixed
+
+- **Replay-failure toast wiring (PR #24).** The QML side used a
+  `Connections { target: voiceAgent; function onReplayFailed(...) }`
+  block. Qt's QML signal-handler resolution does *not*
+  auto-camelCase a snake_case Python signal name (`replay_failed`
+  in `window.py`) at runtime, so `onReplayFailed` silently never
+  fired and the toast never surfaced — `qmllint` warned at parse
+  time ("no signal of the target matches the name"), but the
+  warning did not fail compiletest. Switched to the
+  `Component.onCompleted: voiceAgent.replay_failed.connect(...)`
+  form, which binds at runtime regardless of casing convention.
+  The new `tests/test_replay_toast.py` locks the wiring in.
+
 ## 0.8.0 — 2026-04-28
 
 **Capability sweep.** Eight PRs land together: SHA-pinned download

@@ -9,6 +9,37 @@
 - Treat message ordering regressions as P1. The finalized user bubble must remain above its corresponding assistant bubble.
 - For QML/UI changes, verify `./voiceagent-compiletest.sh` passes. For startup-flow changes, verify the app window appears without freezing on launch.
 
+## Test gates and what they cover
+
+Three headless gates layer up; run them in order from cheapest to
+most thorough:
+
+1. **`pytest tests/`** — Python-side logic + pytest-qt interaction
+   tests against a stubbed QML engine. Catches Python-side
+   regressions and Python-to-QML signal/slot drift at the property
+   surface. ~219 tests, ~3s.
+2. **`./voiceagent-compiletest.sh`** — "does the QML load?" gate.
+   qmllint each component standalone, then load `MainWindow.qml`
+   into a *real* `QQmlApplicationEngine` against a *real*
+   `MainWindow` instance via `tests.fakes.build_compiletest_window`.
+   Catches QML/property surface drift, missing imports, malformed
+   bindings.
+3. **`./voiceagent-qatest.sh`** — "does the QML behave correctly?"
+   gate. Runs `pytest tests/` first (so a Python regression fails
+   fast), then runs the Qt Quick Test suite under `tests/qml/`
+   via `tests/qml/qmltest_main.py` (a `QtQuickTest.QUICK_TEST_MAIN_WITH_SETUP`
+   driver that registers `i18nCtx` on the test engine before any
+   `tst_*.qml` loads). Covers form-layout shape, page-header
+   actions, scroll-mode branching, and (via
+   `tests/test_replay_toast.py`) the replay-failure toast wiring
+   round-trip into the Kirigami passive-notifications overlay.
+
+The user's manual smoke test reduces to subjective items only:
+visual layout (does the spacing feel right) and animation feel
+(does the mic pulse breathe at the right tempo). Behavioral checks
+the manual smoke previously covered are now in the automation
+suite.
+
 ## KDE/QML implementation memory
 
 - Prefer stable `QAbstractListModel` objects for live QML lists. Avoid replacing `QVariantList` values for frequently changing views because delegate rebuilds can reset `contentY`, disturb current index, and cause visible jumps.
