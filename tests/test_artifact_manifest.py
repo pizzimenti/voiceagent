@@ -37,10 +37,16 @@ from voiceagent.services.tts import PiperTtsService
 # --- Piper -----------------------------------------------------------------
 
 
+_FAKE_SHA = "deadbeefcafef00ddeadbeefcafef00ddeadbeef"
+
+
 @pytest.fixture
 def piper_service(tmp_path: Path) -> PiperTtsService:
     service = PiperTtsService(command=["piper"], model_path=None)
     service.model_root = tmp_path
+    # Production sets this in `_download_voice` before `artifact_manifest`
+    # runs as part of `_verify_download`. Tests stand in for that.
+    service._current_download_sha = _FAKE_SHA
     return service
 
 
@@ -48,25 +54,24 @@ def _write_voices_json(model_root: Path, payload: dict) -> None:
     (model_root / "voices.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _stub_voices_json_refresh(monkeypatch, payload: dict) -> None:
-    """Make `artifact_manifest`'s refresh-before-read a no-op that
-    "lands" the test fixture as the fresh upstream payload.
+def _stub_voices_json_at_sha(monkeypatch, payload: dict | None) -> None:
+    """Make `artifact_manifest`'s SHA-pinned fetch return `payload`.
 
-    The production path now refreshes `voices.json` from upstream
-    before reading it (so a stale cache can't fail-close a healthy
-    install). For tests we monkeypatch the classmethod to write the
-    fixture into `voices.json` and return its voice names — same
-    contract as a successful real refresh, no network needed.
+    The production path now resolves `voices.json` against the
+    pinned upstream commit SHA captured at download start (closes
+    the TOCTOU window where layer 2/3 verification could
+    false-positive against an upstream-republished voice). Tests
+    monkeypatch the classmethod fetcher to return the fixture
+    directly — no network, no on-disk cache write (the SHA-pinned
+    fetcher intentionally does not write the cache).
     """
 
-    def _fake_fetch(cls, model_root):
-        cache_path = model_root / "voices.json"
-        cache_path.write_text(json.dumps(payload), encoding="utf-8")
-        return set(payload.keys())
+    def _fake_fetch(cls, sha):
+        return payload
 
     monkeypatch.setattr(
         PiperTtsService,
-        "_fetch_and_cache_voice_names",
+        "_fetch_voices_json_at_sha",
         classmethod(_fake_fetch),
     )
 
@@ -76,7 +81,7 @@ def test_piper_manifest_maps_basenames_to_local_paths(piper_service, monkeypatch
     the manifest must map by basename to local `<model_root>/X.onnx`.
     """
     name = "ar_JO-kareem-low"
-    _stub_voices_json_refresh(
+    _stub_voices_json_at_sha(
         monkeypatch,
         {
             name: {
@@ -118,20 +123,19 @@ def test_piper_manifest_maps_basenames_to_local_paths(piper_service, monkeypatch
     assert card_path in manifest
 
 
-def test_piper_manifest_returns_empty_when_refresh_fails(
+def test_piper_manifest_returns_empty_when_sha_fetch_fails(
     piper_service, monkeypatch, caplog,
 ):
-    """Network failure during the manifest refresh degrades to layer
-    1 + 4 — we must NOT fall back to a possibly-stale cache file
-    because layers 2/3 fail closed.
+    """Network failure during the SHA-pinned manifest fetch degrades
+    to layer 1 + 4 — we must NOT fall back to `main` (which would
+    re-open the TOCTOU window) or to a stale on-disk cache.
     """
-    def _fail(cls, model_root):
-        return set()  # mirrors the real fetch's failure-mode contract
-
+    # `_fetch_voices_json_at_sha` returns `None` on any failure
+    # (network, JSON parse, non-dict payload). Mirror that contract.
     monkeypatch.setattr(
         PiperTtsService,
-        "_fetch_and_cache_voice_names",
-        classmethod(_fail),
+        "_fetch_voices_json_at_sha",
+        classmethod(lambda cls, sha: None),
     )
 
     import logging
@@ -139,18 +143,54 @@ def test_piper_manifest_returns_empty_when_refresh_fails(
         result = piper_service.artifact_manifest("any-voice")
 
     assert result == {}
-    assert any("refresh" in r.message.lower() for r in caplog.records)
+    assert any(
+        "sha-pinned fetch" in r.message.lower()
+        or "skipping layers 2/3" in r.message.lower()
+        for r in caplog.records
+    )
+
+
+def test_piper_manifest_returns_empty_when_no_sha_pinned(
+    piper_service, monkeypatch, caplog,
+):
+    """`_current_download_sha` is `None` outside an active download.
+    The verifier MUST NOT fall back to `main` because that's the
+    exact TOCTOU window SHA pinning closes — degrade to layers 1 + 4
+    instead.
+    """
+    piper_service._current_download_sha = None
+
+    # Belt-and-braces: even if the SHA branch were skipped, the
+    # SHA-pinned fetcher must not be invoked.
+    def _must_not_be_called(cls, sha):  # pragma: no cover - guard
+        raise AssertionError("SHA-pinned fetcher invoked without a SHA")
+
+    monkeypatch.setattr(
+        PiperTtsService,
+        "_fetch_voices_json_at_sha",
+        classmethod(_must_not_be_called),
+    )
+
+    import logging
+    with caplog.at_level(logging.WARNING):
+        result = piper_service.artifact_manifest("any-voice")
+
+    assert result == {}
+    assert any(
+        "without a pinned sha" in r.message.lower()
+        for r in caplog.records
+    )
 
 
 def test_piper_manifest_does_not_fall_back_to_stale_cache(
     piper_service, monkeypatch,
 ):
-    """The P1 regression: a stale cache must never be used as the
-    authoritative manifest source for fail-closed verification.
+    """The P1 regression: a stale on-disk cache must never be used as
+    the authoritative manifest source for fail-closed verification.
 
-    Pre-existing cache file on disk + refresh fails → empty manifest
-    (NOT the cached data, which could be arbitrarily old and would
-    mass-reject healthy upstream-republished voices).
+    Pre-existing `voices.json` cache on disk + SHA-pinned fetch fails
+    → empty manifest (NOT the cached data, which could be arbitrarily
+    old and would mass-reject healthy upstream-republished voices).
     """
     name = "stale-voice"
     _write_voices_json(
@@ -169,8 +209,8 @@ def test_piper_manifest_does_not_fall_back_to_stale_cache(
 
     monkeypatch.setattr(
         PiperTtsService,
-        "_fetch_and_cache_voice_names",
-        classmethod(lambda cls, root: set()),
+        "_fetch_voices_json_at_sha",
+        classmethod(lambda cls, sha: None),
     )
 
     assert piper_service.artifact_manifest(name) == {}
@@ -179,7 +219,7 @@ def test_piper_manifest_does_not_fall_back_to_stale_cache(
 def test_piper_manifest_returns_empty_when_voice_not_in_refreshed_payload(
     piper_service, monkeypatch,
 ):
-    _stub_voices_json_refresh(monkeypatch, {"other-voice": {"files": {}}})
+    _stub_voices_json_at_sha(monkeypatch, {"other-voice": {"files": {}}})
     assert piper_service.artifact_manifest("missing-voice") == {}
 
 
@@ -189,7 +229,7 @@ def test_piper_manifest_handles_missing_metadata_fields(piper_service, monkeypat
     skips that layer for that file rather than failing closed).
     """
     name = "en_US-ryan-high"
-    _stub_voices_json_refresh(
+    _stub_voices_json_at_sha(
         monkeypatch,
         {
             name: {

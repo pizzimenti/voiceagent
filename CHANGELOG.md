@@ -2,6 +2,86 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.8.0 — 2026-04-28
+
+**Pin Piper download + verification to a single upstream commit SHA.**
+Closes the TOCTOU window in v0.7.0's layer 2 / 3 verification
+(file-size and md5 checks): `_download_voice` and `artifact_manifest`
+both used to resolve URLs against `main` of `rhasspy/piper-voices`,
+so an upstream republish in the few-second window between aria2
+fetching the bytes and the manifest refresh would make the verifier
+fail-close on a healthy install. Layer 4 (smoke-load) caught real
+corruption so the user could retry, but the false-positive was
+visible.
+
+Now, every install captures the upstream commit SHA at download
+start and pins both the file fetches AND the verifier's manifest
+fetch to that same revision. Bytes-perfect manifest comparison;
+no more self-healing false-positives from upstream churn.
+
+Minor bump per the project's version policy: defense-in-depth
+capability addition that closes a known false-positive class. No
+public-API break — `artifact_manifest(name)` still has the same
+signature; the SHA is plumbed via a per-instance
+`_current_download_sha` field that `_download_voice` sets and
+clears.
+
+### Added
+
+- **`PiperTtsService._capture_repo_sha()`** calls
+  `HfApi.repo_info(VOICE_REPOSITORY).sha` to resolve the current
+  commit of `rhasspy/piper-voices` at download start. Fails-closed:
+  any error (network blip, HF 5xx, malformed response, missing
+  `sha` attribute) raises so the download never proceeds against an
+  unpinned `main` — the whole point of pinning is consistency. The
+  existing download-error UI surfaces the raise to the user the
+  same as any network failure.
+- **`PiperTtsService._voices_json_url_for_sha(sha)`** classmethod
+  constructs the SHA-pinned manifest URL.
+- **`PiperTtsService._fetch_voices_json_at_sha(sha)`** classmethod
+  fetches `voices.json` at a specific upstream commit, returns the
+  parsed dict on success, `None` on any failure. Does NOT write to
+  the on-disk `voices.json` cache — that cache is anchored to
+  `main` for the eager catalog path, and writing a SHA-pinned
+  snapshot over it could rewind the user's view of the catalog.
+- **`PiperTtsService._current_download_sha`** per-instance field
+  set by `_download_voice` before any URL is constructed,
+  consumed by `artifact_manifest` during the post-download
+  verification pass, and cleared on download failure.
+
+### Changed
+
+- **`_download_voice` threads SHA into `hf_hub_url`.** Both the
+  `.onnx` and `.onnx.json` URLs now resolve to
+  `https://huggingface.co/rhasspy/piper-voices/resolve/<sha>/...`
+  via `hf_hub_url(..., revision=sha)`.
+- **`artifact_manifest` reads from the pinned SHA.** When
+  `_current_download_sha` is set, the verifier fetches the manifest
+  at that revision via `_fetch_voices_json_at_sha`. When unset
+  (defensive callers / tests outside an active download), the
+  method skips layers 2/3 with a warning instead of falling back
+  to `main` — falling back would re-open the TOCTOU window pinning
+  is meant to close. Layers 1 (sidecar) and 4 (smoke-load) still
+  apply.
+- **The catalog-refresh path is unchanged.** `VOICES_JSON_URL` and
+  `_fetch_and_cache_voice_names` continue to resolve against
+  `main` because the eager catalog wants the latest browsable list
+  of voices, not a download-pinned snapshot.
+
+### Tests
+
+- 11 new tests in `tests/test_tts_sha_pinning.py` covering SHA
+  capture, URL construction, `_download_voice` threading, error
+  fall-through (no SHA → empty manifest, capture failure → raise,
+  download failure → SHA cleared), and the end-to-end
+  download/manifest agreement.
+- `tests/test_artifact_manifest.py` Piper tests updated to stub
+  `_fetch_voices_json_at_sha` and set `_current_download_sha` on
+  the fixture (replaces the previous `_fetch_and_cache_voice_names`
+  monkeypatching). One new test asserts the no-SHA branch returns
+  empty without falling back to `main`.
+- 194 tests passing total (was 182).
+
 ## 0.7.0 — 2026-04-27
 
 **Download verification capability completion.** Closes the layers 2
