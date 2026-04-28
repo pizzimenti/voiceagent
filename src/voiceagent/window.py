@@ -10,7 +10,6 @@ from PySide6.QtCore import (
     Property,
     QSettings,
     Qt,
-    QTimer,
     QUrl,
     QObject,
     Signal,
@@ -28,6 +27,7 @@ from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.models import AppState
 from voiceagent.services.llm_controller import LlmController
 from voiceagent.services.playback import AudioPlayer
+from voiceagent.startup_deferral import schedule_after_first_frame
 from voiceagent.tts_loader import TtsVoiceLoader
 
 
@@ -217,13 +217,20 @@ class MainWindow(QObject):
             self._window.requestActivate()
         if not self._llm.startup_connect_scheduled and self.currentLlmUrl:
             self._llm.mark_startup_connect_scheduled()
-            QTimer.singleShot(0, self.autoconnectLlmServer)
+            schedule_after_first_frame(self._window, self.autoconnectLlmServer)
         # Defer the Piper `voices.json` network fetch until after QML
         # paints — see AGENTS.md's "keep network/model refreshes off the
         # first paint path" rule. The catalog starts populated with
         # whatever's already on disk; the refresh adds remote-only entries.
+        # `schedule_after_first_frame` parallels the sounddevice pre-warm
+        # in `app.py:142-158`: a 0 ms QTimer can fire on the next
+        # event-loop tick before the first frame swap completes;
+        # `QQuickWindow.frameSwapped` is the Qt-blessed primitive that
+        # waits for the actual swap.
         if not self.tts_loader.catalog_refresh_scheduled:
-            QTimer.singleShot(0, self.tts_loader.refresh_catalog_async)
+            schedule_after_first_frame(
+                self._window, self.tts_loader.refresh_catalog_async
+            )
 
     def shutdown(self) -> None:
         if self._shutting_down:
