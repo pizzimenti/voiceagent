@@ -9,6 +9,15 @@ import org.kde.kirigami 2.20 as Kirigami
 Button {
     id: micButton
 
+    // Required injection of the backend controller. Each callsite must
+    // pass `voiceAgent: voiceAgent` explicitly. Internal `voiceAgent.*`
+    // bindings below all use the `voiceAgent ? ... : fallback` ternary
+    // form because nested-component instantiation can evaluate child
+    // bindings before the parent's outer `voiceAgent: voiceAgent`
+    // binding lands — without the lazy guard, first-paint TypeErrors
+    // fire (PR #5 was reverted for exactly this reason).
+    required property var voiceAgent
+
     // Bindable customization properties (defaults match the medium variant).
     property real iconSize: 34
     property real fontPixel: 11
@@ -22,11 +31,15 @@ Button {
     // (e.g. compact mode) get the natural opaque look without extra wiring.
     property bool pulseActive: true
 
-    enabled: voiceAgent.talkReady
-    onClicked: voiceAgent.setVoiceConnectionEnabled(!voiceAgent.voiceConnectionEnabled)
+    enabled: micButton.voiceAgent ? micButton.voiceAgent.talkReady : false
+    onClicked: {
+        if (micButton.voiceAgent) {
+            micButton.voiceAgent.setVoiceConnectionEnabled(!micButton.voiceAgent.voiceConnectionEnabled);
+        }
+    }
 
     display: AbstractButton.TextUnderIcon
-    text: voiceAgent.micStatusLabel
+    text: micButton.voiceAgent ? micButton.voiceAgent.micStatusLabel : ""
     font.pixelSize: micButton.fontPixel
     icon.name: "audio-input-microphone"
     icon.width: micButton.iconSize

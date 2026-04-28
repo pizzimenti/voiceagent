@@ -14,6 +14,15 @@ import org.kde.kirigami 2.20 as Kirigami
 Pane {
     id: conversationPane
 
+    // Required injection of the backend controller. Each callsite must
+    // pass `voiceAgent: voiceAgent` explicitly. Internal `voiceAgent.*`
+    // bindings below all use the `voiceAgent ? ... : fallback` ternary
+    // form because nested-component instantiation can evaluate child
+    // bindings before the parent's outer `voiceAgent: voiceAgent`
+    // binding lands — without the lazy guard, first-paint TypeErrors
+    // fire (PR #5 was reverted for exactly this reason).
+    required property var voiceAgent
+
     readonly property var root: ApplicationWindow.window
 
     padding: root.compactMode ? Kirigami.Units.smallSpacing : (root.mediumMode ? Kirigami.Units.smallSpacing : Kirigami.Units.mediumSpacing)
@@ -38,17 +47,23 @@ Pane {
 
             ToolButton {
                 visible: !root.compactMode
-                icon.name: voiceAgent.logVerboseMode ? "view-visible-symbolic" : "view-hidden-symbolic"
+                icon.name: (conversationPane.voiceAgent && conversationPane.voiceAgent.logVerboseMode)
+                    ? "view-visible-symbolic"
+                    : "view-hidden-symbolic"
                 ToolTip.visible: hovered
-                ToolTip.text: voiceAgent.logVerboseMode
+                ToolTip.text: (conversationPane.voiceAgent && conversationPane.voiceAgent.logVerboseMode)
                     ? "Hide pipeline activity in log"
                     : "Show pipeline activity in log (new entries only)"
-                onClicked: voiceAgent.setLogVerboseMode(!voiceAgent.logVerboseMode)
+                onClicked: {
+                    if (conversationPane.voiceAgent) {
+                        conversationPane.voiceAgent.setLogVerboseMode(!conversationPane.voiceAgent.logVerboseMode);
+                    }
+                }
             }
 
             Label {
                 visible: !root.compactMode
-                text: voiceAgent.voiceConnectionEnabled ? "Live" : "Idle"
+                text: (conversationPane.voiceAgent && conversationPane.voiceAgent.voiceConnectionEnabled) ? "Live" : "Idle"
                 color: Kirigami.Theme.disabledTextColor
             }
         }
@@ -62,7 +77,7 @@ Pane {
                 anchors.fill: parent
                 clip: true
                 spacing: Kirigami.Units.smallSpacing
-                model: voiceAgent.conversationModel
+                model: conversationPane.voiceAgent ? conversationPane.voiceAgent.conversationModel : null
                 boundsBehavior: Flickable.StopAtBounds
                 flickDeceleration: 1800
                 maximumFlickVelocity: 24000
@@ -252,7 +267,11 @@ Pane {
                         visible: !root.compactMode && model.replayable
                         text: "Replay"
                         Layout.alignment: Qt.AlignBottom
-                        onClicked: voiceAgent.replayMessage(index)
+                        onClicked: {
+                            if (conversationPane.voiceAgent) {
+                                conversationPane.voiceAgent.replayMessage(index);
+                            }
+                        }
                     }
                 }
             }
@@ -302,6 +321,7 @@ Pane {
             visible: root.compactMode
             Layout.fillWidth: true
             Layout.preferredHeight: Kirigami.Units.gridUnit * 5
+            voiceAgent: conversationPane.voiceAgent
             iconSize: 30
             fontPixel: 13
             borderWidth: root.compactMode ? 3 : 0
