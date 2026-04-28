@@ -22,12 +22,6 @@ extraction all landed in PRs #16-#21.
 
 ## Pending cycles
 
-- **KDE polish bundle.** Migrate the session-setup grid (now
-  `SessionSetupPane.qml`) to `Kirigami.FormLayout`. Wire user-facing
-  strings through `KLocalizedContext` / `i18n()` for i18n readiness.
-  Convert inline button bindings to `Kirigami.Action`-based command
-  surfaces. Land together so the QML reads consistently.
-
 - **`replayMessage` failure UX.** Round-2 added a try/except and an
   `is_available()` readiness check; surface synthesis errors via a
   `Kirigami.PassiveNotification` toast (~3s auto-dismiss) rather than

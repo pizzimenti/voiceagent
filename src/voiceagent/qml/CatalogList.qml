@@ -52,13 +52,13 @@ ListView {
 
     function _statusSummary(item) {
         if (item.installed && !item.managed) {
-            return "Custom path";
+            return i18nCtx.i18n("Custom path");
         }
-        return item.installed ? "Installed" : "Available to download";
+        return item.installed ? i18nCtx.i18n("Installed") : i18nCtx.i18n("Available to download");
     }
 
     function _actionLabel(item) {
-        return item.installed ? "Remove" : "Install";
+        return item.installed ? i18nCtx.i18n("Remove") : i18nCtx.i18n("Install");
     }
 
     // Install / Remove acts on managed catalog entries. Two row shapes
@@ -133,14 +133,14 @@ ListView {
 
                 ToolButton {
                     visible: model.installed
-                    text: catalogList.selectedName === model.name ? "Current" : "Use"
+                    text: catalogList.selectedName === model.name ? i18nCtx.i18n("Current") : i18nCtx.i18n("Use")
                     enabled: catalogList.selectedName !== model.name
                     onClicked: catalogList.onSelect(model.name)
                 }
 
                 ToolButton {
                     visible: catalogList._actionVisible(model)
-                    text: catalogDelegate.downloading ? "Installing…" : catalogList._actionLabel(model)
+                    text: catalogDelegate.downloading ? i18nCtx.i18n("Installing…") : catalogList._actionLabel(model)
                     enabled: !catalogDelegate.downloading
                     onClicked: {
                         if (model.installed) {

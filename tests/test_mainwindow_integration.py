@@ -80,6 +80,13 @@ class _StubQmlWindow:
         pass
 
 
+class _StubQmlContext:
+    """Stand-in for QQmlContext — accepts setContextProperty no-op."""
+
+    def setContextProperty(self, name: str, value) -> None:  # noqa: N802
+        pass
+
+
 class _StubQmlEngine:
     """Stand-in for QQmlApplicationEngine — no-op load(); returns a
     non-empty rootObjects() so MainWindow's load-failure check passes.
@@ -87,9 +94,13 @@ class _StubQmlEngine:
 
     def __init__(self) -> None:
         self._root = _StubQmlWindow()
+        self._context = _StubQmlContext()
 
     def setInitialProperties(self, props) -> None:
         pass
+
+    def rootContext(self):  # noqa: N802 — Qt API name
+        return self._context
 
     def load(self, url) -> None:
         pass

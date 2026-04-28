@@ -30,7 +30,7 @@ Kirigami.ApplicationWindow {
         | Qt.WindowMinimizeButtonHint
         | Qt.WindowCloseButtonHint
     visible: true
-    title: "Voice Agent"
+    title: i18nCtx.i18n("Voice Agent")
     required property QtObject voiceAgent
 
     // Belt-and-suspenders: KWin honors min/max size constraints in
@@ -79,7 +79,7 @@ Kirigami.ApplicationWindow {
 
     Kirigami.Action {
         id: modelManagerAction
-        text: "Voice Models"
+        text: i18nCtx.i18n("Voice Models")
         icon.name: "folder-cloud-symbolic"
         visible: !root.compactMode
         onTriggered: {
@@ -97,13 +97,13 @@ Kirigami.ApplicationWindow {
 
     Kirigami.Action {
         id: themeAction
-        text: "Theme"
+        text: i18nCtx.i18n("Theme")
         icon.name: "preferences-desktop-theme-symbolic"
         displayHint: Kirigami.DisplayHint.IconOnly
         visible: !root.compactMode
 
         Kirigami.Action {
-            text: "Auto"
+            text: i18nCtx.i18n("Auto")
             checkable: true
             checked: voiceAgent.themeMode === "auto"
             ActionGroup.group: themeActionGroup
@@ -111,7 +111,7 @@ Kirigami.ApplicationWindow {
         }
 
         Kirigami.Action {
-            text: "Light"
+            text: i18nCtx.i18n("Light")
             checkable: true
             checked: voiceAgent.themeMode === "light"
             ActionGroup.group: themeActionGroup
@@ -119,7 +119,7 @@ Kirigami.ApplicationWindow {
         }
 
         Kirigami.Action {
-            text: "Dark"
+            text: i18nCtx.i18n("Dark")
             checkable: true
             checked: voiceAgent.themeMode === "dark"
             ActionGroup.group: themeActionGroup
@@ -129,10 +129,25 @@ Kirigami.ApplicationWindow {
 
     Kirigami.Action {
         id: muteAction
-        text: voiceAgent.audioMuted ? "Unmute" : "Mute"
+        text: voiceAgent.audioMuted ? i18nCtx.i18n("Unmute") : i18nCtx.i18n("Mute")
         icon.name: voiceAgent.audioMuted ? "audio-volume-muted-symbolic" : "audio-volume-high-symbolic"
         enabled: voiceAgent.talkReady
         onTriggered: voiceAgent.setAudioMuted(!voiceAgent.audioMuted)
+    }
+
+    // Verbose-log toggle, surfaced on the page header alongside theme /
+    // mute / model-manager so all stateful UI affordances live on one
+    // command surface rather than scattered across pane headers.
+    // Hidden in compact mode (where the page header itself is hidden).
+    Kirigami.Action {
+        id: verboseLogAction
+        text: voiceAgent.logVerboseMode
+            ? i18nCtx.i18n("Hide pipeline activity in log")
+            : i18nCtx.i18n("Show pipeline activity in log (new entries only)")
+        icon.name: voiceAgent.logVerboseMode ? "view-visible-symbolic" : "view-hidden-symbolic"
+        displayHint: Kirigami.DisplayHint.IconOnly
+        visible: !root.compactMode
+        onTriggered: voiceAgent.setLogVerboseMode(!voiceAgent.logVerboseMode)
     }
 
     Window {
@@ -141,7 +156,7 @@ Kirigami.ApplicationWindow {
         transientParent: root
         modality: Qt.ApplicationModal
         flags: Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint
-        title: "Voice Models"
+        title: i18nCtx.i18n("Voice Models")
         visible: false
         width: Math.min(root.width - Kirigami.Units.gridUnit * 4, Kirigami.Units.gridUnit * 58)
         height: Math.min(root.height - Kirigami.Units.gridUnit * 4, Kirigami.Units.gridUnit * 42)
@@ -173,7 +188,7 @@ Kirigami.ApplicationWindow {
                         spacing: Kirigami.Units.mediumSpacing
 
                         Kirigami.Heading {
-                            text: "Voice Models"
+                            text: i18nCtx.i18n("Voice Models")
                             level: 2
                         }
 
@@ -183,14 +198,14 @@ Kirigami.ApplicationWindow {
 
                         ToolButton {
                             icon.name: "window-close"
-                            text: "Close"
+                            text: i18nCtx.i18n("Close")
                             onClicked: modelManagerWindow.close()
                         }
                     }
 
                     Label {
                         Layout.fillWidth: true
-                        text: "Install, remove, and switch local speech models here. Session selectors only show installed items."
+                        text: i18nCtx.i18n("Install, remove, and switch local speech models here. Session selectors only show installed items.")
                         wrapMode: Text.WordWrap
                         color: Kirigami.Theme.disabledTextColor
                     }
@@ -202,13 +217,13 @@ Kirigami.ApplicationWindow {
 
                         Label {
                             Layout.fillWidth: true
-                            text: root.sttInstalledCount + " STT model(s) installed"
+                            text: i18nCtx.i18n("%1 STT model(s) installed").arg(root.sttInstalledCount)
                             font.weight: Font.DemiBold
                         }
 
                         Label {
                             Layout.fillWidth: true
-                            text: root.ttsInstalledCount + " TTS voice(s) installed"
+                            text: i18nCtx.i18n("%1 TTS voice(s) installed").arg(root.ttsInstalledCount)
                             font.weight: Font.DemiBold
                         }
                     }
@@ -218,8 +233,8 @@ Kirigami.ApplicationWindow {
                     id: managerTabs
                     Layout.fillWidth: true
 
-                    TabButton { text: "Speech To Text" }
-                    TabButton { text: "Text To Speech" }
+                    TabButton { text: i18nCtx.i18n("Speech To Text") }
+                    TabButton { text: i18nCtx.i18n("Text To Speech") }
                 }
 
                 StackLayout {
@@ -236,7 +251,7 @@ Kirigami.ApplicationWindow {
 
                         TextField {
                             Layout.fillWidth: true
-                            placeholderText: "Filter STT models"
+                            placeholderText: i18nCtx.i18n("Filter STT models")
                             text: modelManagerWindow.sttFilter
                             onTextChanged: modelManagerWindow.sttFilter = text
                         }
@@ -261,7 +276,7 @@ Kirigami.ApplicationWindow {
 
                         TextField {
                             Layout.fillWidth: true
-                            placeholderText: "Filter TTS voices"
+                            placeholderText: i18nCtx.i18n("Filter TTS voices")
                             text: modelManagerWindow.ttsFilter
                             onTextChanged: modelManagerWindow.ttsFilter = text
                         }
@@ -310,10 +325,11 @@ Kirigami.ApplicationWindow {
 
     pageStack.initialPage: Kirigami.Page {
         id: page
-        title: "Voice Agent"
+        title: i18nCtx.i18n("Voice Agent")
         actions: [
             themeAction,
             muteAction,
+            verboseLogAction,
             modelManagerAction
         ]
 

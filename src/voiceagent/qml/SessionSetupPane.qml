@@ -13,6 +13,15 @@ import org.kde.kirigami 2.20 as Kirigami
 // ApplicationWindow.window. Internal `voiceAgent.*` references use the
 // `voiceAgent ? ... : fallback` ternary form for the same nested-binding
 // timing reason documented on MicButton / ConversationPane.
+//
+// The label/control pairs use `Kirigami.FormLayout` (the documented
+// Kirigami pattern for settings/control groups). Compact-mode collapse
+// is driven by `Kirigami.FormLayout.wideMode: !compactMode` — wideMode
+// false stacks each label above its control on one column; wideMode
+// true puts label-and-control side-by-side. The medium-mode mic frame
+// sits next to the form via the surrounding RowLayout, replacing the
+// previous GridLayout's `Layout.row/Layout.column/Layout.rowSpan`
+// hand-positioning.
 Pane {
     id: sessionPane
 
@@ -46,7 +55,7 @@ Pane {
         spacing: Kirigami.Units.mediumSpacing
 
         Kirigami.Heading {
-            text: "Session Setup"
+            text: i18nCtx.i18n("Session Setup")
             level: 2
         }
 
@@ -54,35 +63,136 @@ Pane {
             id: sessionSetupPaneInner
             Layout.fillWidth: true
             padding: Kirigami.Units.smallSpacing
-            implicitHeight: sessionSetupGrid.implicitHeight + padding * 2
+            implicitHeight: sessionSetupRow.implicitHeight + padding * 2
 
-            GridLayout {
-                id: sessionSetupGrid
+            RowLayout {
+                id: sessionSetupRow
                 width: parent.width
-                columns: sessionPane.compactMode ? 1 : 3
-                columnSpacing: Kirigami.Units.mediumSpacing
-                rowSpacing: Kirigami.Units.smallSpacing
+                spacing: Kirigami.Units.mediumSpacing
 
-                Label {
+                Kirigami.FormLayout {
+                    id: sessionSetupForm
                     Layout.fillWidth: true
-                    text: "Speech: " + (sessionPane.voiceAgent ? sessionPane.voiceAgent.modelStatus : "")
-                    color: Kirigami.Theme.disabledTextColor
-                    wrapMode: Text.WordWrap
-                }
+                    // wideMode true keeps the label-and-control on one
+                    // line (medium mode); wideMode false collapses to
+                    // a label-on-top-of-control stack (compact mode).
+                    wideMode: !sessionPane.compactMode
 
-                ComboBox {
-                    id: sttSelector
-                    Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    Layout.preferredWidth: Kirigami.Units.gridUnit * 14
-                    model: sessionPane.voiceAgent ? sessionPane.voiceAgent.sttOptions : []
-                    currentIndex: sessionPane.voiceAgent
-                        ? sessionPane._stringIndex(sessionPane.voiceAgent.sttOptions, sessionPane.voiceAgent.selectedSttModel)
-                        : -1
-                    displayText: currentIndex >= 0 ? currentText : "No installed STT models"
-                    onActivated: {
-                        if (sessionPane.voiceAgent) {
-                            sessionPane.voiceAgent.selectSttModel(currentText);
+                    ComboBox {
+                        id: sttSelector
+                        Kirigami.FormData.label: i18nCtx.i18n("Speech:") + " " + (sessionPane.voiceAgent ? sessionPane.voiceAgent.modelStatus : "")
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                        model: sessionPane.voiceAgent ? sessionPane.voiceAgent.sttOptions : []
+                        currentIndex: sessionPane.voiceAgent
+                            ? sessionPane._stringIndex(sessionPane.voiceAgent.sttOptions, sessionPane.voiceAgent.selectedSttModel)
+                            : -1
+                        displayText: currentIndex >= 0 ? currentText : i18nCtx.i18n("No installed STT models")
+                        onActivated: {
+                            if (sessionPane.voiceAgent) {
+                                sessionPane.voiceAgent.selectSttModel(currentText);
+                            }
+                        }
+                    }
+
+                    ComboBox {
+                        id: ttsSelector
+                        Kirigami.FormData.label: i18nCtx.i18n("Voice:") + " " + (sessionPane.voiceAgent ? sessionPane.voiceAgent.ttsStatus : "")
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                        model: sessionPane.voiceAgent ? sessionPane.voiceAgent.ttsOptions : []
+                        currentIndex: sessionPane.voiceAgent
+                            ? sessionPane._stringIndex(sessionPane.voiceAgent.ttsOptions, sessionPane.voiceAgent.selectedTtsModel)
+                            : -1
+                        displayText: currentIndex >= 0 ? currentText : i18nCtx.i18n("No installed TTS voices")
+                        onActivated: {
+                            if (sessionPane.voiceAgent) {
+                                sessionPane.voiceAgent.selectTtsModel(currentText);
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Kirigami.FormData.label: i18nCtx.i18n("LLM URL:")
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.smallSpacing
+
+                        ComboBox {
+                            id: llmUrlBox
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 16
+                            editable: sessionPane.voiceAgent
+                                ? (!sessionPane.voiceAgent.llmServerConnected && !sessionPane.voiceAgent.llmModelBusy)
+                                : false
+                            enabled: sessionPane.voiceAgent
+                                ? (!sessionPane.voiceAgent.llmServerConnected && !sessionPane.voiceAgent.llmModelBusy)
+                                : false
+                            model: sessionPane.voiceAgent ? sessionPane.voiceAgent.llmUrls : []
+                            currentIndex: sessionPane.voiceAgent
+                                ? sessionPane._stringIndex(sessionPane.voiceAgent.llmUrls, sessionPane.voiceAgent.currentLlmUrl)
+                                : -1
+                            Component.onCompleted: {
+                                if (sessionPane.voiceAgent) {
+                                    editText = sessionPane.voiceAgent.currentLlmUrl;
+                                }
+                            }
+                            onAccepted: {
+                                if (sessionPane.voiceAgent) {
+                                    sessionPane.voiceAgent.setCurrentLlmUrl(editText);
+                                    sessionPane.voiceAgent.persistCurrentLlmUrl();
+                                }
+                            }
+                            onActivated: {
+                                if (sessionPane.voiceAgent) {
+                                    sessionPane.voiceAgent.setCurrentLlmUrl(currentText);
+                                }
+                            }
+                        }
+
+                        Button {
+                            Layout.minimumWidth: Kirigami.Units.gridUnit * 9
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 10
+                            text: sessionPane.voiceAgent ? sessionPane.voiceAgent.llmConnectionButtonText : ""
+                            // Always require !llmConnectionBusy. The previous
+                            // `(!llmServerConnected || !llmConnectionBusy)` clause
+                            // let the user spam-click Connect while a refresh
+                            // was already in flight, queueing extra
+                            // _start_refresh() calls in LlmController.
+                            enabled: sessionPane.voiceAgent
+                                ? (!!llmUrlBox.editText.trim()
+                                    && !sessionPane.voiceAgent.llmModelBusy
+                                    && !sessionPane.voiceAgent.llmConnectionBusy)
+                                : false
+                            onClicked: {
+                                if (sessionPane.voiceAgent) {
+                                    sessionPane.voiceAgent.toggleLlmServerConnection(llmUrlBox.editText);
+                                }
+                            }
+                        }
+                    }
+
+                    ComboBox {
+                        Kirigami.FormData.label: i18nCtx.i18n("Loaded Model:")
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 16
+                        enabled: sessionPane.voiceAgent
+                            ? (sessionPane.voiceAgent.llmServerConnected
+                                && !sessionPane.voiceAgent.llmConnectionBusy
+                                && !sessionPane.voiceAgent.llmModelBusy)
+                            : false
+                        model: sessionPane.voiceAgent ? sessionPane.voiceAgent.llmModelOptions : []
+                        currentIndex: sessionPane.voiceAgent
+                            ? sessionPane._stringIndex(sessionPane.voiceAgent.llmModelOptions, sessionPane.voiceAgent.selectedLlmModel)
+                            : -1
+                        displayText: currentIndex <= 0 ? i18nCtx.i18n("Select a loaded model") : currentText
+                        onActivated: {
+                            if (sessionPane.voiceAgent) {
+                                sessionPane.voiceAgent.selectLlmModel(currentText);
+                            }
                         }
                     }
                 }
@@ -90,10 +200,6 @@ Pane {
                 MicButtonFrame {
                     id: mediumMicButtonFrame
                     visible: sessionPane.mediumMode
-                    Layout.row: 0
-                    Layout.column: 2
-                    Layout.rowSpan: 4
-                    Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.minimumWidth: Kirigami.Units.gridUnit * 9
                     Layout.preferredWidth: Kirigami.Units.gridUnit * 10
@@ -109,124 +215,6 @@ Pane {
                     // SequentialAnimation as soon as it starts.
                     glowOpacity: sessionPane.micPulseActive ? 0.5 : 0.2
                     glowScale: 1.0
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    text: "Voice: " + (sessionPane.voiceAgent ? sessionPane.voiceAgent.ttsStatus : "")
-                    color: Kirigami.Theme.disabledTextColor
-                    wrapMode: Text.WordWrap
-                }
-
-                ComboBox {
-                    id: ttsSelector
-                    Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    Layout.preferredWidth: Kirigami.Units.gridUnit * 14
-                    model: sessionPane.voiceAgent ? sessionPane.voiceAgent.ttsOptions : []
-                    currentIndex: sessionPane.voiceAgent
-                        ? sessionPane._stringIndex(sessionPane.voiceAgent.ttsOptions, sessionPane.voiceAgent.selectedTtsModel)
-                        : -1
-                    displayText: currentIndex >= 0 ? currentText : "No installed TTS voices"
-                    onActivated: {
-                        if (sessionPane.voiceAgent) {
-                            sessionPane.voiceAgent.selectTtsModel(currentText);
-                        }
-                    }
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    text: "LLM URL:"
-                    color: Kirigami.Theme.disabledTextColor
-                    wrapMode: Text.WordWrap
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Kirigami.Units.smallSpacing
-
-                    ComboBox {
-                        id: llmUrlBox
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 0
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 16
-                        editable: sessionPane.voiceAgent
-                            ? (!sessionPane.voiceAgent.llmServerConnected && !sessionPane.voiceAgent.llmModelBusy)
-                            : false
-                        enabled: sessionPane.voiceAgent
-                            ? (!sessionPane.voiceAgent.llmServerConnected && !sessionPane.voiceAgent.llmModelBusy)
-                            : false
-                        model: sessionPane.voiceAgent ? sessionPane.voiceAgent.llmUrls : []
-                        currentIndex: sessionPane.voiceAgent
-                            ? sessionPane._stringIndex(sessionPane.voiceAgent.llmUrls, sessionPane.voiceAgent.currentLlmUrl)
-                            : -1
-                        Component.onCompleted: {
-                            if (sessionPane.voiceAgent) {
-                                editText = sessionPane.voiceAgent.currentLlmUrl;
-                            }
-                        }
-                        onAccepted: {
-                            if (sessionPane.voiceAgent) {
-                                sessionPane.voiceAgent.setCurrentLlmUrl(editText);
-                                sessionPane.voiceAgent.persistCurrentLlmUrl();
-                            }
-                        }
-                        onActivated: {
-                            if (sessionPane.voiceAgent) {
-                                sessionPane.voiceAgent.setCurrentLlmUrl(currentText);
-                            }
-                        }
-                    }
-
-                    Button {
-                        Layout.minimumWidth: Kirigami.Units.gridUnit * 9
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 10
-                        text: sessionPane.voiceAgent ? sessionPane.voiceAgent.llmConnectionButtonText : ""
-                        // Always require !llmConnectionBusy. The previous
-                        // `(!llmServerConnected || !llmConnectionBusy)` clause
-                        // let the user spam-click Connect while a refresh
-                        // was already in flight, queueing extra
-                        // _start_refresh() calls in LlmController.
-                        enabled: sessionPane.voiceAgent
-                            ? (!!llmUrlBox.editText.trim()
-                                && !sessionPane.voiceAgent.llmModelBusy
-                                && !sessionPane.voiceAgent.llmConnectionBusy)
-                            : false
-                        onClicked: {
-                            if (sessionPane.voiceAgent) {
-                                sessionPane.voiceAgent.toggleLlmServerConnection(llmUrlBox.editText);
-                            }
-                        }
-                    }
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    text: "Loaded Model:"
-                    color: Kirigami.Theme.disabledTextColor
-                    wrapMode: Text.WordWrap
-                }
-
-                ComboBox {
-                    Layout.fillWidth: true
-                    Layout.minimumWidth: 0
-                    Layout.preferredWidth: Kirigami.Units.gridUnit * 16
-                    enabled: sessionPane.voiceAgent
-                        ? (sessionPane.voiceAgent.llmServerConnected
-                            && !sessionPane.voiceAgent.llmConnectionBusy
-                            && !sessionPane.voiceAgent.llmModelBusy)
-                        : false
-                    model: sessionPane.voiceAgent ? sessionPane.voiceAgent.llmModelOptions : []
-                    currentIndex: sessionPane.voiceAgent
-                        ? sessionPane._stringIndex(sessionPane.voiceAgent.llmModelOptions, sessionPane.voiceAgent.selectedLlmModel)
-                        : -1
-                    displayText: currentIndex <= 0 ? "Select a loaded model" : currentText
-                    onActivated: {
-                        if (sessionPane.voiceAgent) {
-                            sessionPane.voiceAgent.selectLlmModel(currentText);
-                        }
-                    }
                 }
             }
         }
