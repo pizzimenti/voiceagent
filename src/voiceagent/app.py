@@ -109,6 +109,26 @@ def _prewarm_sounddevice(logger: logging.Logger) -> None:
     )
 
 
+def _ensure_qml_import_path() -> None:
+    """Prepend system Qt 6 QML directories to QML_IMPORT_PATH if absent.
+
+    A bare `voiceagent` entry-point launch doesn't get QML_IMPORT_PATH
+    from a wrapper the way `voiceagent-buildtest.sh` does, so QML
+    modules like `org.kde.kirigami` (installed under `/usr/lib/qt6/qml`
+    on Manjaro/Arch/Fedora-derived distros) wouldn't resolve. Auto-
+    detect and prepend the standard locations so both launch paths
+    work; respect any existing value in the env.
+    """
+    candidates = ["/usr/lib/qt6/qml", "/usr/lib/qt/qml"]
+    found = [p for p in candidates if os.path.isdir(p)]
+    if not found:
+        return
+    for var in ("QML_IMPORT_PATH", "QML2_IMPORT_PATH"):
+        existing = os.environ.get(var, "")
+        merged_parts = found + ([existing] if existing else [])
+        os.environ[var] = os.pathsep.join(merged_parts)
+
+
 def main() -> int:
     log_path = configure_logging()
     logger = logging.getLogger(__name__)
@@ -116,6 +136,7 @@ def main() -> int:
     logger.info("Starting voiceagent")
     console.info("Voice Agent %s", __version__)
     console.info("Starting services...")
+    _ensure_qml_import_path()
     app = QApplication(sys.argv)
     app.setApplicationName("voiceagent")
     app.setApplicationDisplayName("Voice Agent")
