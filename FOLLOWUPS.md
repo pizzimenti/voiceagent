@@ -106,19 +106,6 @@ not user-visible.
 External round-2 review of PR #7 (the v0.4.0 ui-shaping branch)
 surfaced these architectural items. Each is its own cycle.
 
-- **`ConversationTurnCoordinator`.** Centralize the draft → final →
-  status row ordering policy for a conversation turn into a single
-  owner. The acute ordering bug (status rows landing before the user
-  bubble on short turns with no partial transcript) was patched in
-  this PR by deferring status rows in `_apply_state` until
-  `_sync_live_user_message` or `_append_user_message` flips a
-  per-turn flag (see `src/voiceagent/window.py:754`); the queue is
-  also gated on `logVerboseMode` at flush time. That works but leaves
-  the policy spread across three call sites and a queue. A
-  coordinator would own the queue, the per-turn flag, the dedupe
-  state, and the verbose-mode gate, and is the natural place to add
-  any future ordering rules (e.g., assistant draft anchoring).
-
 - **`ConversationLogController` as the only writer to
   `ConversationModel`.** Today `window.py` writes to the model from
   `_apply_state`, `_set_status_message` (just unwound in this PR),

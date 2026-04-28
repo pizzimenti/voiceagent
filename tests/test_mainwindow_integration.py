@@ -254,7 +254,7 @@ def test_status_rows_appear_immediately_when_draft_bubble_exists(
     window._apply_state(AppState.RECORDING.value)
     window._sync_live_user_message("partial trans")  # creates draft
     _drain_events()
-    assert window._current_turn_user_bubble_present is True
+    assert window._turn_coordinator.current_turn_user_bubble_present is True
 
     window._apply_state(AppState.TRANSCRIBING.value)
     _drain_events()
@@ -303,7 +303,10 @@ def test_verbose_to_simple_toggle_mid_turn_clears_queued_status_rows(
     window._apply_state(AppState.TRANSCRIBING.value)
     window._apply_state(AppState.THINKING.value)
     # Queue holds two pending states; no user bubble yet.
-    assert window._pending_status_log_states == ["transcribing", "thinking"]
+    assert window._turn_coordinator.pending_status_log_states == [
+        "transcribing",
+        "thinking",
+    ]
 
     # Mid-turn switch to simple.
     window.settings.setValue("log_verbose_mode", False)
@@ -319,7 +322,7 @@ def test_verbose_to_simple_toggle_mid_turn_clears_queued_status_rows(
         "between queuing and flush"
     )
     # Queue is empty regardless of mode.
-    assert window._pending_status_log_states == []
+    assert window._turn_coordinator.pending_status_log_states == []
 
 
 # --- draft → final user-bubble promotion ---------------------------------

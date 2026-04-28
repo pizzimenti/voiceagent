@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QApplication
 from voiceagent.catalog_model import CatalogModel
 from voiceagent.controller import VoiceController
 from voiceagent.conversation_model import ConversationModel
+from voiceagent.conversation_turn_coordinator import ConversationTurnCoordinator
 from voiceagent.downloaders import format_bytes, format_transfer_rate
 from voiceagent.logging_utils import log_ui_timing
 from voiceagent.model_loader import WhisperModelLoader
@@ -29,18 +30,6 @@ from voiceagent.services.llm_controller import LlmController
 from voiceagent.services.playback import AudioPlayer
 from voiceagent.startup_deferral import schedule_after_first_frame
 from voiceagent.tts_loader import TtsVoiceLoader
-
-
-# Pipeline states surfaced into the verbose conversation log.
-# Labels mirror the micStatusLabel vocabulary so the mic indicator
-# and the log read identically. RECORDING is intentionally omitted
-# because the draft user bubble already signals "listening".
-_STATUS_LOG_LABELS: dict[str, str] = {
-    AppState.TRANSCRIBING.value: "Transcribing…",
-    AppState.THINKING.value: "Thinking…",
-    AppState.SYNTHESIZING.value: "Generating voice…",
-    AppState.SPEAKING.value: "Speaking…",
-}
 
 
 class _CatalogStateAdapter:
@@ -96,24 +85,27 @@ class MainWindow(QObject):
         self._stt_catalog = self.model_loader.transcriber.available_items()
         self._tts_catalog = self.tts_loader.tts_service.available_items()
         self._conversation_model = ConversationModel(self)
+        # Per-turn ordering policy lives in the coordinator. See
+        # `conversation_turn_coordinator.py` for the rationale on why
+        # the coordinator writes through the model directly instead of
+        # emitting per-mutation signals.
+        self._turn_coordinator = ConversationTurnCoordinator(
+            self._conversation_model,
+            # Live-callable so a direct `QSettings.setValue(...)` (used
+            # by integration tests AND by the QML-bound
+            # `setLogVerboseMode` slot via `self.settings`) takes
+            # effect immediately, matching the pre-refactor behavior
+            # where `_apply_state` and `_flush_pending_status_log_entries`
+            # both read `self.logVerboseMode` fresh.
+            verbose_mode=lambda: self.logVerboseMode,
+            clock_time=self._clock_time,
+            parent=self,
+        )
+        self._turn_coordinator.conversation_changed.connect(
+            self.conversation_changed
+        )
         self._error_message = ""
         self._status_message = "Ready"
-        # Tracks the most recent verbose-mode pipeline status state we
-        # logged. Reset on turn-boundary states (RECORDING, IDLE) so a
-        # new turn that re-enters the same first-phase state as the
-        # previous turn ended on (e.g., user cancelled mid-Transcribing
-        # then starts a new turn) does not get its first marker
-        # suppressed by the immediate-predecessor dedupe.
-        self._last_logged_status_state: str | None = None
-        # Verbose-mode turn-anchoring: status rows must not appear before
-        # the user bubble for the current turn. If TRANSCRIBING/THINKING
-        # fires while no user bubble has been created yet (short turn
-        # without a partial transcript), queue the state and flush after
-        # the user bubble materializes via _sync_live_user_message or
-        # _append_user_message. Both reset on RECORDING/IDLE turn
-        # boundaries.
-        self._current_turn_user_bubble_present: bool = False
-        self._pending_status_log_states: list[str] = []
         self._llm = LlmController(self.controller.chat_client, self.settings, parent=self)
         self._shutting_down = False
         self._state = "idle"
@@ -555,6 +547,9 @@ class MainWindow(QObject):
     def setLogVerboseMode(self, enabled: bool) -> None:  # noqa: N802
         if bool(enabled) == self.logVerboseMode:
             return
+        # The coordinator reads `logVerboseMode` (and thus
+        # `QSettings`) live via its callable provider — no need to
+        # push the update separately. See `__init__`.
         self.settings.setValue("log_verbose_mode", bool(enabled))
         self.ui_changed.emit()
 
@@ -656,65 +651,16 @@ class MainWindow(QObject):
             self.settings.setValue("selected_tts_model", self.selectedTtsModel)
 
     def _append_user_message(self, text: str) -> None:
-        cleaned = text.strip()
-        if not cleaned:
-            return
-        pending_index = self._find_message_index(role="user", turn_pending=True)
-        if pending_index >= 0:
-            self._conversation_model.update_message(
-                pending_index,
-                text=cleaned,
-                bubbleState="sent",
-                turnPending=False,
-                timestampLabel=f"Sent {self._clock_time()}",
-            )
-        else:
-            self._conversation_model.append_message(
-                {
-                    "role": "user",
-                    "text": cleaned,
-                    "replayable": False,
-                    "bubbleState": "sent",
-                    "turnPending": False,
-                    "timestampLabel": f"Sent {self._clock_time()}",
-                }
-            )
-        self._current_turn_user_bubble_present = True
-        self._flush_pending_status_log_entries()
-        self.conversation_changed.emit()
+        # Thin forwarder — coordinator owns ordering policy.
+        self._turn_coordinator.on_user_transcript(text)
 
     def _append_assistant_message(self, text: str) -> None:
-        cleaned = text.strip()
-        if not cleaned:
-            return
-        self._conversation_model.append_message(
-            {
-                "role": "assistant",
-                "text": cleaned,
-                "replayable": True,
-                "bubbleState": "sent",
-                "turnPending": False,
-                "timestampLabel": f"Received {self._clock_time()}",
-            }
-        )
-        self.conversation_changed.emit()
+        # Thin forwarder — coordinator owns ordering policy.
+        self._turn_coordinator.on_assistant_response(text)
 
     def _append_log_message(self, text: str, level: str) -> None:
-        cleaned = text.strip()
-        if not cleaned:
-            return
-        self._conversation_model.append_message(
-            {
-                "role": "system",
-                "level": level,
-                "text": cleaned,
-                "replayable": False,
-                "bubbleState": "plain",
-                "turnPending": False,
-                "timestampLabel": self._clock_time(),
-            }
-        )
-        self.conversation_changed.emit()
+        # Thin forwarder — coordinator owns ordering policy.
+        self._turn_coordinator.on_log_message(text, level)
 
     def _apply_audio_mute_state(self, enabled: bool) -> None:
         self.controller.player.set_muted(enabled)
@@ -779,54 +725,12 @@ class MainWindow(QObject):
 
     def _apply_state(self, state: str) -> None:
         self._state = state
-        if state in {
-            AppState.TRANSCRIBING.value,
-            AppState.THINKING.value,
-            AppState.SYNTHESIZING.value,
-            AppState.SPEAKING.value,
-        }:
-            self._promote_live_user_message()
-        if state in {AppState.RECORDING.value, AppState.IDLE.value}:
-            # Turn boundary — reset the verbose-log dedupe AND the
-            # user-bubble-anchor flag so a new turn starts clean.
-            self._last_logged_status_state = None
-            self._current_turn_user_bubble_present = False
-            self._pending_status_log_states.clear()
-        if self.logVerboseMode and state in _STATUS_LOG_LABELS:
-            if state != self._last_logged_status_state:
-                self._last_logged_status_state = state
-                if self._current_turn_user_bubble_present:
-                    self._append_status_log_entry(state)
-                else:
-                    # Defer until the user bubble materializes, so the
-                    # status row never lands before the user turn it
-                    # belongs to.
-                    self._pending_status_log_states.append(state)
+        # Per-turn ordering (promote-draft, dedupe, queue/flush of
+        # verbose pipeline status rows, RECORDING/IDLE boundary
+        # reset) lives in the coordinator. MainWindow only owns the
+        # `state` property + `ui_changed` notification here.
+        self._turn_coordinator.on_state_changed(state)
         self.ui_changed.emit()
-
-    def _append_status_log_entry(self, state: str) -> None:
-        self._conversation_model.append_message(
-            {
-                "role": "status",
-                "text": _STATUS_LOG_LABELS[state],
-                "stateName": state,
-            }
-        )
-        self.conversation_changed.emit()
-
-    def _flush_pending_status_log_entries(self) -> None:
-        if not self._pending_status_log_states:
-            return
-        # Honor a mid-turn verbose -> simple toggle. The queued states
-        # are deferred entries from when verbose was on; if the user
-        # has since switched to simple, drop them silently rather than
-        # leaking pipeline rows into a transcript the user just chose
-        # to keep clean. Always clear the queue since these states are
-        # stale anyway (we've moved past them).
-        if self.logVerboseMode:
-            for state in self._pending_status_log_states:
-                self._append_status_log_entry(state)
-        self._pending_status_log_states.clear()
 
     def _set_status_message(self, message: str) -> None:
         # Status text drives the mic-button label only. Pipeline activity
@@ -838,21 +742,16 @@ class MainWindow(QObject):
         self.ui_changed.emit()
 
     def _set_error_message(self, message: str, *, discard_draft: bool = True) -> None:
-        # discard_draft defaults to True because most error sources
-        # (STT failure, transcription failure, connection drop) signal
-        # that the in-flight user turn is dead. Replay-of-prior-message
-        # failures are the exception — they're unrelated to the active
-        # turn — and pass discard_draft=False.
+        # MainWindow only owns the `errorMessage` property text +
+        # `ui_changed` notification; the coordinator handles the
+        # discard-draft + append-log-row policy. discard_draft default
+        # documented at the coordinator's `on_error_message`.
         self._error_message = message
-        if message:
-            if discard_draft:
-                self._discard_draft_user_message()
-            self._append_log_message(message, "error")
+        self._turn_coordinator.on_error_message(message, discard_draft=discard_draft)
         self.ui_changed.emit()
 
     def _handle_connection_changed(self, enabled: bool) -> None:
-        if not enabled:
-            self._discard_draft_user_message()
+        self._turn_coordinator.on_connection_changed(enabled)
         self.ui_changed.emit()
 
     def _emit_ui_changed(self, *_args) -> None:
@@ -909,47 +808,8 @@ class MainWindow(QObject):
         self.ui_changed.emit()
 
     def _sync_live_user_message(self, text: str) -> None:
-        cleaned = text.strip()
-        draft_index = self._find_message_index(role="user", bubble_state="draft")
-        if not cleaned:
-            draft_message = self._conversation_model.message(draft_index)
-            if draft_message is not None and not bool(draft_message.get("turnPending")):
-                self._conversation_model.remove_message(draft_index)
-                self.conversation_changed.emit()
-            return
-        if draft_index >= 0:
-            self._conversation_model.update_message(draft_index, text=cleaned)
-        else:
-            self._conversation_model.append_message(
-                {
-                    "role": "user",
-                    "text": cleaned,
-                    "replayable": False,
-                    "bubbleState": "draft",
-                    "turnPending": True,
-                    "timestampLabel": "",
-                }
-            )
-            self._current_turn_user_bubble_present = True
-            self._flush_pending_status_log_entries()
-        self.conversation_changed.emit()
-
-    def _promote_live_user_message(self) -> None:
-        draft_index = self._find_message_index(role="user", bubble_state="draft")
-        if draft_index < 0:
-            return
-        self._conversation_model.update_message(draft_index, bubbleState="sent", turnPending=True)
-        self.conversation_changed.emit()
-
-    def _find_message_index(self, role: str, bubble_state: str | None = None, turn_pending: bool | None = None) -> int:
-        return self._conversation_model.find_message_index(role, bubble_state, turn_pending)
-
-    def _discard_draft_user_message(self) -> None:
-        draft_index = self._find_message_index(role="user", bubble_state="draft")
-        if draft_index < 0:
-            return
-        self._conversation_model.remove_message(draft_index)
-        self.conversation_changed.emit()
+        # Thin forwarder — coordinator owns ordering policy.
+        self._turn_coordinator.on_live_transcript(text)
 
     def _clock_time(self) -> str:
         return datetime.now().strftime("%H:%M:%S")
