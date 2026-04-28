@@ -66,38 +66,6 @@ Kirigami.ApplicationWindow {
         return -1;
     }
 
-    function catalogMatches(name, filterText) {
-        if (!filterText) {
-            return true;
-        }
-        return name.toLowerCase().indexOf(filterText.toLowerCase()) !== -1;
-    }
-
-    function modelStatusSummary(item) {
-        if (item.installed && !item.managed) {
-            return "Custom path";
-        }
-        return item.installed ? "Installed" : "Available to download";
-    }
-
-    function modelActionLabel(item) {
-        return item.installed ? "Remove" : "Install";
-    }
-
-    // Install / Remove acts on managed catalog entries. Two row shapes
-    // hide the action button:
-    //   * `installed && !managed` — custom path (e.g., WHISPER_MODEL=/dir).
-    //     Voice Agent does not own that file's lifecycle.
-    //   * `!installed && !downloadable` — a configured name we can't
-    //     resolve to a download source; clicking Install would fail.
-    // The `downloadable` branch matters for first-run TTS: a configured
-    // `TTS_MODEL=en_US-lessac-medium` may not be in `known_voice_names`
-    // yet (cache hasn't populated) but the name is still resolvable via
-    // Piper's URL convention, so the Install button must remain.
-    function modelActionVisible(item) {
-        return item.installed ? item.managed : item.downloadable;
-    }
-
     function scrollList(listView, wheel) {
         if (!listView) {
             return;
@@ -282,105 +250,14 @@ Kirigami.ApplicationWindow {
                             onTextChanged: modelManagerWindow.sttFilter = text
                         }
 
-                        ListView {
+                        CatalogList {
                             id: sttCatalogView
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            clip: true
-                            spacing: 0
-                            model: voiceAgent.sttCatalogModel
-                            boundsBehavior: Flickable.StopAtBounds
-                            flickDeceleration: 1800
-                            maximumFlickVelocity: 24000
-                            ScrollBar.vertical: ScrollBar {}
-
-                            MouseArea {
-                                anchors.fill: parent
-                                acceptedButtons: Qt.NoButton
-                                propagateComposedEvents: true
-                                z: 2
-                                onWheel: function(wheel) {
-                                    root.scrollList(sttCatalogView, wheel);
-                                }
-                            }
-
-                            delegate: Item {
-                                id: sttDelegate
-                                width: ListView.view ? ListView.view.width : 0
-                                visible: root.catalogMatches(model.name, modelManagerWindow.sttFilter)
-                                height: visible ? sttRow.implicitHeight + Kirigami.Units.mediumSpacing * 2 : 0
-                                readonly property bool downloading: model.loading
-                                readonly property real downloadProgress: model.progress
-
-                                RowLayout {
-                                    id: sttRow
-                                    anchors.top: parent.top
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.margins: Kirigami.Units.mediumSpacing
-                                    spacing: Kirigami.Units.mediumSpacing
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 2
-
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text: model.name
-                                            font.weight: voiceAgent.selectedSttModel === model.name ? Font.DemiBold : Font.Normal
-                                            wrapMode: Text.WordWrap
-                                        }
-
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text: root.modelStatusSummary(model)
-                                            color: Kirigami.Theme.disabledTextColor
-                                            wrapMode: Text.WordWrap
-                                        }
-                                    }
-
-                                    RowLayout {
-                                        spacing: Kirigami.Units.smallSpacing
-
-                                        ToolButton {
-                                            visible: model.installed
-                                            text: voiceAgent.selectedSttModel === model.name ? "Current" : "Use"
-                                            enabled: voiceAgent.selectedSttModel !== model.name
-                                            onClicked: voiceAgent.selectSttModel(model.name)
-                                        }
-
-                                        ToolButton {
-                                            visible: root.modelActionVisible(model)
-                                            text: sttDelegate.downloading ? "Installing…" : root.modelActionLabel(model)
-                                            enabled: !sttDelegate.downloading
-                                            onClicked: {
-                                                if (model.installed) {
-                                                    voiceAgent.deleteSttModel(model.name);
-                                                } else {
-                                                    voiceAgent.installSttModel(model.name);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Rectangle {
-                                    id: sttProgressTrack
-                                    visible: sttDelegate.downloading
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.bottom: parent.bottom
-                                    height: 2
-                                    color: Kirigami.Theme.alternateBackgroundColor
-                                    Rectangle {
-                                        anchors.left: parent.left
-                                        anchors.top: parent.top
-                                        anchors.bottom: parent.bottom
-                                        width: parent.width * sttDelegate.downloadProgress
-                                        color: Kirigami.Theme.highlightColor
-                                    }
-                                }
-                            }
+                            catalogModel: voiceAgent.sttCatalogModel
+                            filterText: modelManagerWindow.sttFilter
+                            selectedName: voiceAgent.selectedSttModel
+                            onSelect: function(name) { voiceAgent.selectSttModel(name); }
+                            onInstall: function(name) { voiceAgent.installSttModel(name); }
+                            onRemove: function(name) { voiceAgent.deleteSttModel(name); }
                         }
                     }
 
@@ -398,105 +275,14 @@ Kirigami.ApplicationWindow {
                             onTextChanged: modelManagerWindow.ttsFilter = text
                         }
 
-                        ListView {
+                        CatalogList {
                             id: ttsCatalogView
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            clip: true
-                            spacing: 0
-                            model: voiceAgent.ttsCatalogModel
-                            boundsBehavior: Flickable.StopAtBounds
-                            flickDeceleration: 1800
-                            maximumFlickVelocity: 24000
-                            ScrollBar.vertical: ScrollBar {}
-
-                            MouseArea {
-                                anchors.fill: parent
-                                acceptedButtons: Qt.NoButton
-                                propagateComposedEvents: true
-                                z: 2
-                                onWheel: function(wheel) {
-                                    root.scrollList(ttsCatalogView, wheel);
-                                }
-                            }
-
-                            delegate: Item {
-                                id: ttsDelegate
-                                width: ListView.view ? ListView.view.width : 0
-                                visible: root.catalogMatches(model.name, modelManagerWindow.ttsFilter)
-                                height: visible ? ttsRow.implicitHeight + Kirigami.Units.mediumSpacing * 2 : 0
-                                readonly property bool downloading: model.loading
-                                readonly property real downloadProgress: model.progress
-
-                                RowLayout {
-                                    id: ttsRow
-                                    anchors.top: parent.top
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.margins: Kirigami.Units.mediumSpacing
-                                    spacing: Kirigami.Units.mediumSpacing
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 2
-
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text: model.name
-                                            font.weight: voiceAgent.selectedTtsModel === model.name ? Font.DemiBold : Font.Normal
-                                            wrapMode: Text.WordWrap
-                                        }
-
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text: root.modelStatusSummary(model)
-                                            color: Kirigami.Theme.disabledTextColor
-                                            wrapMode: Text.WordWrap
-                                        }
-                                    }
-
-                                    RowLayout {
-                                        spacing: Kirigami.Units.smallSpacing
-
-                                        ToolButton {
-                                            visible: model.installed
-                                            text: voiceAgent.selectedTtsModel === model.name ? "Current" : "Use"
-                                            enabled: voiceAgent.selectedTtsModel !== model.name
-                                            onClicked: voiceAgent.selectTtsModel(model.name)
-                                        }
-
-                                        ToolButton {
-                                            visible: root.modelActionVisible(model)
-                                            text: ttsDelegate.downloading ? "Installing…" : root.modelActionLabel(model)
-                                            enabled: !ttsDelegate.downloading
-                                            onClicked: {
-                                                if (model.installed) {
-                                                    voiceAgent.deleteTtsModel(model.name);
-                                                } else {
-                                                    voiceAgent.installTtsModel(model.name);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Rectangle {
-                                    id: ttsProgressTrack
-                                    visible: ttsDelegate.downloading
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.bottom: parent.bottom
-                                    height: 2
-                                    color: Kirigami.Theme.alternateBackgroundColor
-                                    Rectangle {
-                                        anchors.left: parent.left
-                                        anchors.top: parent.top
-                                        anchors.bottom: parent.bottom
-                                        width: parent.width * ttsDelegate.downloadProgress
-                                        color: Kirigami.Theme.highlightColor
-                                    }
-                                }
-                            }
+                            catalogModel: voiceAgent.ttsCatalogModel
+                            filterText: modelManagerWindow.ttsFilter
+                            selectedName: voiceAgent.selectedTtsModel
+                            onSelect: function(name) { voiceAgent.selectTtsModel(name); }
+                            onInstall: function(name) { voiceAgent.installTtsModel(name); }
+                            onRemove: function(name) { voiceAgent.deleteTtsModel(name); }
                         }
                     }
                 }

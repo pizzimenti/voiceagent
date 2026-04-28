@@ -57,6 +57,7 @@ export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
 qmllint \
   "${ROOT_DIR}/src/voiceagent/qml/MainWindow.qml" \
   "${ROOT_DIR}/src/voiceagent/qml/MicButton.qml" \
+  "${ROOT_DIR}/src/voiceagent/qml/CatalogList.qml" \
   "${ROOT_DIR}/src/voiceagent/qml/ConversationPane.qml"
 
 # Compile-load the real MainWindow against the real
