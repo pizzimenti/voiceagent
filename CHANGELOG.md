@@ -4,27 +4,26 @@ All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
 ## 0.8.0 — 2026-04-28
 
-**Pin Piper download + verification to a single upstream commit SHA.**
-Closes the TOCTOU window in v0.7.0's layer 2 / 3 verification
-(file-size and md5 checks): `_download_voice` and `artifact_manifest`
-both used to resolve URLs against `main` of `rhasspy/piper-voices`,
-so an upstream republish in the few-second window between aria2
-fetching the bytes and the manifest refresh would make the verifier
-fail-close on a healthy install. Layer 4 (smoke-load) caught real
-corruption so the user could retry, but the false-positive was
-visible.
+**Capability sweep.** Eight PRs land together: SHA-pinned download
+verification (closes the layer 2/3 TOCTOU window), MainWindow internals
+reorganized via `ConversationTurnCoordinator` and three new QML
+components, KDE polish (FormLayout / i18n / Kirigami.Action), inertial
+wheel-scroll mode-switch, and replay-failure toast. Minor bump per the
+version policy: multiple capability additions, no public-API break.
 
-Now, every install captures the upstream commit SHA at download
-start and pins both the file fetches AND the verifier's manifest
-fetch to that same revision. Bytes-perfect manifest comparison;
-no more self-healing false-positives from upstream churn.
+### SHA-pinned download verification (PR #20)
 
-Minor bump per the project's version policy: defense-in-depth
-capability addition that closes a known false-positive class. No
-public-API break — `artifact_manifest(name)` still has the same
-signature; the SHA is plumbed via a per-instance
-`_current_download_sha` field that `_download_voice` sets and
-clears.
+`_download_voice` and `artifact_manifest` both used to resolve URLs
+against `main` of `rhasspy/piper-voices`, so an upstream republish in
+the few-second window between aria2 fetching the bytes and the manifest
+refresh would make the verifier fail-close on a healthy install. Layer
+4 (smoke-load) caught real corruption so the user could retry, but the
+false-positive was visible. Now, every install captures the upstream
+commit SHA at download start and pins both the file fetches AND the
+verifier's manifest fetch to that same revision. Bytes-perfect manifest
+comparison; no more self-healing false-positives from upstream churn.
+The SHA is plumbed via a per-instance `_current_download_sha` field
+that `_download_voice` sets and clears.
 
 ### Added
 
@@ -68,7 +67,7 @@ clears.
   `main` because the eager catalog wants the latest browsable list
   of voices, not a download-pinned snapshot.
 
-### Tests
+### SHA-pinning tests
 
 - 11 new tests in `tests/test_tts_sha_pinning.py` covering SHA
   capture, URL construction, `_download_voice` threading, error
@@ -80,7 +79,68 @@ clears.
   the fixture (replaces the previous `_fetch_and_cache_voice_names`
   monkeypatching). One new test asserts the no-SHA branch returns
   empty without falling back to `main`.
-- 194 tests passing total (was 182).
+
+### Internal architecture (PRs #16, #17, #18, #19, #21)
+
+- **#17 — Eliminate compiletest `StubVoiceAgent` heredoc.**
+  `voiceagent-compiletest.sh` now loads a real `MainWindow` against a
+  real `QQmlApplicationEngine`. Drift between the stub and the actual
+  property/slot surface becomes structurally impossible. New
+  `tests/fakes.py` extracts the test fakes for shared use.
+- **#16 — `schedule_after_first_frame` deferral helper.**
+  `MainWindow.show()`'s LLM autoconnect and TTS catalog refresh now
+  defer through `QQuickWindow.frameSwapped` (one-shot, self-
+  disconnecting) instead of `QTimer.singleShot(0, ...)`. Parallels the
+  daemon-thread sounddevice pre-warm in `app.py:142`.
+- **#18 — `required property var voiceAgent`.** `MicButton.qml` and
+  `ConversationPane.qml` declare `voiceAgent` required. All internal
+  `voiceAgent.*` bindings use the null-safe ternary pattern
+  (`component.voiceAgent ? component.voiceAgent.foo : fallback`) to
+  tolerate nested-component instantiation order. Closes the first-paint
+  TypeError class that PR #5 hit and reverted.
+- **#19 — `ConversationTurnCoordinator(QObject)`.** New module owns
+  the per-turn flag, pending status-row queue, dedupe state, and
+  verbose-mode gate. MainWindow forwards events to it via thin slot
+  bodies; coordinator is the sole writer to `ConversationModel`. ~140
+  lines moved out of `window.py`. Fold-in for the
+  `ConversationLogController` design from the v0.4.0 round-2 review.
+- **#21 — QML component extraction.** Three new components:
+  `CatalogList.qml` (replaces duplicated STT/TTS catalog ListView
+  delegates), `MicButtonFrame.qml` (unified across compact/medium
+  modes via `animatePulse: bool`), `SessionSetupPane.qml`.
+  `MainWindow.qml` shrinks 810 → 362 lines (-448).
+
+### KDE polish + UX (PRs #22, #23, #24)
+
+- **#22 — KDE polish bundle.** `SessionSetupPane.qml` migrated from
+  `GridLayout` to `Kirigami.FormLayout` (`wideMode: !compactMode`
+  drives compact-mode collapse). User-facing strings wrapped in
+  `i18nCtx.i18n(...)` via a tiny `TranslatorContext` Python shim
+  (`src/voiceagent/i18n.py`) — swappable for `KLocalizedContext` once
+  PyKF6 is available. New verbose-log `Kirigami.Action` lifts to the
+  page header.
+- **#23 — Inertial wheel-scroll mode-switch.** `scrollList()` branches
+  on `listView.stickToBottom`: at-bottom uses direct `contentY`
+  assignment (preserves sticky-bottom state machine); scrolled-up
+  uses `listView.flick(0, velocity)` for momentum scrolling. Velocity
+  computed at `pixelDelta * 40` or `(angleDelta / 120) * gridUnit *
+  60`. Auto-restores sticky-bottom via the existing `onMovementEnded`
+  in `ConversationPane.qml`.
+- **#24 — Replay failure toast.** New `replay_failed = Signal(str)`
+  on `MainWindow` fires when `replayMessage` hits a not-available or
+  synthesis-exception path. QML `Connections` invokes
+  `applicationWindow().showPassiveNotification(reason, "short")` for
+  a transient ~4s toast. The static readiness reason routes through
+  `i18nCtx.i18n(...)`; the dynamic exception payload stays
+  untranslated.
+
+### Tests
+
+- 217 passing total (was 182 at v0.7.0). New suites:
+  `tests/test_tts_sha_pinning.py` (11), `tests/test_startup_deferral.py`
+  (6), `tests/test_conversation_turn_coordinator.py` (21), plus
+  additions to `test_artifact_manifest.py`, `test_mainwindow_integration.py`,
+  and the existing TTS / catalog suites.
 
 ## 0.7.0 — 2026-04-27
 

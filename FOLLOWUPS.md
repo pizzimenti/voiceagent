@@ -14,16 +14,15 @@ fixture, standalone qmllint, `catalog_refresh_settled` signal, ORT
 `DISABLE_ALL` for verifier, atomic `voices.json` writes,
 `known_voice_names` cache + lock, root-deletion guard) landed across
 PRs #11, #12, #13. Download verification layers 2 (size) and 3
-(md5 / sha256) landed in v0.7.0 (PR #14); SHA pinning that closes the
-layer 2/3 TOCTOU window landed in v0.8.0 (PR #20). Compiletest stub
-elimination, post-first-frame deferral helper, QML required-property
-migration, ConversationTurnCoordinator extraction, and QML component
-extraction all landed in PRs #16-#21.
-
-## Pending cycles
-
-(none — both Cycle 9 items shipped: inertial wheel-scroll mode-switch
-in PR #23, `replayMessage` failure-toast in this PR.)
+(md5 / sha256) landed in v0.7.0 (PR #14). v0.8.0 then drained the rest
+of the FOLLOWUPS roadmap across PRs #16–#24: SHA-pinned download
+verification, post-first-frame deferral helper, compiletest stub
+elimination via real-MainWindow, `required property var voiceAgent`
+migration, `ConversationTurnCoordinator` extraction (folds in the
+former `ConversationLogController` design), three new QML components
+(CatalogList / MicButtonFrame / SessionSetupPane), KDE polish bundle
+(FormLayout / i18n / Kirigami.Action), inertial wheel-scroll mode-
+switch, and replay-failure toast.
 
 ## Future feature work (lower priority)
 
