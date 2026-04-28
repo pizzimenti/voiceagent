@@ -46,7 +46,14 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    readonly property bool compactMode: width < Kirigami.Units.gridUnit * 25
+    // CompactMode threshold raised from the legacy 25 grid units. In
+    // mediumMode the SessionSetupPane runs a side-by-side form + mic
+    // frame; below ~35 grid units the form's label column, controls, and
+    // the mic frame don't all fit without label clipping or mic overlap
+    // (visible at 600 px logical width on the v0.8.1 visual smoke run).
+    // gridUnit keeps the breakpoint scale-aware: at 1.5x Plasma scaling
+    // the gridUnit grows so the physical-pixel threshold scales up too.
+    readonly property bool compactMode: width < Kirigami.Units.gridUnit * 35
     readonly property bool mediumMode: !compactMode
     readonly property bool ultraCompactMode: compactMode
     readonly property int sttInstalledCount: voiceAgent.sttInstalledCount

@@ -33,12 +33,23 @@ most thorough:
    actions, scroll-mode branching, and (via
    `tests/test_replay_toast.py`) the replay-failure toast wiring
    round-trip into the Kirigami passive-notifications overlay.
+4. **`./voiceagent-visualtest.sh`** — "does the QML LOOK right?"
+   gate. Renders `MainWindow` against `QT_QPA_PLATFORM=offscreen`
+   via `QQuickWindow.grabWindow()` at multiple combinations of
+   `QT_SCALE_FACTOR` (1.0 / 1.25 / 1.5 — Plasma's common HiDPI
+   settings) and logical width (400 / 600 / 800 / 1000 / 1200 px),
+   saving 15 PNGs under `screenshots/` (gitignored). Catches layout
+   regressions that only surface at specific scale × width
+   combinations. The driver is `tests/visual/visual_smoke.py`. Use
+   when changing responsive thresholds, FormLayout structure, or
+   anything that touches `Kirigami.Units.gridUnit`-dependent
+   sizing.
 
 The user's manual smoke test reduces to subjective items only:
-visual layout (does the spacing feel right) and animation feel
-(does the mic pulse breathe at the right tempo). Behavioral checks
-the manual smoke previously covered are now in the automation
-suite.
+animation feel (does the mic pulse breathe at the right tempo) and
+visual rhythm judgments that humans see better than diff tools.
+Behavioral and structural checks the manual smoke previously
+covered are now in the automation suite.
 
 ## KDE/QML implementation memory
 

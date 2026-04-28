@@ -2,6 +2,61 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.8.2 — 2026-04-28
+
+**Visual-smoke framework + compactMode breakpoint fix.** The first
+real-world launch of v0.8.0 surfaced a layout regression that the
+v0.8.1 QA infrastructure didn't cover: at small-but-not-tiny window
+widths (~600 px), `SessionSetupPane.qml`'s FormLayout column squeezed
+hard, labels left-clipped to "RL:" / "el:", and the medium-mode mic
+frame visually overlapped the dropdown arrows. Two parts:
+
+### Added — visual smoke runner
+
+- **`tests/visual/visual_smoke.py`** + **`voiceagent-visualtest.sh`** —
+  headless `QQuickWindow.grabWindow()` capture pipeline. Renders
+  `MainWindow` against `QT_QPA_PLATFORM=offscreen` at multiple
+  combinations of `QT_SCALE_FACTOR` (1.0x / 1.25x / 1.5x — Plasma's
+  common HiDPI settings) and logical width (400 / 600 / 800 / 1000 /
+  1200 px), saving 15 PNGs under `screenshots/` (gitignored). Closes
+  the gap between "QML loads" (compiletest) / "QML behaves"
+  (qatest) / "QML LOOKS right" (visualtest). Layout regressions that
+  only appear at specific scale × width combinations are now
+  diff-detectable.
+- Visual-test gate documented alongside the other test gates.
+
+### Changed — compactMode breakpoint
+
+- **`MainWindow.qml` `compactMode` threshold raised 25 → 35
+  `gridUnit`s.** Below ~35 grid units there isn't enough horizontal
+  room for the side-by-side form + mic frame without column squeeze;
+  the visual smoke run confirmed the regression at 600 px logical
+  width (1.0x), and the fix lands cleanly across 1.0x / 1.25x / 1.5x
+  scales because `gridUnit` is itself scale-aware. Below the
+  threshold the existing compactMode layout (mic-only, conversation
+  pane full-width) takes over, which is already known good.
+
+### Fixed (companion to 0.8.0)
+
+- **FormLayout label crowding (PR companion to v0.8.0 KDE polish).**
+  `SessionSetupPane.qml` previously concatenated `i18n("Speech:") + " " + voiceAgent.modelStatus`
+  into the FormData label, which blew out the right-aligned label
+  column to the width of the longest dynamic status string. Trimmed
+  to static labels — the dynamic status is already surfaced via the
+  progress label area below the form. Bumped the form/mic gap from
+  `mediumSpacing` to `largeSpacing`.
+- **Bare entry point's missing QML import path.** `.venv/bin/voiceagent`
+  failed to load `org.kde.kirigami` because no wrapper had set
+  `QML_IMPORT_PATH` (only `voiceagent-buildtest.sh` / -compiletest /
+  -qatest / -visualtest do that). `app.py:_ensure_qml_import_path()`
+  auto-prepends the standard Qt 6 QML directories
+  (`/usr/lib/qt6/qml`) at startup if missing, so both the bare
+  entry point and the wrapper scripts work.
+- **Stale runtime version string.** v0.8.0's PR #20 bumped
+  `pyproject.toml` and `PKGBUILD` but missed `src/voiceagent/__init__.py`,
+  so app startup was logging "Voice Agent 0.7.0" against a v0.8.0
+  install. Mirrored.
+
 ## 0.8.1 — 2026-04-28
 
 **QA automation infrastructure.** Adds a headless QML/UI verification
