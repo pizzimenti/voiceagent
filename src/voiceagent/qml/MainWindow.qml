@@ -504,6 +504,20 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    // Wrap ConversationPane.qml in an inline Component so the Loader call
+    // sites below can pass `voiceAgent` explicitly. ConversationPane has a
+    // `required property var voiceAgent`, which means a bare `source:`
+    // Loader cannot satisfy the requirement — the property must be set at
+    // construction time (Loader.item.voiceAgent = ... in onLoaded fires too
+    // late and a `required` property must be wired in the inline binding).
+    Component {
+        id: conversationPaneComponent
+
+        ConversationPane {
+            voiceAgent: root.voiceAgent
+        }
+    }
+
     Component {
         id: sessionPaneComponent
 
@@ -607,6 +621,7 @@ Kirigami.ApplicationWindow {
                             MicButton {
                                 anchors.fill: parent
                                 anchors.margins: 0
+                                voiceAgent: root.voiceAgent
                                 iconSize: 34
                                 fontPixel: 11
                                 borderWidth: 3
@@ -777,7 +792,7 @@ Kirigami.ApplicationWindow {
 
                     Loader {
                         active: root.mediumMode
-                        source: "ConversationPane.qml"
+                        sourceComponent: conversationPaneComponent
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                     }
@@ -787,7 +802,7 @@ Kirigami.ApplicationWindow {
                     anchors.fill: parent
                     visible: root.compactMode
                     active: root.compactMode
-                    source: "ConversationPane.qml"
+                    sourceComponent: conversationPaneComponent
                 }
             }
         }
