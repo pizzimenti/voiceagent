@@ -13,110 +13,46 @@ buffers, hoisted test helpers, `ruff` dev extra, `QApplication`
 fixture, standalone qmllint, `catalog_refresh_settled` signal, ORT
 `DISABLE_ALL` for verifier, atomic `voices.json` writes,
 `known_voice_names` cache + lock, root-deletion guard) landed across
-PRs #11, #12, #13. Download verification layers 2 (size vs manifest)
-and 3 (md5 / sha256 vs manifest) landed in v0.7.0 (PR #14); SHA
-pinning that closes the layer 2/3 TOCTOU window landed in v0.8.0.
-What remains is UI / design judgment work.
+PRs #11, #12, #13. Download verification layers 2 (size) and 3
+(md5 / sha256) landed in v0.7.0 (PR #14); SHA pinning that closes the
+layer 2/3 TOCTOU window landed in v0.8.0 (PR #20). Compiletest stub
+elimination, post-first-frame deferral helper, QML required-property
+migration, ConversationTurnCoordinator extraction, and QML component
+extraction all landed in PRs #16-#21.
 
-## Future feature work
+## Pending cycles
 
-### Implement true inertial scrolling
+- **KDE polish bundle.** Migrate the session-setup grid (now
+  `SessionSetupPane.qml`) to `Kirigami.FormLayout`. Wire user-facing
+  strings through `KLocalizedContext` / `i18n()` for i18n readiness.
+  Convert inline button bindings to `Kirigami.Action`-based command
+  surfaces. Land together so the QML reads consistently.
 
-`MainWindow.qml:83 scrollList()` currently does direct `contentY`
-assignment with bounds-checking. CHANGELOG was corrected accordingly
-in PR #5. Designing a real inertial implementation that preserves
-sticky-bottom behavior is non-trivial (per AGENTS.md, native
-`Flickable.flick()` can detach the sticky-bottom state machine).
-Worth scoping if user feedback asks for it.
+- **`replayMessage` failure UX.** Round-2 added a try/except and an
+  `is_available()` readiness check; surface synthesis errors via a
+  `Kirigami.PassiveNotification` toast (~3s auto-dismiss) rather than
+  silently logging.
 
-## Deferred review items still open
+- **True inertial scrolling.** `MainWindow.qml scrollList()` does
+  direct `contentY` assignment with bounds-checking. Implement a
+  mode-switch: when sticky-pinned to bottom, keep the existing
+  direct-assignment scroll; when the user has scrolled up, switch to
+  native `Flickable.flick()` for inertial behavior. Auto-restore
+  sticky-bottom when the user scrolls back to bottom. Per AGENTS.md,
+  this design keeps the two modes from fighting.
 
-Items that survived the 0.6.3 / 0.6.4 hardening sweeps. Each needs a
-design or UI judgment, so they sit until the matching cycle picks
-them up.
+## Future feature work (lower priority)
+
+- **Kirigami dialog/page for model management.** The Model Manager is
+  currently an inline `Window` inside `MainWindow.qml`. Kirigami's
+  dialog/page conventions would integrate better with the rest of the
+  QML tree.
+
+## Deferred indefinitely
 
 - **`model_loader.py:50` — `_emit_initial_state` third branch.**
   TTS has `_status_idle_prompt` for the unselected case; Whisper does
-  not. Today the Whisper backend's `selected_item` is always
-  populated by config defaults, so adding the branch would be dead
-  code — defer until/unless the Whisper backend can actually surface
-  a no-selection state.
-
-- **`MicButton.qml` — `required property var voiceAgent`.** Tried
-  CodeRabbit's suggestion in PR #5 but reverted: it triggers
-  first-paint TypeErrors because internal `text:`/`enabled:`
-  bindings evaluate before the parent's `voiceAgent: voiceAgent`
-  binding lands. A correct fix needs lazy binding evaluation (wrap
-  in `voiceAgent ? ... : null`, or move under
-  `Component.onCompleted`) before declaring the property `required`.
-  Needs UI verification post-change.
-
-- **`voiceagent-compiletest.sh` programmatic stub.** PR #12 added
-  standalone qmllint of `MicButton.qml` / `ConversationPane.qml`,
-  but the in-script `voiceAgent` stub still drifts from the real
-  `MainWindow` slot/property surface. Generate the stub
-  programmatically from the real Q_PROPERTY surface to remove the
-  silent-drift risk entirely.
-
-## Forward-looking refactors (not bugs)
-
-Lower-priority code-organization improvements — not load-bearing,
-not user-visible.
-
-- Add MainWindow-level integration tests covering: conversation
-  ordering across STT→LLM→TTS, draft-to-final user-bubble promotion,
-  and the "thinking is status, not bubble" invariant from AGENTS.md.
-
-## Deferred from PR #7 round-2 review
-
-External round-2 review of PR #7 (the v0.4.0 ui-shaping branch)
-surfaced these architectural items. Each is its own cycle.
-
-- **`ConversationLogController` as the only writer to
-  `ConversationModel`.** Today `window.py` writes to the model from
-  `_apply_state`, `_set_status_message` (just unwound in this PR),
-  `_set_error_message`, `_apply_model_status`, `_apply_tts_status`,
-  `_on_llm_status_message`, `_append_user_message`, and
-  `_append_assistant_message`. Centralizing through a controller
-  would make simple/verbose mode policy testable in isolation and
-  remove the risk of the next caller re-introducing the same
-  duplicate-append regression we just fixed.
-
-- **Kirigami dialog/page for model management.** Today the Model
-  Manager is an inline `Window` inside `MainWindow.qml`. Kirigami's
-  dialog/page conventions would integrate better with the rest of
-  the QML tree. Kirigami's `FormLayout` is also the documented
-  pattern for the settings/control groups inside
-  `SessionSetupPane.qml`'s `sessionSetupGrid`.
-
-- **MainWindow-level integration tests.** Cover simple-vs-verbose
-  transcript content per mode, draft-to-final user-bubble ordering
-  with and without a draft, replay error handling
-  (`replayMessage` raise paths), custom STT path selection, and the
-  connect spam-click guard below.
-
-- **`replayMessage` defensive layer.** Round-2 added a try/except
-  and an `is_available()` readiness check; a deeper pass should
-  surface synthesis errors via a transient toast or status rather
-  than silently logging.
-
-- **KDE polish.** Migrate the session-setup grid to
-  `Kirigami.FormLayout` (Kirigami's documented pattern for
-  settings/control groups), wire user-facing strings through
-  `KLocalizedContext` / `i18n()` for i18n readiness, and convert
-  more of the inline button bindings to `Kirigami.Action`-based
-  command surfaces. Each is small but they should land together so
-  the QML reads consistently.
-
-- **True post-first-frame deferral helper.** `app.py:118` documents
-  why a 0 ms `QTimer.singleShot(0, ...)` can fire on the next
-  event-loop tick before the first frame swap completes — that
-  deferral was rewritten to a daemon thread for the sounddevice
-  pre-warm. But `window.py:182` still uses the same pattern for
-  LLM autoconnect and the TTS catalog refresh. Both are
-  lightweight / off-thread today so it is not currently a P1 bug,
-  but it is the same anti-pattern. Build a small helper that
-  schedules work after the first frame swap (Qt has
-  `QQuickWindow::frameSwapped` for exactly this) or off-thread,
-  and route both call sites through it. KDE startup-best-practice
-  alignment.
+  not. Today the Whisper backend's `selected_item` is always populated
+  by config defaults, so adding the branch would be dead code — defer
+  until/unless the Whisper backend can actually surface a no-selection
+  state.
