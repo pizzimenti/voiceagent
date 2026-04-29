@@ -211,26 +211,34 @@ class LmStudioClient:
             # Empty diff but something is loaded — `/models/load` reported
             # "loaded" without adding a fresh instance. Most likely the
             # alias resolved to a model that was already loaded under its
-            # canonical key. Three sub-cases:
-            #   * Requested name matches a loaded key exactly → use it.
-            #   * Exactly one LLM is loaded → unambiguous; use that key.
-            #   * Multiple LLMs are loaded and the alias doesn't match any
-            #     by name → we can't tell which one the server "loaded".
-            #     Refuse to silently switch the user to an arbitrary model;
-            #     surface the ambiguity so the caller can react.
+            # canonical key. Disambiguation cascade:
+            #   1. Requested name matches a loaded key exactly → use it.
+            #   2. Exactly one LLM is loaded → unambiguous; use that key.
+            #   3. Requested name appears as a case-insensitive substring
+            #      of exactly one canonical key → assume that's the alias
+            #      target. Common pattern: alias "qwen" maps to canonical
+            #      "Qwen/qwen2.5-coder-14b-instruct".
+            #   4. Otherwise: multiple loaded, no fuzzy match → raise so
+            #      the caller doesn't silently end up on the wrong model.
+            #      Better to surface the ambiguity than guess at random.
             loaded_keys = [k for k, _ in post_load]
             if model_name in loaded_keys:
                 keep_key = model_name
             elif len(loaded_keys) == 1:
                 keep_key = loaded_keys[0]
             else:
-                raise RuntimeError(
-                    f"LM Studio confirmed load for '{model_name}' but did not "
-                    f"create a new instance, and {len(loaded_keys)} LLMs are "
-                    f"already loaded under canonical keys "
-                    f"({', '.join(sorted(set(loaded_keys)))}). Cannot determine "
-                    f"which model the alias resolves to."
-                )
+                needle = model_name.lower()
+                fuzzy_matches = [k for k in loaded_keys if needle in k.lower()]
+                if len(fuzzy_matches) == 1:
+                    keep_key = fuzzy_matches[0]
+                else:
+                    raise RuntimeError(
+                        f"LM Studio confirmed load for '{model_name}' but did "
+                        f"not create a new instance, and {len(loaded_keys)} "
+                        f"LLMs are already loaded under canonical keys "
+                        f"({', '.join(sorted(set(loaded_keys)))}). Cannot "
+                        f"determine which model the alias resolves to."
+                    )
         else:
             # Server confirmed the load but nothing is loaded. Defensive
             # — treat as failure so the caller doesn't think we have a

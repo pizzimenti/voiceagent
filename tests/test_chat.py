@@ -1020,6 +1020,92 @@ def test_load_model_empty_diff_with_multiple_loaded_raises_on_ambiguity(monkeypa
     assert client.model == "initial"
 
 
+def test_load_model_empty_diff_fuzzy_match_resolves_alias(monkeypatch):
+    """Empty post-load diff + multiple loaded LLMs + the requested
+    alias appears as a case-insensitive substring of exactly one
+    canonical key → use that one. Common alias-resolution case
+    (e.g. 'qwen' → 'Qwen/qwen2.5-coder-14b-instruct') that would
+    otherwise raise on ambiguity from round 3.
+    """
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="initial", system_prompt="p"
+    )
+    same_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "Qwen/qwen2.5-coder-14b-instruct",
+                "loaded_instances": [{"id": "q1"}],
+            },
+            {
+                "type": "llm",
+                "key": "meta/llama-3.1-8b",
+                "loaded_instances": [{"id": "l1"}],
+            },
+        ]
+    }
+    unloaded: list[str] = []
+
+    def _handler(req, timeout):
+        if req.get_method() == "POST":
+            url = req.full_url
+            body = json.loads(req.data.decode("utf-8"))
+            if url.endswith("/api/v1/models/load"):
+                return _FakeResponse({"status": "loaded"})
+            if url.endswith("/api/v1/models/unload"):
+                unloaded.append(body["instance_id"])
+                return _FakeResponse({"status": "ok"})
+            return _FakeResponse({"status": "ok"})
+        return _FakeResponse(same_payload)
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    # Alias 'qwen' substring-matches exactly one canonical key — use it.
+    assert client.load_model("qwen") == "Qwen/qwen2.5-coder-14b-instruct"
+    assert client.model == "Qwen/qwen2.5-coder-14b-instruct"
+    # The OTHER loaded model gets unloaded (we kept by Qwen's key).
+    assert unloaded == ["l1"]
+    assert "q1" not in unloaded
+
+
+def test_load_model_empty_diff_fuzzy_match_multiple_hits_raises(monkeypatch):
+    """If the alias substring-matches multiple canonical keys, that's
+    ambiguous — raise rather than guess. Distinct from the
+    no-fuzzy-match case but the resolution is the same: surface the
+    ambiguity rather than silently picking one.
+    """
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="initial", system_prompt="p"
+    )
+    same_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "Qwen/qwen2.5-7b",
+                "loaded_instances": [{"id": "q7"}],
+            },
+            {
+                "type": "llm",
+                "key": "Qwen/qwen2.5-14b",
+                "loaded_instances": [{"id": "q14"}],
+            },
+        ]
+    }
+
+    def _handler(req, timeout):
+        if req.get_method() == "POST" and req.full_url.endswith("/api/v1/models/load"):
+            return _FakeResponse({"status": "loaded"})
+        if req.get_method() == "POST":
+            return _FakeResponse({"status": "ok"})
+        return _FakeResponse(same_payload)
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    with pytest.raises(RuntimeError, match="Cannot determine which model"):
+        client.load_model("qwen")
+    assert client.model == "initial"
+
+
 def test_load_model_empty_diff_with_single_loaded_promotes_unambiguous(monkeypatch):
     """Empty post-load diff with exactly one LLM loaded is
     unambiguous — promote that one. This covers the common case
