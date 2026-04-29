@@ -2,6 +2,26 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.7 — 2026-04-28
+
+**Violet AI-app bubble palette.** Replaces v0.9.6's warm coffee
+assistant palette and the Kirigami `Selection` user-sent
+inheritance with a branded violet identity. Stops tracking the
+user's Plasma accent — deliberate, the voice agent now has its
+own visual signature.
+
+### Changed
+
+- **Sent (user) bubble**:
+  - Light: bg `#7C3AED`, text `#FFFFFF`, no border
+  - Dark : bg `#A78BFA`, text `#140A2B`, no border
+- **Recv (assistant) bubble**:
+  - Light: bg `#EDE9FE`, text `#1F1736`, border `#DDD6FE`
+  - Dark : bg `#374151`, text `#F9FAFB`, border `#475569`
+
+Draft (transcribing) bubble keeps the pink `#ff5c8a` hold-over
+as a transient state marker.
+
 ## 0.9.6 — 2026-04-28
 
 **Warm complementary assistant bubble + replayable bool coerce.**
