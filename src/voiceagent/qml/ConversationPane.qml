@@ -207,7 +207,7 @@ Pane {
                 readonly property bool statusEntryVisible: statusEntry && verboseMode
                 implicitHeight: statusEntry
                     ? (verboseMode ? statusMessage.implicitHeight : 0)
-                    : (systemEntry ? systemMessage.implicitHeight : messageRow.implicitHeight)
+                    : (systemEntry ? systemMessage.implicitHeight : assistantColumn.implicitHeight)
                 visible: !statusEntry || verboseMode
 
                 property bool assistant: model.messageRole === "assistant"
@@ -245,6 +245,18 @@ Pane {
                 //   - Dark theme : softer lavender for stronger
                 //     contrast on the dark page bg.
                 readonly property color statusTextColor: darkTheme ? "#bf95e8" : "#7b4ab8"
+                // Thoughts expander palette — same hue family as the
+                // status row (this *is* secondary model output), but
+                // body text drops to 0.85 opacity so it reads as
+                // sub-content under the assistant bubble. Italic on
+                // both header and body is the "this is thinking, not
+                // the answer" visual signal.
+                readonly property color thoughtsLabelColor: darkTheme ? "#bf95e8" : "#7b4ab8"
+                readonly property color thoughtsBodyColor: Qt.rgba(
+                    thoughtsLabelColor.r, thoughtsLabelColor.g, thoughtsLabelColor.b, 0.85)
+                readonly property string thinkingText: model.thinkingText || ""
+                readonly property bool thinkingExpanded: !!model.thinkingExpanded
+                readonly property bool hasThinking: assistant && thinkingText.length > 0
                 readonly property real maxBubbleWidth: Math.min(
                     conversationView.width * (root.compactMode ? 0.96 : (root.mediumMode ? 0.9 : 0.78)),
                     Kirigami.Units.gridUnit * (root.compactMode ? 18 : (root.mediumMode ? 28 : 34))
@@ -277,10 +289,106 @@ Pane {
                     font.italic: true
                 }
 
-                RowLayout {
-                    id: messageRow
+                // Wrapper column: holds the optional Thoughts expander
+                // ABOVE the assistant bubble in the same visual column,
+                // so the expander reads as attached to the bubble it
+                // belongs to. User-side rows still fall through to the
+                // messageRow as the only visible child (the expander is
+                // gated on `hasThinking`, which requires assistant +
+                // non-empty thinkingText).
+                ColumnLayout {
+                    id: assistantColumn
                     width: parent.width
                     visible: !parent.systemEntry && !parent.statusEntry
+                    spacing: 0
+
+                    // Thoughts expander — only renders for assistant
+                    // rows with non-empty thinkingText. Click toggles
+                    // model.thinkingExpanded via the coordinator slot.
+                    Item {
+                        id: thinkingExpander
+                        Layout.fillWidth: true
+                        visible: hasThinking
+                        implicitHeight: visible ? thinkingExpanderColumn.implicitHeight : 0
+
+                        ColumnLayout {
+                            id: thinkingExpanderColumn
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.leftMargin: Kirigami.Units.smallSpacing
+                            spacing: 2
+
+                            // Header — chevron + "Thoughts" label.
+                            // RowLayout drives the implicit height; the
+                            // MouseArea is a sibling overlay anchored to
+                            // it. Going the other way (MouseArea parent
+                            // with anchors.fill: parent on the layout)
+                            // would create a circular height binding.
+                            Item {
+                                Layout.fillWidth: true
+                                implicitHeight: thinkingHeader.implicitHeight + Kirigami.Units.smallSpacing
+
+                                RowLayout {
+                                    id: thinkingHeader
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: Kirigami.Units.smallSpacing
+
+                                    Label {
+                                        text: "▶"
+                                        font.pixelSize: 10
+                                        rotation: thinkingExpanded ? 90 : 0
+                                        Behavior on rotation { NumberAnimation { duration: 150 } }
+                                        color: thoughtsLabelColor
+                                    }
+
+                                    Label {
+                                        text: i18nCtx.i18n("Thoughts")
+                                        font.pixelSize: 11
+                                        font.italic: true
+                                        color: thoughtsLabelColor
+                                    }
+
+                                    Item { Layout.fillWidth: true }
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (conversationPane.voiceAgent) {
+                                            conversationPane.voiceAgent.setThinkingExpanded(index, !thinkingExpanded);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Body — the actual thinking text. Plain-
+                            // text format so any markdown-ish content
+                            // in the model's reasoning channel renders
+                            // verbatim (matches the bubble Label policy
+                            // above). Indented from the chevron via
+                            // gridUnit leftMargin so it visually sits
+                            // under the header.
+                            Label {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: Kirigami.Units.gridUnit
+                                Layout.bottomMargin: Kirigami.Units.smallSpacing
+                                visible: thinkingExpanded
+                                text: thinkingText
+                                wrapMode: Text.WordWrap
+                                font.italic: true
+                                font.pixelSize: 12
+                                color: thoughtsBodyColor
+                                textFormat: Text.PlainText
+                            }
+                        }
+                    }
+
+                RowLayout {
+                    id: messageRow
+                    Layout.fillWidth: true
                     spacing: Kirigami.Units.smallSpacing
                     layoutDirection: assistant ? Qt.LeftToRight : Qt.RightToLeft
 
@@ -370,6 +478,7 @@ Pane {
                             }
                         }
                     }
+                }
                 }
             }
 

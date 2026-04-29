@@ -29,6 +29,14 @@ class VoiceController(QObject):
     pipeline_state_changed = Signal(str, str)
     partial_transcription_ready = Signal(object)
 
+    # v0.10.0 streaming chat. The chat client now invokes per-chunk
+    # callbacks from the executor thread; we forward each as a Qt
+    # signal so the GUI-thread coordinator (and QML bindings) get
+    # incremental updates marshalled via AutoConnection.
+    chat_thinking_chunk = Signal(str)
+    chat_content_chunk = Signal(str)
+    chat_usage_changed = Signal(int, int)  # prompt_tokens, completion_tokens
+
     # Internal worker-thread -> owner-thread bridges. Emitted from
     # `add_done_callback` callbacks that may run on executor threads OR
     # synchronously on the owner thread (when add_done_callback registers
@@ -208,7 +216,18 @@ class VoiceController(QObject):
                     tts_audio_path=None,
                 )
             self.pipeline_state_changed.emit(AppState.THINKING.value, "Waiting for LM Studio")
-            response = self.chat_client.complete(transcript)
+
+            def _on_usage(usage: dict) -> None:
+                prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+                self.chat_usage_changed.emit(prompt_tokens, completion_tokens)
+
+            response = self.chat_client.complete(
+                transcript,
+                on_content_chunk=self.chat_content_chunk.emit,
+                on_thinking_chunk=self.chat_thinking_chunk.emit,
+                on_usage=_on_usage,
+            )
 
             tts_audio_path = None
             if self.tts_service.enabled:

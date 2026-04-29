@@ -28,6 +28,8 @@ class ConversationModel(QAbstractListModel):
     TurnPendingRole = Qt.ItemDataRole.UserRole + 6
     TimestampLabelRole = Qt.ItemDataRole.UserRole + 7
     StateNameRole = Qt.ItemDataRole.UserRole + 8
+    ThinkingTextRole = Qt.ItemDataRole.UserRole + 9
+    ThinkingExpandedRole = Qt.ItemDataRole.UserRole + 10
 
     _ROLE_NAMES: ClassVar[dict[int, QByteArray]] = {
         MessageRole: QByteArray(b"messageRole"),
@@ -38,6 +40,8 @@ class ConversationModel(QAbstractListModel):
         TurnPendingRole: QByteArray(b"turnPending"),
         TimestampLabelRole: QByteArray(b"timestampLabel"),
         StateNameRole: QByteArray(b"stateName"),
+        ThinkingTextRole: QByteArray(b"thinkingText"),
+        ThinkingExpandedRole: QByteArray(b"thinkingExpanded"),
     }
     _ROLE_KEYS: ClassVar[dict[int, str]] = {
         MessageRole: "role",
@@ -48,6 +52,8 @@ class ConversationModel(QAbstractListModel):
         TurnPendingRole: "turnPending",
         TimestampLabelRole: "timestampLabel",
         StateNameRole: "stateName",
+        ThinkingTextRole: "thinkingText",
+        ThinkingExpandedRole: "thinkingExpanded",
     }
     # Inverse of `_ROLE_KEYS` — built once at class-build time so
     # `update_message` can resolve key → role in O(1) instead of an O(R)

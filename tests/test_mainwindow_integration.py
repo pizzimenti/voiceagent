@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -713,3 +714,180 @@ def test_disconnect_llm_blocked_while_model_busy(
     assert disconnect_calls == [], (
         "disconnect while model is busy must be a no-op"
     )
+
+
+# --- v0.10 chat-stream wiring + context-token Q_PROPERTYs ----------------
+
+
+def test_initial_context_token_values_are_zero(main_window_factory):
+    """Both Q_PROPERTYs default to 0 at construction so QML can divide
+    used/ceiling without a guard for "model not loaded yet".
+    """
+    window = main_window_factory()
+    assert window.contextTokensUsed == 0
+    assert window.contextTokensCeiling == 0
+
+
+def test_set_thinking_expanded_forwards_to_coordinator(main_window_factory):
+    """The QML expander toggle goes through MainWindow's slot to the
+    coordinator's `set_thinking_expanded` (Layer 5 owns the row-level
+    mutation). MainWindow is a thin forwarder.
+    """
+    window = main_window_factory()
+    calls: list[tuple[int, bool]] = []
+    # Layer 5 adds `set_thinking_expanded` to ConversationTurnCoordinator
+    # in parallel; until that lands we mock it on the live instance to
+    # lock the call shape MainWindow promises QML.
+    window._turn_coordinator.set_thinking_expanded = (
+        lambda row, expanded: calls.append((row, expanded))
+    )
+
+    window.setThinkingExpanded(3, True)
+    window.setThinkingExpanded(7, False)
+    _drain_events()
+
+    assert calls == [(3, True), (7, False)]
+
+
+def test_chat_thinking_chunk_forwards_to_coordinator(main_window_factory):
+    """`_on_chat_thinking_chunk` threads the chunk text into the
+    coordinator's streaming-thinking method and pulses
+    `conversation_changed` so QML rebinds.
+    """
+    window = main_window_factory()
+    chunks: list[str] = []
+    window._turn_coordinator.on_chat_thinking_chunk = chunks.append
+
+    notifications: list[None] = []
+    window.conversation_changed.connect(lambda: notifications.append(None))
+
+    window.controller.chat_thinking_chunk.emit("step 1...")
+    window.controller.chat_thinking_chunk.emit(" step 2.")
+    _drain_events()
+
+    assert chunks == ["step 1...", " step 2."]
+    # At least one notification per chunk arrival; the property may
+    # also tick for unrelated reasons, so we only require >= 2.
+    assert len(notifications) >= 2
+
+
+def test_chat_content_chunk_forwards_to_coordinator(main_window_factory):
+    """`_on_chat_content_chunk` threads the chunk text into the
+    coordinator's content-streaming method and pulses
+    `conversation_changed`.
+    """
+    window = main_window_factory()
+    chunks: list[str] = []
+    window._turn_coordinator.on_chat_content_chunk = chunks.append
+
+    notifications: list[None] = []
+    window.conversation_changed.connect(lambda: notifications.append(None))
+
+    window.controller.chat_content_chunk.emit("Hello")
+    window.controller.chat_content_chunk.emit(" world!")
+    _drain_events()
+
+    assert chunks == ["Hello", " world!"]
+    assert len(notifications) >= 2
+
+
+def test_chat_usage_changed_sums_prompt_and_completion_tokens(
+    main_window_factory,
+):
+    """`contextTokensUsed` is the running sum of prompt + completion
+    tokens carried on the final SSE chunk's `usage` payload. Each
+    `chat_usage_changed` overwrites (the LM Studio totals replace,
+    they don't accumulate per chunk).
+    """
+    window = main_window_factory()
+    notifications: list[None] = []
+    window.ui_changed.connect(lambda: notifications.append(None))
+
+    window.controller.chat_usage_changed.emit(120, 8)
+    _drain_events()
+
+    assert window.contextTokensUsed == 128
+    assert len(notifications) >= 1
+
+    # Subsequent turn replaces, not adds.
+    window.controller.chat_usage_changed.emit(200, 50)
+    _drain_events()
+
+    assert window.contextTokensUsed == 250
+
+
+def test_context_ceiling_fetched_when_llm_model_changes(
+    main_window_factory,
+):
+    """When the LM Studio model selection lands a non-empty model name,
+    MainWindow probes `chat_client.fetch_loaded_context_length()` off
+    the GUI thread and writes the result through to
+    `contextTokensCeiling`.
+    """
+    window = main_window_factory()
+    chat_client = window.controller.chat_client
+    chat_client.context_length_value = 32768
+    chat_client.set_model("test-model-7b")
+
+    # Drive the LlmController-side signal that triggers the probe.
+    window._llm.selected_model_changed.emit("test-model-7b")
+
+    # The probe runs on a worker thread and posts back via a queued
+    # signal; waitUntil drains the event loop until the property
+    # converges or the timeout fires.
+    qtbot_timeout_ms = 2000
+    deadline = time.monotonic() + qtbot_timeout_ms / 1000.0
+    while time.monotonic() < deadline and window.contextTokensCeiling != 32768:
+        _drain_events(times=2)
+
+    assert chat_client.fetch_context_length_calls >= 1
+    assert window.contextTokensCeiling == 32768
+
+
+def test_context_ceiling_resets_to_zero_when_model_unloaded(
+    main_window_factory,
+):
+    """Selecting the empty model (LlmController's "unload" path) drops
+    the ceiling back to 0 immediately on the GUI thread — the worker
+    fetch is skipped because there is no model to probe.
+    """
+    window = main_window_factory()
+    chat_client = window.controller.chat_client
+
+    # Seed a non-zero ceiling first so we can assert it's cleared.
+    window._context_tokens_ceiling = 8192
+    chat_client.fetch_context_length_calls = 0
+
+    window._llm.selected_model_changed.emit("")
+    _drain_events()
+
+    assert window.contextTokensCeiling == 0
+    # Empty-model path skips the worker fetch.
+    assert chat_client.fetch_context_length_calls == 0
+
+
+def test_context_ceiling_drops_late_result_for_stale_model(
+    main_window_factory,
+):
+    """Late `_context_length_fetched` results for a model the user has
+    already moved away from are dropped — the ceiling stays bound to
+    the current selection.
+    """
+    window = main_window_factory()
+    chat_client = window.controller.chat_client
+    # Current selection is "current-model"; the late result is for
+    # a previously-selected "old-model" and must be ignored.
+    chat_client.set_model("current-model")
+    window._context_tokens_ceiling = 0
+
+    # Simulate the worker callback firing with stale model name.
+    window._context_length_fetched.emit(16384, "old-model")
+    _drain_events()
+
+    assert window.contextTokensCeiling == 0
+
+    # The matching-model result IS applied.
+    window._context_length_fetched.emit(4096, "current-model")
+    _drain_events()
+
+    assert window.contextTokensCeiling == 4096
