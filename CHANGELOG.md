@@ -2,6 +2,29 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.10 — 2026-04-28
+
+**Verbose toggle hides existing status rows + theme-aware status
+purple.**
+
+### Fixed
+
+- **Verbose toggle didn't hide existing status rows.** The
+  coordinator already gates *new* status rows on
+  `logVerboseMode`, but rows already in the model stayed
+  visible until restart. The delegate now reads
+  `voiceAgent.logVerboseMode` live and collapses status-row
+  `implicitHeight` + `visible` when verbose is off, so toggling
+  reflows the layout immediately.
+
+### Changed
+
+- **Status text purple now theme-aware.** Single hardcoded
+  `#9b6bcc` was washed out on Light and muddy on Dark. Same
+  hue (~270°), shifted lightness per theme:
+  - Light: `#7b4ab8` (deeper purple)
+  - Dark : `#bf95e8` (softer lavender)
+
 ## 0.9.9 — 2026-04-28
 
 **Light-mode polish bundle.** Four user-reported issues from
