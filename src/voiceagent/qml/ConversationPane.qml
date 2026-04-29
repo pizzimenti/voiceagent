@@ -184,6 +184,24 @@ Pane {
                 property bool assistant: model.messageRole === "assistant"
                 readonly property string bubbleState: model.bubbleState || "sent"
                 readonly property bool draft: bubbleState === "draft"
+                // Theme luminance check — Kirigami doesn't expose a
+                // "complementary panel" color set, so we hand-pick the
+                // assistant bubble palette per theme. ITU-R BT.601
+                // luma; the page bg's lightness is the only signal we
+                // need (background under 0.5 → dark theme).
+                readonly property bool darkTheme: {
+                    const bg = Kirigami.Theme.backgroundColor;
+                    return (0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b) < 0.5;
+                }
+                // Warm coffee / cream palette — complementary (~25°)
+                // to the teal/green Plasma highlight typical of Breeze
+                // accents (~170°). Inverted lightness across themes
+                // keeps the visual identity coherent. Bypasses Kirigami
+                // colorSet for the assistant bubble because every
+                // available set converges near the page bg in dark
+                // mode and reads as flat black.
+                readonly property color assistantBg: darkTheme ? "#3d3027" : "#f4e3d0"
+                readonly property color assistantTextColor: darkTheme ? "#f4e3d0" : "#3d3027"
                 readonly property color systemTextColor: (model.level || "status") === "error"
                     ? Kirigami.Theme.negativeTextColor
                     : Kirigami.Theme.disabledTextColor
@@ -235,31 +253,38 @@ Pane {
                         Layout.fillWidth: true
                         Layout.maximumWidth: maxBubbleWidth
 
-                        // Scope the bubble to a Kirigami color set so
-                        // the bg/text pair resolves correctly against
-                        // Breeze Light / Dark and the user's accent:
-                        //   - assistant → `View` (the canonical
-                        //     "elevated panel" set; carved-out look on
-                        //     dark, raised on light, distinct from
-                        //     Window in both — what NeoChat / Tokodon
-                        //     use for incoming bubbles).
-                        //   - user sent → `Selection` (Plasma's
-                        //     "this-is-yours" highlight pair).
-                        //   - draft → kept on Window so the explicit
-                        //     pink override doesn't fight a colorSet
-                        //     it doesn't match.
-                        Kirigami.Theme.colorSet: draft
+                        // User-sent bubbles use Kirigami's `Selection`
+                        // colorSet (Plasma "this-is-yours" highlight
+                        // pair) so they track the user's accent. The
+                        // assistant bubble uses an explicit warm
+                        // coffee / cream palette — a complementary
+                        // hue to teal/green that Kirigami's color
+                        // sets don't offer and that hand-flips
+                        // cleanly between Breeze Light and Dark.
+                        Kirigami.Theme.colorSet: assistant
                             ? Kirigami.Theme.Window
-                            : (assistant ? Kirigami.Theme.View : Kirigami.Theme.Selection)
+                            : Kirigami.Theme.Selection
                         Kirigami.Theme.inherit: false
+
+                        // Resolved bg / text per state. Assistant uses
+                        // hand-picked palette; user-sent reads from
+                        // the Selection colorSet (highlightColor /
+                        // highlightedTextColor under the hood); draft
+                        // (transcribing) keeps the pink hold-over.
+                        readonly property color resolvedBg: draft
+                            ? "#ff5c8a"
+                            : (assistant ? assistantBg : Kirigami.Theme.backgroundColor)
+                        readonly property color resolvedText: draft
+                            ? "#ffffff"
+                            : (assistant ? assistantTextColor : Kirigami.Theme.textColor)
 
                         background: Rectangle {
                             radius: root.compactMode ? Kirigami.Units.mediumSpacing : Kirigami.Units.largeSpacing
-                            color: draft ? "#ff5c8a" : Kirigami.Theme.backgroundColor
+                            color: bubbleFrame.resolvedBg
                             // Subtle border so the bubble has edge
-                            // definition even when its bg is close to
-                            // the page bg (e.g. Breeze Light's View
-                            // bg only ~5% brighter than Window).
+                            // definition on Breeze Light too (the
+                            // assistant cream bg only differs from
+                            // page bg by a few %).
                             border.color: Kirigami.Theme.separatorColor
                             border.width: draft ? 0 : 1
                         }
@@ -270,7 +295,7 @@ Pane {
                             Label {
                                 visible: !root.compactMode
                                 text: assistant ? i18nCtx.i18n("Assistant") : i18nCtx.i18n("You")
-                                color: draft ? "#ffffff" : Kirigami.Theme.textColor
+                                color: bubbleFrame.resolvedText
                                 opacity: 0.8
                                 font.pixelSize: 12
                                 font.weight: Font.DemiBold
@@ -280,7 +305,7 @@ Pane {
                                 Layout.fillWidth: true
                                 text: root.bubbleText(model.text)
                                 wrapMode: Text.WordWrap
-                                color: draft ? "#ffffff" : Kirigami.Theme.textColor
+                                color: bubbleFrame.resolvedText
                                 textFormat: Text.PlainText
                             }
 
@@ -288,15 +313,12 @@ Pane {
                                 visible: !!(model.timestampLabel || "")
                                 Layout.fillWidth: true
                                 text: model.timestampLabel || ""
-                                // Track the resolved textColor at 0.72
-                                // opacity so the timestamp reads on
-                                // every bubble variant.
-                                color: draft
-                                    ? Qt.rgba(1, 1, 1, 0.72)
-                                    : Qt.rgba(Kirigami.Theme.textColor.r,
-                                              Kirigami.Theme.textColor.g,
-                                              Kirigami.Theme.textColor.b,
-                                              0.72)
+                                // Track resolvedText at 0.72 opacity so
+                                // the timestamp reads on every variant.
+                                color: Qt.rgba(bubbleFrame.resolvedText.r,
+                                               bubbleFrame.resolvedText.g,
+                                               bubbleFrame.resolvedText.b,
+                                               0.72)
                                 font.pixelSize: 10
                                 horizontalAlignment: Text.AlignLeft
                             }
@@ -304,7 +326,12 @@ Pane {
                     }
 
                     Button {
-                        visible: !root.compactMode && model.replayable
+                        // Coerce `model.replayable` to bool — the role
+                        // returns `undefined` for rows that never set
+                        // it (system / status / draft entries), and
+                        // QML's `visible: ... && undefined` produces a
+                        // log warning per row per resize.
+                        visible: !root.compactMode && !!model.replayable
                         text: i18nCtx.i18n("Replay")
                         Layout.alignment: Qt.AlignBottom
                         onClicked: {
