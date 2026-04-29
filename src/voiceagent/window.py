@@ -829,7 +829,16 @@ class MainWindow(QObject):
         # in `_on_main_playback_started` — there's no longer a
         # late playback_started arriving from the main player to
         # overwrite our "replay" ownership.
-        self.controller.player.stop()
+        #
+        # Route through `cancel_playbacks()`, NOT `player.stop()`
+        # directly: the v0.11 teardown-error suppression in
+        # `services/playback.py` swallows `playback_finished` on
+        # stop_event-induced exits, so a bare `player.stop()` here
+        # leaves `_playing_response` stuck `True` from the original
+        # auto-play. `_partial_skip_reason` then keeps gating mic
+        # resume even after the replay's aux audio finishes. Codex
+        # round-4 P1.
+        self.controller.cancel_playbacks()
         if self._replay_executor_shutdown:
             return
         # Cancel a still-pending prior synth before queueing the new
