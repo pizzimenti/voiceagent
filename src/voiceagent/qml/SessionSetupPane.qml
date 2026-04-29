@@ -188,7 +188,14 @@ Pane {
                         currentIndex: sessionPane.voiceAgent
                             ? sessionPane._stringIndex(sessionPane.voiceAgent.llmModelOptions, sessionPane.voiceAgent.selectedLlmModel)
                             : -1
-                        displayText: currentIndex < 0 ? sessionPane.tr("Select a loaded model") : currentText
+                        // `<= 0` (NOT `< 0`) because `llmModelOptions` is
+                        // `["", *self._llm.models]` — index 0 is the empty-
+                        // string sentinel for "no LLM loaded". Showing
+                        // `currentText` for index 0 would render an empty
+                        // string instead of the placeholder. The other
+                        // combos (STT/TTS) use `< 0` because their option
+                        // lists do not carry a leading "" sentinel.
+                        displayText: currentIndex <= 0 ? sessionPane.tr("Select a loaded model") : currentText
                         onActivated: {
                             if (sessionPane.voiceAgent) {
                                 sessionPane.voiceAgent.selectLlmModel(currentText);
