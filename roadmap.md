@@ -1,11 +1,125 @@
 # Roadmap
 
-Requested but unscheduled features. Items move from here into a versioned
-release once they're picked up.
+Scheduled work, in order. Each entry maps to a target minor version.
+Items move out of here into `CHANGELOG.md` once they ship.
 
-## Internet access via MCP (web search and beyond)
+## v0.11 — Conversation history (multi-turn context)
 
-**Status:** requested, unscheduled.
+**Status:** next up.
+
+### Why
+
+Voiceagent today is single-turn. `LmStudioClient.complete()` rebuilds
+`messages` from scratch on every call:
+
+```python
+"messages": [
+    {"role": "system", "content": self.system_prompt},
+    {"role": "user", "content": user_text},
+],
+```
+
+(`src/voiceagent/services/chat.py:259-262`.) Nothing above the HTTP
+layer accumulates prior turns either — `controller.py:237` passes only
+the latest transcript, and `ConversationModel` exists for the UI but is
+not fed back into the prompt. Result: the model sees each turn as a
+fresh conversation, can't follow up on its own previous answer, can't
+resolve pronouns ("what about *that* one?"), and can't carry any
+working memory across turns.
+
+LM Studio's chat mode appears to "have memory" because its frontend
+replays the full `messages` thread on every call. The
+OpenAI-compatible `/chat/completions` endpoint is stateless — history
+is the **caller's** responsibility. We need to do what LM Studio's UI
+already does.
+
+### Outcome
+
+User says "what's the capital of France?" → "Paris." → "what's the
+population?" — the second turn resolves correctly because the model
+sees both prior turns. New Conversation clears history. Switching
+models clears history (different model, different context window,
+different tokenizer).
+
+### Scope
+
+One PR. Three surfaces:
+
+**1. `services/chat.py:LmStudioClient.complete()`** — change signature
+to accept `messages: list[dict]` instead of `user_text: str`. Caller
+owns the full message list; the client just posts it. System prompt
+moves out of the client (or stays as a default the caller can
+override) — the client should not silently inject anything the caller
+didn't ask for. Streaming, usage callback, thinking-channel routing
+all unchanged.
+
+**2. `conversation_model.py:ConversationModel`** — add a
+`to_openai_messages(system_prompt: str) -> list[dict]` method that
+serializes the visible conversation to the OpenAI message format:
+`[{role: "system", content: <prompt>}, {role: "user", content: <t1>},
+{role: "assistant", content: <r1>}, ...]`. Skip thinking-channel
+content (it's not part of the assistant's *output* turn — feeding
+`reasoning_content` back as assistant content would confuse the model
+and waste tokens). Add a `clear()` method if one isn't already there,
+wired to the New Conversation action.
+
+**3. `controller.py:_run_pipeline()`** — append the new user turn to
+the conversation, call `to_openai_messages()`, pass that to
+`complete()`, append the assistant response. Order matters: append
+user *before* the LLM call (so it's visible immediately and included
+in the prompt), append assistant *after* the call returns.
+
+### History-budget policy
+
+Unbounded history will eventually exceed the loaded model's context
+window. v0.11 ships with a **simple turn-count cap** — keep the last
+`N` turns (default 20, i.e. 10 user + 10 assistant pairs), drop the
+oldest first, system prompt always retained. Configurable via
+`AppConfig.max_history_turns`.
+
+`fetch_loaded_context_length()` already exists at
+`services/chat.py:199`. A token-aware trim (count prompt tokens, drop
+oldest pairs until prompt+headroom fits) is the natural v0.11.x
+follow-up but **not** v0.11 — turn-count is good enough to unblock the
+multi-turn experience and ship.
+
+### Clear-on-model-switch
+
+Different models = different tokenizers, context windows, and
+fine-tuning. A history accumulated against Qwen 2.5 14B may not be
+coherent when replayed to Llama 3.1 8B. `LlmController`'s
+model-changed signal should clear `ConversationModel` and emit a
+toast: "Conversation cleared — model changed." This matches LM
+Studio's own behaviour and avoids surprise context-window blowups
+when the user swaps to a smaller model mid-session.
+
+### Tests
+
+- `tests/test_chat.py` — `complete()` posts the exact `messages`
+  list it was given, no injection, no reordering.
+- `tests/test_conversation_model.py` —
+  `to_openai_messages()` round-trips a multi-turn convo correctly,
+  skips thinking content, respects the `max_history_turns` cap.
+- `tests/test_controller.py` — pipeline appends user-then-assistant
+  in the right order, model-change clears history.
+
+### Open questions and risks
+
+- **First-turn token cost is unchanged; later-turn costs grow.** A
+  10-turn convo with verbose answers can easily hit 4–8k prompt
+  tokens. The existing context-token bar (`v0.10.0`) already shows
+  this, so the user gets a visual cue before the model starts
+  truncating.
+- **Whisper transcripts are noisier than typed input.** Fillers,
+  half-words, and STT artefacts get permanently baked into history.
+  Acceptable for v0.11; a "edit / retry last turn" affordance is a
+  later UX improvement, not a blocker.
+- **Thinking content exclusion.** Confirmed above — assistant
+  history carries `content` only, not `reasoning_content`.
+
+## v0.12 — Internet access via MCP (web search and beyond)
+
+**Status:** scheduled after v0.11.
 
 **Detailed plan:** kept out of repo until the work is picked up; populate when it lands.
 
@@ -118,3 +232,12 @@ Once MCP is plumbed, adding more capabilities is config-only:
 
 This is the main reason MCP is the right shape rather than a one-off
 `web_search` function.
+
+### Dependency on v0.11
+
+v0.12 *requires* v0.11 to be in. The MCP agent loop assumes the caller
+owns a running `messages` list (so it can append tool-call /
+tool-result messages between iterations). v0.11 is what gives us that
+list in the first place — without it, every MCP iteration would lose
+the prior conversation and the agent loop would be a single-turn-only
+feature, defeating the point.
