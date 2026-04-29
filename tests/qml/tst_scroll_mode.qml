@@ -78,7 +78,7 @@ TestCase {
 
     function test_inertial_branch_fires_flick_when_unstuck() {
         // stickToBottom false + positive pixelDelta.y → inertial path:
-        // flick(0, velocity) with velocity = pdy * 80 > 0 (positive y
+        // flick(0, velocity) with velocity = pdy * 160 > 0 (positive y
         // velocity scrolls content toward the start).
         const listView = _mockListView(false);
         const wheel = _mockWheel(5, 0);
@@ -91,10 +91,11 @@ TestCase {
         verify(listView.flickCalls[0].vy > 0,
             "flick y velocity must be positive for upward wheel "
             + "(saw " + listView.flickCalls[0].vy + ")");
-        // Magnitude check: pdy=5 → velocity=5*80=400 (v0.9.9 doubled
-        // the v0.8.0 PR #23 baseline of pdy*40).
-        compare(listView.flickCalls[0].vy, 400,
-            "pixelDelta path: velocity = pdy * 80");
+        // Magnitude check: pdy=5 → velocity=5*160=800 (v0.9.11 doubled
+        // the v0.9.9 inertial multiplier; combined with halved
+        // ListView.flickDeceleration this gives ~8x glide of v0.9.9).
+        compare(listView.flickCalls[0].vy, 800,
+            "pixelDelta path: velocity = pdy * 160");
         // Direct path must NOT have run: contentY unchanged from
         // assignment (we can't check that the setter wasn't called
         // without a Q_PROPERTY change-tracker, so we assert the value

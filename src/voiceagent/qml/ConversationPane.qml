@@ -89,7 +89,12 @@ Pane {
                 spacing: Kirigami.Units.smallSpacing
                 model: conversationPane.voiceAgent ? conversationPane.voiceAgent.conversationModel : null
                 boundsBehavior: Flickable.StopAtBounds
-                flickDeceleration: 1800
+                // v0.9.11: lowered from 1800 to 900 to extend the
+                // wheel-driven inertial flick's glide. With the
+                // 2x velocity bump in MainWindow.scrollList(), the
+                // combined effect is ~8x the v0.9.9 glide distance
+                // per wheel notch (glide ∝ v² / (2 * deceleration)).
+                flickDeceleration: 900
                 maximumFlickVelocity: 24000
                 ScrollBar.vertical: ScrollBar {}
 
