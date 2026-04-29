@@ -2,6 +2,63 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.2 — 2026-04-28
+
+**Decompose `services/audio.py:_handle_audio_chunk` into named
+state-machine phases.** The audio-stream callback was a 138-line
+monolith spanning four overlapping state machines (idle / pre-roll
+buffering, speech-candidate detection, active turn tracking,
+silence finalization). Behavior is preserved exactly — locking,
+signal emissions, callback ordering, numeric thresholds, and
+exception handling all match the prior monolith. Net structural
+win: orchestrator drops from 138 → 32 lines.
+
+### Refactored
+
+- **`services/audio.py:_handle_audio_chunk`** is now an orchestrator
+  that holds the lock, snapshots state, and dispatches to five
+  named `_locked` helpers:
+  - `_handle_suspended_input_locked(frames, rms)` — admin-suspended
+    drop path.
+  - `_handle_ignore_window_locked(chunk, frames, rms, remaining)` —
+    post-finalize ignore window.
+  - `_check_speech_candidate_locked(chunk, frames, rms)` — entire
+    not-yet-started branch (candidate accrual, candidate→active
+    transition, idle pre-roll).
+  - `_track_active_segment_locked(chunk, frames, rms)` —
+    speech / silence accrual + chunk append.
+  - `_finalize_on_silence_or_max_locked(frames, callback)` —
+    silence-timeout / max-turn dispatch.
+
+### Tests
+
+- **`tests/test_audio_chunk_handler.py` (new, +360 LOC, 14 tests)**
+  drives the state machine through every transition with synthesized
+  chunks and asserts the same observable outputs (signals, callbacks,
+  `take_pending_segment`) the original code produced. Tests pass
+  against both the unmodified anchor and the refactored source.
+- Pre-existing `tests/test_audio_player_race.py` (which covers
+  `services/playback.py`, not `services/audio.py`) still passes.
+
+Net suite: 320 passed (was 306 before PR #27).
+
+### Future work flagged in PR #27
+
+Two preserved-but-suspicious patterns spotted while reading
+`_handle_audio_chunk`, intentionally left for a separate cycle:
+
+- Max-turn check uses `total_turn_frames + frames` (pre-accrual)
+  while silence-timeout check uses post-accrual `_silence_frames`.
+  Mathematically equivalent under the accrual invariant, but the
+  asymmetric phrasing is a readability tax.
+- `_finalize_segment_locked` discards a "short segment" using
+  `total_turn_frames < min_speech_frames` — but `total_turn_frames`
+  includes silence frames, and silence-timeout finalization always
+  carries `~silence_timeout_frames` worth of silence. The natural-
+  callback discard branch is therefore essentially unreachable at
+  default tunings; only `force_finalize_active_segment` from outside
+  hits it. Worth a design check.
+
 ## 0.9.1 — 2026-04-28
 
 **Direct test coverage for `services/chat.py` and `services/stt.py`.**
