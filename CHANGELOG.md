@@ -2,6 +2,34 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.12 — 2026-04-28
+
+**Replace custom scroll curve with `Kirigami.WheelHandler`.** Three
+multiplier-tuning rounds (v0.9.9 / .10 / .11) didn't close the gap
+— user reported scrolling was still ~1/5 the speed of other apps
+and producing no inertia. The hand-tuned `scrollList()` formula was
+the wrong abstraction for Plasma 6 / Wayland's high-resolution
+scroll event semantics. Drop the custom curve entirely and use the
+framework primitive.
+
+### Removed
+
+- `MainWindow.scrollList()` (~60 lines).
+- `MouseArea` overlay in `ConversationPane.qml`'s ListView that
+  routed wheel events to scrollList.
+- `tests/qml/tst_scroll_mode.qml` (~155 lines) — tested the
+  removed function. qmltest total drops 16 → 9.
+- Hand-tuned `ListView.flickDeceleration: 900` from v0.9.11.
+
+### Added
+
+- `Kirigami.WheelHandler { target: conversationView;
+  filterMouseEvents: true }` inside the ListView. Handles mouse
+  wheel, hi-res mouse, and touchpad continuous events with
+  proper source-aware velocity and Flickable-native inertia.
+  The existing `onMovementStarted` / `onMovementEnded` sticky-to-
+  bottom logic continues to work unchanged.
+
 ## 0.9.11 — 2026-04-28
 
 **Inertial scroll glide retuned ~8x.** v0.9.9 doubled the wheel
