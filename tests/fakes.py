@@ -79,6 +79,12 @@ class FakeChatClient:
     def __init__(self) -> None:
         self.base_url = ""
         self.model = ""
+        # Default ceiling that `fetch_loaded_context_length` returns so
+        # the integration tests can assert MainWindow honours the value
+        # without standing up a real LM Studio. Tests can override this
+        # per-instance to model unloaded / unknown states (set to 0).
+        self.context_length_value: int = 0
+        self.fetch_context_length_calls: int = 0
 
     def complete(self, text: str) -> str:
         return ""
@@ -88,6 +94,13 @@ class FakeChatClient:
 
     def set_model(self, model: str) -> None:
         self.model = model
+
+    def fetch_loaded_context_length(self) -> int:
+        # Mirrors the real LmStudioClient contract: returns the loaded
+        # model's context window in tokens, or 0 when nothing is loaded
+        # / the field is absent.
+        self.fetch_context_length_calls += 1
+        return self.context_length_value
 
     @staticmethod
     def normalize_base_url(value: str) -> str:
