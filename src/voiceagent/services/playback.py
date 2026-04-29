@@ -90,16 +90,21 @@ class AudioPlayer(QObject):
         with self._pause_condition:
             self._pause_condition.notify_all()
 
-        if self._stream is not None:
-            try:
-                self._stream.abort()
-            except Exception:
-                pass
+        # Previously we called `self._stream.abort()` here to try to
+        # unblock the worker's `stream.write()` faster. Removed: the
+        # call races against the worker's `with self._open_output_stream`
+        # exit (which closes the PortAudio stream), and dereferencing
+        # the freed C-side stream object segfaulted the process. The
+        # user reported a hard "zsh: segmentation fault (core dumped)"
+        # right after a stop-induced abandon; abort() was the racy
+        # piece. Without abort() the worker exits naturally at the end
+        # of its current write chunk (~186 ms for 4096 samples at
+        # 22050 Hz mono), well within the join timeout below.
 
         # Bounded join on the prior worker. If the old worker is stuck,
-        # log and abandon rather than blocking the caller; the stop event
-        # has been set and the `with` block will close the output stream
-        # on the next write attempt.
+        # log and abandon rather than blocking the caller; the stop
+        # event has been set and the worker will exit on its next loop
+        # check after the current write completes.
         abandoned_predecessor = False
         if previous_thread is not None and previous_thread.is_alive():
             previous_thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
@@ -186,11 +191,16 @@ class AudioPlayer(QObject):
             self._paused = False
             self._pause_condition.notify_all()
 
-        if self._stream is not None:
-            try:
-                self._stream.abort()
-            except Exception:
-                pass
+        # Previously: `self._stream.abort()` here to try to unblock
+        # the worker's blocking write faster. Removed because the
+        # call raced against the worker's `with` block closing the
+        # underlying PortAudio stream — touching the freed C-side
+        # pointer segfaulted the process (user-reported crash on a
+        # stop-induced abandon). Worker now exits naturally on the
+        # next stop_event check at the end of its current write
+        # chunk; that's bounded by the audio chunk duration (~186 ms
+        # for 4096 samples at 22050 Hz mono), well within the join
+        # timeout below.
 
         if previous_thread is not None and previous_thread.is_alive():
             previous_thread.join(timeout=_JOIN_TIMEOUT_SECONDS)

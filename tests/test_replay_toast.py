@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -218,7 +219,15 @@ def test_replay_failure_carries_exception_message(real_qml_window):
     window._append_assistant_message("reply that fails")
     _drain()
     window.replayMessage(0)
-    _drain()
+    # `replayMessage` now hops synth onto a background executor and
+    # bridges the result back via a queued signal — `_drain()` alone
+    # races the worker. Spin until the toast lands or we time out.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        _drain()
+        if (model.property("count") or 0) > initial_count:
+            break
+        time.sleep(0.02)
 
     final_count = model.property("count") or 0
     assert final_count > initial_count, (

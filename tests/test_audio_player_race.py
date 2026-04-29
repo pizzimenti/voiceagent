@@ -180,10 +180,19 @@ def test_no_overlap_on_back_to_back_play_file(qapp, tmp_path):
     assert owner["streams"], "first worker never opened a stream"
 
     # Start the second playback while the first is still blocked. This
-    # should abort the first stream and mint a new generation.
+    # mints a new generation and signals the first worker to stop.
     assert player.play_file(file_b)
 
-    # Release the first worker so it can observe its abort/stop and exit.
+    # Release the first worker so it can observe its stop event and exit.
+    # We no longer call `stream.abort()` from `play_file` — the call
+    # raced against the worker's `with self._open_output_stream` block
+    # exiting (closing the underlying PortAudio stream), and touching
+    # the freed C-side stream object segfaulted the process. The
+    # worker now exits naturally on the next stop_event check after
+    # the current write completes; the supersede invariant
+    # ("frames from old playback do not appear after frames from new
+    # playback") still holds via stop_event + per-write generation
+    # tracking.
     release_a.set()
 
     # Wait for playback to fully finish.
@@ -192,10 +201,6 @@ def test_no_overlap_on_back_to_back_play_file(qapp, tmp_path):
         _process_events(2)
         time.sleep(0.01)
     player.stop()
-
-    # The first stream must have been aborted.
-    first = owner["streams"][0]
-    assert first.aborted, "old stream was not aborted on supersede"
 
     # Partition writes by marker.
     marker2_first_ts = next((ts for (_sid, m, ts, _n) in writes if m == 2), None)
