@@ -37,9 +37,12 @@ already does.
 
 User says "what's the capital of France?" → "Paris." → "what's the
 population?" — the second turn resolves correctly because the model
-sees both prior turns. New Conversation clears history. Switching
-models clears history (different model, different context window,
-different tokenizer).
+sees both prior turns. (The original v0.11 plan also clear-wiped on
+model swap; that was retired during the PR after user feedback —
+modern instruction-tuned models handle each other's transcripts
+fine, and the surprise wipe was the bigger UX cost. See the v0.11.0
+CHANGELOG entry "Design choice — conversation persists across model
+swaps" for the final shipped behavior.)
 
 ### Scope
 
@@ -83,15 +86,18 @@ oldest pairs until prompt+headroom fits) is the natural v0.11.x
 follow-up but **not** v0.11 — turn-count is good enough to unblock the
 multi-turn experience and ship.
 
-### Clear-on-model-switch
+### Clear-on-model-switch — DROPPED (see CHANGELOG v0.11.0)
 
-Different models = different tokenizers, context windows, and
-fine-tuning. A history accumulated against Qwen 2.5 14B may not be
-coherent when replayed to Llama 3.1 8B. `LlmController`'s
-model-changed signal should clear `ConversationModel` and emit a
-toast: "Conversation cleared — model changed." This matches LM
-Studio's own behaviour and avoids surprise context-window blowups
-when the user swaps to a smaller model mid-session.
+The original plan called for clearing history on every model swap.
+Retired during the PR after user testing: continuity wins, and modern
+instruction-tuned local models handle each other's transcripts well
+enough that a surprise wipe was the worse UX. The
+context-token bar still resets on swap and the new model's
+`loaded_context_length` is re-fetched, so the visual warning stays
+accurate under the new ceiling. If a swap to a smaller-context model
+exceeds the new ceiling mid-session, LM Studio truncates from the
+front; the v0.11.x token-aware-trim follow-up handles this
+automatically.
 
 ### Tests
 
@@ -101,7 +107,8 @@ when the user swaps to a smaller model mid-session.
   `to_openai_messages()` round-trips a multi-turn convo correctly,
   skips thinking content, respects the `max_history_turns` cap.
 - `tests/test_controller.py` — pipeline appends user-then-assistant
-  in the right order, model-change clears history.
+  in the right order. (Model-change-clears-history was dropped per
+  above.)
 
 ### Open questions and risks
 

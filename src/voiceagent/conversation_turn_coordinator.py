@@ -455,13 +455,19 @@ class ConversationTurnCoordinator(QObject):
 
     def clear(self) -> None:
         """Reset the conversation transcript and all per-turn coordinator
-        state. Used by the model-switch path: history accumulated against
-        a different LLM (different tokenizer / context window /
-        fine-tuning) is not meaningful when replayed against the new one,
-        so the transcript is wiped along with the streaming-draft pointer
-        and the verbose-log dedupe flags. A no-op if the transcript is
-        already empty so a redundant signal does not spuriously emit
-        `conversation_changed`.
+        state. Wipes the transcript model along with the streaming-draft
+        pointer, the user-bubble-anchor flag, the pending-status-log
+        queue, and the verbose-log dedupe state. A no-op if the
+        transcript is already empty so a redundant signal does not
+        spuriously emit `conversation_changed`.
+
+        The original v0.11 plan called this from the model-switch
+        path; that was retired in commit 5dedc28 after user feedback
+        ("conversation persists across model swaps" — see CHANGELOG).
+        The method is kept on the public surface as the canonical
+        "reset everything" primitive for any future caller (a "New
+        Conversation" command, a session-reset shortcut, etc.); no
+        production code currently invokes it.
         """
         was_empty = self._model.rowCount() == 0
         self._model.clear()

@@ -1375,6 +1375,102 @@ def test_replay_synth_completion_after_shutdown_is_silent(
     )
 
 
+def test_main_playback_start_respects_replay_ownership(main_window_factory):
+    """Round-4 #5: when replay has just claimed the speaking row +
+    owner, a late `controller.player.playback_started` arriving from
+    the now-stopped in-pipeline auto-play must NOT overwrite the
+    replay's ownership. Otherwise the subsequent main-player
+    playback_finished would clear `_speaking_row` mid-replay."""
+    window = main_window_factory()
+    coord = window._turn_coordinator
+    coord.on_user_transcript("hi")
+    coord.on_assistant_response("hello")
+    _drain_events()
+
+    # Simulate: replayMessage just claimed the row.
+    window._speaking_row = 1
+    window._speaking_owner = "replay"
+
+    # Late `playback_started` from the stopped main player.
+    window.controller.player.playback_started.emit("/tmp/abandoned.wav")
+    _drain_events()
+
+    assert window._speaking_owner == "replay"
+    assert window.speakingRow == 1
+
+
+def test_replay_completion_uses_request_id_not_speaking_row(
+    main_window_factory,
+):
+    """Round-4 #1: the synth completion's cancellation gate compares
+    the original `request_id` against the current `_replay_request_id`,
+    not the (possibly trim-shifted) `_speaking_row`. A trim that
+    shifts the speaking row mid-synth must NOT spuriously discard
+    the still-current replay's audio."""
+    window = main_window_factory()
+    tts = window.tts_loader.tts_service
+    tts.set_available(True)
+    play_calls: list = []
+    window.replay_player.play_file = lambda path: (
+        play_calls.append(path) or True
+    )
+
+    # Simulate replayMessage having minted request_id=5 for a row
+    # that has since been trim-shifted from 7 → 3.
+    window._replay_request_id = 5
+    window._speaking_row = 3   # shifted by `_on_rows_dropped_from_front`
+    window._speaking_owner = "replay"
+
+    # Synth completes with the ORIGINAL request_id (5). It does NOT
+    # know about the shift — but the request_id is still current, so
+    # the dispatch must proceed.
+    window._replay_synth_completed.emit(
+        5, (Path("/tmp/replay-5.wav"), None)
+    )
+    _drain_events()
+
+    assert len(play_calls) == 1, (
+        "completion with current request_id must dispatch to play_file "
+        "even when speaking_row has shifted under it via a trim"
+    )
+
+
+def test_stop_speaking_invalidates_in_flight_synth_via_request_id(
+    main_window_factory, tmp_path
+):
+    """Round-4 (token cancellation): a synth completion that arrives
+    AFTER `stopSpeaking` must be discarded — `stopSpeaking` bumps
+    `_replay_request_id` so any pre-stop request_id mismatches the
+    current value."""
+    window = main_window_factory()
+    play_calls: list = []
+    window.replay_player.play_file = lambda path: (
+        play_calls.append(path) or True
+    )
+
+    # Pretend a synth was issued with request_id=3.
+    window._replay_request_id = 3
+    window._speaking_row = 1
+    window._speaking_owner = "replay"
+
+    # User stops mid-synth.
+    window.stopSpeaking()
+    _drain_events()
+    # Token bumped; speaking state cleared.
+    assert window._replay_request_id == 4
+    assert window._speaking_row == -1
+    assert window._speaking_owner == ""
+
+    # The pre-stop synth completes with request_id=3 (stale).
+    audio = tmp_path / "stale.wav"
+    audio.write_bytes(b"")
+    window._replay_synth_completed.emit(3, (audio, None))
+    _drain_events()
+
+    assert play_calls == [], "stale (pre-stop) synth must not dispatch"
+    assert not audio.exists(), "stale audio file must be unlinked"
+
+
 def test_stale_replay_synth_future_is_cancelled(main_window_factory):
     """Round-3 #11: when the user spam-clicks ▶, a still-QUEUED
     prior synth future is cancelled before queueing a new one.
