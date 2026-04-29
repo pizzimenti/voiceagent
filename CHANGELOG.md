@@ -2,6 +2,46 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.9 — 2026-04-28
+
+**Light-mode polish bundle.** Four user-reported issues from
+v0.9.8.
+
+### Fixed
+
+- **Mic button text white-on-white in Light mode** —
+  `MicButton.qml` hardcoded `icon.color: "white"` and
+  `palette.buttonText: "white"`. Worked when `buttonColor` was
+  always saturated (Plasma highlight blue/teal), broke in Light
+  mode when `buttonColor` falls back to
+  `Kirigami.Theme.alternateBackgroundColor` (a near-white
+  surface). Auto-derive icon + text color from button-bg
+  luminance (BT.601), same luminance-fork pattern the bubbles
+  use.
+- **Theme toggle silently collapsed to overflow** — even with
+  `IconOnly` + `visible: !compactMode`, Kirigami's
+  `ActionToolBar` pushed the action to a hidden overflow bucket
+  when two text+icon actions consumed the available width. Add
+  `KeepVisible` so the action never collapses.
+- **Wheel-scroll regression on Plasma 6 / Wayland** — the
+  `scrollList()` body has been byte-identical to v0.8.0 PR #23
+  but the multipliers now feel sluggish under Plasma 6 / Wayland
+  wheel-event semantics on the user's hardware. Doubled:
+  - direct path: `pdy * 8` → `pdy * 16`,
+    `(ady/120) * gridUnit * 12` → `gridUnit * 24`
+  - inertial path: `pdy * 40` → `pdy * 80`,
+    `gridUnit * 60` → `gridUnit * 120`
+
+### Changed
+
+- **Toolbar action labels** — per user spec "each button should
+  have a label", drop `IconOnly` from `themeAction` and
+  `verboseLogAction`. Theme labels simplify to Auto / Light /
+  Dark; verbose label is a constant "Verbose" (the open-eye /
+  slashed-eye icon carries on/off state).
+- **`tests/qml/tst_scroll_mode.qml`** magnitude assertions
+  updated to match the doubled multipliers.
+
 ## 0.9.8 — 2026-04-28
 
 **Cycling 3-way theme toggle.** The theme action was a submenu
