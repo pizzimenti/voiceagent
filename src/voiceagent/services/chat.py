@@ -211,20 +211,26 @@ class LmStudioClient:
             # Empty diff but something is loaded — `/models/load` reported
             # "loaded" without adding a fresh instance. Most likely the
             # alias resolved to a model that was already loaded under its
-            # canonical key. Pick a sensible keep key:
-            #   * If the requested name happens to match a loaded key
-            #     exactly, keep that one.
-            #   * Otherwise, since we cannot disambiguate which existing
-            #     instance the server "loaded", promote the first loaded
-            #     LLM as current and SKIP the unload step entirely. The
-            #     user's existing models stay loaded — better that than
-            #     unloading the very instance the alias resolved to.
+            # canonical key. Three sub-cases:
+            #   * Requested name matches a loaded key exactly → use it.
+            #   * Exactly one LLM is loaded → unambiguous; use that key.
+            #   * Multiple LLMs are loaded and the alias doesn't match any
+            #     by name → we can't tell which one the server "loaded".
+            #     Refuse to silently switch the user to an arbitrary model;
+            #     surface the ambiguity so the caller can react.
             loaded_keys = [k for k, _ in post_load]
             if model_name in loaded_keys:
                 keep_key = model_name
+            elif len(loaded_keys) == 1:
+                keep_key = loaded_keys[0]
             else:
-                self.model = loaded_keys[0]
-                return self.model
+                raise RuntimeError(
+                    f"LM Studio confirmed load for '{model_name}' but did not "
+                    f"create a new instance, and {len(loaded_keys)} LLMs are "
+                    f"already loaded under canonical keys "
+                    f"({', '.join(sorted(set(loaded_keys)))}). Cannot determine "
+                    f"which model the alias resolves to."
+                )
         else:
             # Server confirmed the load but nothing is loaded. Defensive
             # — treat as failure so the caller doesn't think we have a

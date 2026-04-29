@@ -976,6 +976,90 @@ def test_load_model_alias_to_already_loaded_skips_unload(monkeypatch):
     assert client.model == "org/canonical-model"
 
 
+def test_load_model_empty_diff_with_multiple_loaded_raises_on_ambiguity(monkeypatch):
+    """Empty post-load diff with multiple LLMs already loaded and no
+    name match — the previous heuristic (`loaded_keys[0]`) would
+    silently switch the client to an arbitrary model. Now: raise so
+    the ambiguity is surfaced rather than papered over.
+    """
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="initial", system_prompt="p"
+    )
+
+    # Two unrelated LLMs already loaded; alias `mystery` doesn't match
+    # either canonical key.
+    same_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "alpha",
+                "loaded_instances": [{"id": "a1"}],
+            },
+            {
+                "type": "llm",
+                "key": "beta",
+                "loaded_instances": [{"id": "b1"}],
+            },
+        ]
+    }
+
+    def _handler(req, timeout):
+        if req.get_method() == "POST":
+            url = req.full_url
+            if url.endswith("/api/v1/models/load"):
+                return _FakeResponse({"status": "loaded"})
+            return _FakeResponse({"status": "ok"})
+        return _FakeResponse(same_payload)
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    with pytest.raises(RuntimeError, match="Cannot determine which model"):
+        client.load_model("mystery")
+    # Critical: we did NOT silently overwrite client.model with an
+    # arbitrary loaded key.
+    assert client.model == "initial"
+
+
+def test_load_model_empty_diff_with_single_loaded_promotes_unambiguous(monkeypatch):
+    """Empty post-load diff with exactly one LLM loaded is
+    unambiguous — promote that one. This covers the common case
+    where an alias points at the only loaded model and the load was
+    a no-op.
+    """
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="initial", system_prompt="p"
+    )
+    same_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "org/canonical-only-loaded",
+                "loaded_instances": [{"id": "x1"}],
+            }
+        ]
+    }
+    unloaded: list[str] = []
+
+    def _handler(req, timeout):
+        if req.get_method() == "POST":
+            url = req.full_url
+            body = json.loads(req.data.decode("utf-8"))
+            if url.endswith("/api/v1/models/load"):
+                return _FakeResponse({"status": "loaded"})
+            if url.endswith("/api/v1/models/unload"):
+                unloaded.append(body["instance_id"])
+                return _FakeResponse({"status": "ok"})
+            return _FakeResponse({"status": "ok"})
+        return _FakeResponse(same_payload)
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    assert client.load_model("alias-for-only-one") == "org/canonical-only-loaded"
+    assert client.model == "org/canonical-only-loaded"
+    # The lone loaded instance was NOT unloaded.
+    assert "x1" not in unloaded
+
+
 def test_load_model_promotes_before_unload_so_cleanup_error_does_not_rollback(monkeypatch):
     """If `/models/load` succeeds but the subsequent `unload_other_models`
     cleanup raises (network blip, server bug, anything), the load itself
