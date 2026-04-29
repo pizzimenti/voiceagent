@@ -60,12 +60,17 @@ on this one) do not relitigate it.
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
 
 from voiceagent.conversation_model import ConversationModel
+from voiceagent.logging_utils import CONVERSATION_LOGGER_NAME
 from voiceagent.models import AppState
+
+
+_CONVERSATION_LOGGER = logging.getLogger(CONVERSATION_LOGGER_NAME)
 
 
 # Pipeline states surfaced into the verbose conversation log.
@@ -531,6 +536,12 @@ class ConversationTurnCoordinator(QObject):
         # roughly linear in dropped-row count.
         for _ in range(keep_from_index):
             self._model.remove_message(0)
+        _CONVERSATION_LOGGER.info(
+            "trim dropped_rows=%d cap=%d remaining=%d",
+            keep_from_index,
+            cap,
+            self._model.rowCount(),
+        )
 
     def _append_status_log_entry(self, state: str) -> None:
         self._model.append_message(

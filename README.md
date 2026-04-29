@@ -39,7 +39,10 @@ Environment variables:
 - `TTS_EXTRA_ARGS` optional extra command-line flags for TTS
 - `VOICEAGENT_MAX_HISTORY_TURNS` default: `20` — how many user/assistant entries (≈ 10 pairs) the conversation pane keeps. See [Conversation memory](#conversation-memory) below.
 
-Whisper downloads, Hugging Face cache data, and Piper voices are stored under the app's XDG data directory by default. Logs are stored under `$XDG_STATE_HOME/voiceagent/logs` or `~/.local/state/voiceagent/logs`.
+Whisper downloads, Hugging Face cache data, and Piper voices are stored under the app's XDG data directory by default. Logs are stored under `$XDG_STATE_HOME/voiceagent/logs` or `~/.local/state/voiceagent/logs`:
+
+- `voiceagent.log` — main app log (Qt warnings, pipeline lifecycle, audio device events). Size-rotated: 1 MB × 4 files = 4 MB cap.
+- `conversation.log` — per-turn content shipped to / received from the LLM (full `messages` list, assistant response, token usage, model swaps, history trims). **Session-rotated**: each launch shifts the prior file to `.1`, drops the oldest beyond `.5`. Useful when debugging multi-turn behaviour ("what context did the model actually see for that turn?").
 
 Model downloads use `aria2c` with 10 parallel connections by default, and the app shows live progress and transfer speed while Whisper is loading.
 

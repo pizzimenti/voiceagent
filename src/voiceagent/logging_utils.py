@@ -11,6 +11,11 @@ from PySide6.QtCore import QtMsgType, qInstallMessageHandler
 from voiceagent.paths import default_log_dir
 
 
+CONVERSATION_LOGGER_NAME = "voiceagent.conversation"
+CONVERSATION_LOG_FILENAME = "conversation.log"
+CONVERSATION_BACKUP_COUNT = 5
+
+
 _QT_LEVEL_MAP = {
     QtMsgType.QtDebugMsg: logging.INFO,  # QML console.log arrives as QtDebugMsg
     QtMsgType.QtInfoMsg: logging.INFO,
@@ -22,6 +27,64 @@ _QT_LEVEL_MAP = {
 
 def _qt_message_handler(mode, _context, message) -> None:  # noqa: ANN001 - Qt signature
     logging.getLogger("voiceagent.qml").log(_QT_LEVEL_MAP.get(mode, logging.INFO), message)
+
+
+def rotate_conversation_log(
+    log_path: Path, backup_count: int = CONVERSATION_BACKUP_COUNT
+) -> None:
+    """Shift `log_path` -> `log_path.1`, `.1` -> `.2`, ..., dropping the
+    oldest beyond `backup_count`.
+
+    Called once at startup BEFORE the conversation logger's handler
+    opens the file, so each launch starts with a fresh
+    `conversation.log` and the prior session is preserved as `.1`.
+    No-op when the current log doesn't exist (fresh install or fresh
+    log directory). Errors during rename / unlink are logged as
+    warnings but do not propagate — failing to rotate must not block
+    the app from starting.
+    """
+    if not log_path.exists():
+        return
+    shim_logger = logging.getLogger(__name__)
+    backup_count = max(1, int(backup_count))
+    # Drop the would-be-overflow backup so the rename chain has room.
+    overflow = Path(f"{log_path}.{backup_count}")
+    if overflow.exists():
+        try:
+            overflow.unlink()
+        except OSError as exc:
+            shim_logger.warning(
+                "rotate_conversation_log: could not unlink %s: %s",
+                overflow,
+                exc,
+            )
+            return
+    # Shift backups one slot older: .{N-1} -> .N for N down to 1.
+    for n in range(backup_count - 1, 0, -1):
+        src = Path(f"{log_path}.{n}")
+        if not src.exists():
+            continue
+        dst = Path(f"{log_path}.{n + 1}")
+        try:
+            src.rename(dst)
+        except OSError as exc:
+            shim_logger.warning(
+                "rotate_conversation_log: could not rename %s -> %s: %s",
+                src,
+                dst,
+                exc,
+            )
+            return
+    # Move current -> .1.
+    try:
+        log_path.rename(Path(f"{log_path}.1"))
+    except OSError as exc:
+        shim_logger.warning(
+            "rotate_conversation_log: could not rename %s -> %s.1: %s",
+            log_path,
+            log_path,
+            exc,
+        )
 
 
 def is_verbose_ui_enabled() -> bool:
@@ -71,6 +134,29 @@ def configure_logging() -> Path:
         logging.getLogger(__name__).info(
             "VOICEAGENT_VERBOSE_UI active; file handler at DEBUG"
         )
+    # Dedicated conversation log. Captures the actual content shipped
+    # to the LLM (full `messages` list per turn, assistant response,
+    # token usage), plus per-turn lifecycle events (model swap, trim).
+    # Rotates by SESSION rather than by size: each launch shifts the
+    # prior `conversation.log` to `.1`, drops the oldest beyond
+    # `CONVERSATION_BACKUP_COUNT`. Default-on so a debug pass can
+    # always reach back to the previous N sessions; size growth is
+    # bounded by the rotation count, not the per-file size.
+    conversation_log_path = log_dir / CONVERSATION_LOG_FILENAME
+    rotate_conversation_log(conversation_log_path)
+    conversation_logger = logging.getLogger(CONVERSATION_LOGGER_NAME)
+    conversation_logger.setLevel(logging.INFO)
+    conversation_logger.propagate = False
+    if not conversation_logger.handlers:
+        conversation_handler = logging.FileHandler(
+            conversation_log_path, encoding="utf-8"
+        )
+        conversation_handler.setLevel(logging.INFO)
+        conversation_handler.setFormatter(formatter)
+        conversation_logger.addHandler(conversation_handler)
+    conversation_logger.info(
+        "Conversation log opened at %s", conversation_log_path
+    )
     console_logger = logging.getLogger("voiceagent.console")
     console_logger.setLevel(logging.INFO)
     console_logger.propagate = False

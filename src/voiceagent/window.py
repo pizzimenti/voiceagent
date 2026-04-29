@@ -25,7 +25,7 @@ from voiceagent.conversation_model import ConversationModel
 from voiceagent.conversation_turn_coordinator import ConversationTurnCoordinator
 from voiceagent.downloaders import format_bytes, format_transfer_rate
 from voiceagent.i18n import TranslatorContext
-from voiceagent.logging_utils import log_ui_timing
+from voiceagent.logging_utils import CONVERSATION_LOGGER_NAME, log_ui_timing
 from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.models import AppState
 from voiceagent.services.llm_controller import LlmController
@@ -930,7 +930,13 @@ class MainWindow(QObject):
         # time a refresh re-confirms the loaded model.
         if model == self._last_selected_llm_model:
             return
+        previous_model = self._last_selected_llm_model
         self._last_selected_llm_model = model
+        # Genuine model swap — record it in the conversation log so the
+        # debug surface ties pre/post-swap turns to a clear boundary.
+        logging.getLogger(CONVERSATION_LOGGER_NAME).info(
+            "model-changed previous=%r new=%r", previous_model, model
+        )
         # When the loaded model changes, the previous ceiling no longer
         # applies. Reset immediately on the GUI thread; if a new model
         # is loaded, hop the (blocking) context-length probe to the

@@ -9,7 +9,7 @@ import time
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 
 from voiceagent.backends import SpeechToTextBackend, TextToSpeechBackend
-from voiceagent.logging_utils import log_ui_timing
+from voiceagent.logging_utils import CONVERSATION_LOGGER_NAME, log_ui_timing
 from voiceagent.models import AppState, PipelineResult
 from voiceagent.services.audio import MicrophoneRecorder
 from voiceagent.services.chat import LmStudioClient
@@ -103,6 +103,12 @@ class VoiceController(QObject):
         self.max_history_turns: int = 20
         self.state = AppState.IDLE
         self._logger = logging.getLogger(__name__)
+        # Dedicated conversation log: captures the full messages list
+        # posted to LM Studio + the assistant response, plus token
+        # usage. Lets a maintainer reach back into "what context did
+        # the model actually see for that turn" without bloating the
+        # main app log with every transcript.
+        self._conversation_logger = logging.getLogger(CONVERSATION_LOGGER_NAME)
         self._voice_connection_enabled = False
         # INVARIANT: only the owner thread writes `_active_pipeline_count`.
         # Executor-thread callbacks emit `_pipeline_count_delta` and
@@ -243,17 +249,27 @@ class VoiceController(QObject):
                     "Voice pipeline ending early — empty transcript path=%s",
                     audio_path,
                 )
+                self._conversation_logger.info(
+                    "turn-skipped reason=empty-transcript path=%s",
+                    audio_path,
+                )
                 return PipelineResult(
                     transcript="",
                     response="",
                     tts_audio_path=None,
                 )
             self.pipeline_state_changed.emit(AppState.THINKING.value, "Waiting for LM Studio")
+            self._conversation_logger.info("turn-start transcript=%r", transcript)
 
             def _on_usage(usage: dict) -> None:
                 prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
                 completion_tokens = int(usage.get("completion_tokens", 0) or 0)
                 self.chat_usage_changed.emit(prompt_tokens, completion_tokens)
+                self._conversation_logger.info(
+                    "turn-usage prompt_tokens=%d completion_tokens=%d",
+                    prompt_tokens,
+                    completion_tokens,
+                )
 
             # Build the full messages list from the GUI-thread snapshot
             # (multi-turn) or fall back to a single-turn payload built
@@ -268,6 +284,7 @@ class VoiceController(QObject):
             else:
                 messages = list(history_snapshot)
             messages.append({"role": "user", "content": transcript})
+            self._log_outgoing_messages(messages)
 
             response = self.chat_client.complete(
                 messages,
@@ -275,6 +292,7 @@ class VoiceController(QObject):
                 on_thinking_chunk=self.chat_thinking_chunk.emit,
                 on_usage=_on_usage,
             )
+            self._conversation_logger.info("turn-response response=%r", response)
 
             tts_audio_path = None
             if self.tts_service.enabled:
@@ -294,6 +312,24 @@ class VoiceController(QObject):
         finally:
             audio_path.unlink(missing_ok=True)
 
+    def _log_outgoing_messages(self, messages: list[dict[str, str]]) -> None:
+        """Log the full `messages` list about to ship to LM Studio.
+
+        Each entry is logged on its own line with `role` + `content` in
+        full. The conversation log is session-rotated, not size-rotated,
+        so a long transcript is not a problem — the next launch shifts
+        the file to `.1` and starts fresh.
+        """
+        self._conversation_logger.info(
+            "turn-messages count=%d", len(messages)
+        )
+        for index, message in enumerate(messages):
+            role = message.get("role", "?")
+            content = message.get("content", "")
+            self._conversation_logger.info(
+                "  [%d] role=%s content=%r", index, role, content
+            )
+
     def _handle_pipeline_done(self, future: Future[PipelineResult]) -> None:
         # Runs on the executor thread. MUST NOT mutate `_active_pipeline_count`
         # directly; route the delta through `_pipeline_count_delta` so the
@@ -303,6 +339,9 @@ class VoiceController(QObject):
             result = future.result()
         except Exception as exc:
             self.pipeline_failed.emit(str(exc))
+            self._conversation_logger.warning(
+                "turn-failed error=%s", exc
+            )
             return
 
         self.pipeline_completed.emit(result)
