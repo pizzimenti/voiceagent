@@ -51,13 +51,6 @@ Everything else the v0.8.0 smoke checklist covered (form labels,
 header actions, scroll mode behavior, replay-failure toast firing)
 is now in the automated suite.
 
-## Future feature work (lower priority)
-
-- **Kirigami dialog/page for model management.** The Model Manager is
-  currently an inline `Window` inside `MainWindow.qml`. Kirigami's
-  dialog/page conventions would integrate better with the rest of the
-  QML tree.
-
 ## Deferred indefinitely
 
 - **`model_loader.py:50` — `_emit_initial_state` third branch.**
