@@ -1,11 +1,27 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 from urllib import error, request
 
 
+_LOGGER = logging.getLogger(__name__)
+
+
 class LmStudioClient:
+    """HTTP client for LM Studio's two API surfaces.
+
+    Wraps `urllib.request` with project-specific semantics over the
+    OpenAI-compatible `/v1/*` endpoints (`/models`, `/chat/completions`)
+    and LM Studio's native `/api/v1/*` endpoints (`/models`,
+    `/models/load`, `/models/unload`). Maintains a single "currently
+    selected" model pointer that the controller writes through on
+    selection changes; HTTP itself is stateless and re-resolves
+    `self.model` on every call. `complete()` SSE-streams chat
+    completions with optional per-chunk callbacks for live UI updates.
+    """
+
     def __init__(self, base_url: str, model: str, system_prompt: str, timeout_seconds: int = 60) -> None:
         self.base_url = ""
         self.model = model
@@ -139,14 +155,25 @@ class LmStudioClient:
         return self.refresh_loaded_model()
 
     def load_model(self, model: str | None = None) -> str:
+        """Switch the loaded LLM to ``model`` (or ``self.model``).
+
+        Memory note: while a new model is loading, the previously
+        selected model stays loaded too — we only unload it once
+        ``/models/load`` confirms the new instance is ready. Peak
+        memory is briefly 2x, but the trade is worth it because a
+        failed load no longer evicts the user's working model and
+        leaves them in an empty state.
+        """
         model_name = (model or self.model).strip()
         if not self.base_url:
             raise RuntimeError("LLM URL is not configured.")
         if not model_name:
             raise RuntimeError("LLM model is not configured.")
 
-        self.unload_other_models(keep_model=model_name)
+        # Already loaded? Unload others (safe — the keep model is
+        # confirmed available) and claim it as current.
         if any(loaded_model == model_name for loaded_model in self.list_loaded_models()):
+            self.unload_other_models(keep_model=model_name)
             self.model = model_name
             return model_name
 
@@ -154,14 +181,104 @@ class LmStudioClient:
         if not native_api_root:
             raise RuntimeError("LM Studio native API root could not be determined.")
 
+        # Snapshot loaded instances before the load so we can identify
+        # the newly-loaded one as the diff after `/models/load` returns.
+        # The request `model_name` is what the user typed; LM Studio's
+        # canonical key (the one /api/v1/models reports) may differ
+        # (alias vs fully-qualified key). Comparing pre/post lets us
+        # keep the actual new instance regardless of name resolution.
+        pre_load = set(self.list_loaded_model_instances())
+
+        # Load FIRST. Previous models stay loaded until the server
+        # confirms the new one — that way a failed load can't strand
+        # the user with no working LLM.
         payload = {"model": model_name}
         response = self._json_request(f"{native_api_root}/models/load", payload=payload, method="POST")
         status = response.get("status")
         if status != "loaded":
             raise RuntimeError(f"LM Studio did not confirm model load for '{model_name}'.")
 
-        self.model = model_name
-        return model_name
+        # Identify the newly-loaded instance(s).
+        post_load = self.list_loaded_model_instances()
+
+        # Path 0 (preferred): the load response itself may carry an
+        # `instance_id` for the resolved model. When LM Studio provides
+        # it, it's the authoritative answer to "which instance did the
+        # alias resolve to" — no diff or substring guess needed. Look
+        # the id up in `post_load` to recover the canonical key.
+        response_instance_id = response.get("instance_id")
+        keep_key: str | None = None
+        if isinstance(response_instance_id, str) and response_instance_id.strip():
+            for k, i in post_load:
+                if i == response_instance_id.strip():
+                    keep_key = k
+                    break
+
+        # Path 1: set-diff against the pre-load snapshot. Catches the
+        # common "fresh instance loaded" case when the response lacks
+        # an instance_id field (older LM Studio servers, custom
+        # forks, etc.).
+        if keep_key is None:
+            new_instances = [pair for pair in post_load if pair not in pre_load]
+            if new_instances:
+                keep_key = new_instances[0][0]
+
+        if keep_key is not None:
+            pass
+        elif post_load:
+            # Empty diff but something is loaded — `/models/load` reported
+            # "loaded" without adding a fresh instance. Most likely the
+            # alias resolved to a model that was already loaded under its
+            # canonical key. Disambiguation cascade:
+            #   1. Requested name matches a loaded key exactly → use it.
+            #   2. Exactly one LLM is loaded → unambiguous; use that key.
+            #   3. Requested name appears as a case-insensitive substring
+            #      of exactly one canonical key → assume that's the alias
+            #      target. Common pattern: alias "qwen" maps to canonical
+            #      "Qwen/qwen2.5-coder-14b-instruct".
+            #   4. Otherwise: multiple loaded, no fuzzy match → raise so
+            #      the caller doesn't silently end up on the wrong model.
+            #      Better to surface the ambiguity than guess at random.
+            loaded_keys = [k for k, _ in post_load]
+            if model_name in loaded_keys:
+                keep_key = model_name
+            elif len(loaded_keys) == 1:
+                keep_key = loaded_keys[0]
+            else:
+                needle = model_name.lower()
+                fuzzy_matches = [k for k in loaded_keys if needle in k.lower()]
+                if len(fuzzy_matches) == 1:
+                    keep_key = fuzzy_matches[0]
+                else:
+                    raise RuntimeError(
+                        f"LM Studio confirmed load for '{model_name}' but did "
+                        f"not create a new instance, and {len(loaded_keys)} "
+                        f"LLMs are already loaded under canonical keys "
+                        f"({', '.join(sorted(set(loaded_keys)))}). Cannot "
+                        f"determine which model the alias resolves to."
+                    )
+        else:
+            # Server confirmed the load but nothing is loaded. Defensive
+            # — treat as failure so the caller doesn't think we have a
+            # working LLM.
+            raise RuntimeError(
+                f"LM Studio confirmed load for '{model_name}' but no model is loaded."
+            )
+
+        # Promote the new model FIRST, then attempt the cleanup unload.
+        # If the cleanup fails, the load itself still stands — losing
+        # the new selection because of an unload error would be the
+        # very regression P2 #3 was meant to prevent.
+        self.model = keep_key
+        try:
+            self.unload_other_models(keep_model=keep_key)
+        except Exception:
+            _LOGGER.exception(
+                "unload_other_models failed after successful load (model=%s); "
+                "new model is current but stale instances may still be loaded",
+                keep_key,
+            )
+        return keep_key
 
     def unload_model_instance(self, instance_id: str) -> None:
         native_api_root = self._native_api_root()

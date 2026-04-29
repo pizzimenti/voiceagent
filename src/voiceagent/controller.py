@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 import time
 
-from PySide6.QtCore import QObject, Qt, Signal, Slot, QTimer
+from PySide6.QtCore import QObject, Signal, Slot, QTimer
 
 from voiceagent.backends import SpeechToTextBackend, TextToSpeechBackend
 from voiceagent.logging_utils import log_ui_timing
@@ -16,6 +16,18 @@ from voiceagent.services.playback import AudioPlayer
 
 
 class VoiceController(QObject):
+    """Orchestrates the voice-pipeline lifecycle.
+
+    Owns the IDLE / RECORDING / TRANSCRIBING / THINKING / SYNTHESIZING /
+    SPEAKING state machine and the executor that runs the
+    record → transcribe → chat → TTS → playback pipeline off the GUI
+    thread. A second, separate `partial_executor` runs in-progress
+    transcription probes that drive the live-transcript draft bubble.
+    Streaming chat output flows through the `chat_*_chunk` signals
+    below so the conversation coordinator can incrementally update
+    the assistant draft as tokens arrive.
+    """
+
     state_changed = Signal(str)
     status_changed = Signal(str)
     connection_changed = Signal(bool)

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Callable
 
 import pytest
 from PySide6.QtCore import QObject, QCoreApplication, Signal
@@ -416,3 +415,181 @@ def test_run_pipeline_unlinks_audio_after_empty_transcript(qtbot, tmp_path):
         assert not audio.exists()
     finally:
         ctrl.shutdown()
+
+
+# --- Executor shutdown guards (P2 #5) -----------------------------------
+#
+# Three additional executors live alongside the main pipeline executor
+# covered by the tests above:
+#
+# 1. `MainWindow._context_length_executor` — drives the LM Studio
+#    `fetch_loaded_context_length` HTTP probe.
+# 2. `LlmController._llm_executor` — drives connect/refresh/select.
+# 3. `ParallelItemLoader.executor` — drives model/voice downloads.
+#
+# Each has a Qt-signal-driven submit path that can fire AFTER `shutdown()`
+# returns (a queued slot lands late). The smoke tests below exercise the
+# "submit after shutdown" path directly and assert no `RuntimeError`
+# leaks back to the caller and no work is scheduled.
+
+
+def test_llm_controller_submit_after_shutdown_is_dropped(qtbot, tmp_path):
+    """LlmController must absorb a `_submit_operation` call that lands
+    after `shutdown()` instead of raising
+    `RuntimeError: cannot schedule new futures after shutdown`."""
+
+    import uuid
+    from PySide6.QtCore import QSettings
+
+    from voiceagent.services.llm_controller import LlmController
+    from tests.fakes import FakeChatClient
+
+    # File-backed QSettings keeps the test isolated to tmp_path. The
+    # alternative `setDefaultFormat()` + `setPath()` API mutates Qt's
+    # process-global state, which a later test would silently inherit
+    # — execution-order-dependent failures down the line.
+    settings = QSettings(
+        str(tmp_path / f"voiceagent-test-{uuid.uuid4().hex[:8]}.ini"),
+        QSettings.Format.IniFormat,
+    )
+    chat_client = FakeChatClient()
+    ctrl = LlmController(chat_client, settings)
+
+    ctrl.shutdown()
+    assert ctrl._shutdown_started is True
+
+    # Submit a no-op task AFTER shutdown — must not raise. The flag check
+    # short-circuits, but even if the flag were missing the `RuntimeError`
+    # catch should swallow the `cannot schedule new futures` exception
+    # raised by the dead pool.
+    work_ran = []
+
+    def _task() -> dict[str, object]:
+        work_ran.append(True)
+        return {"ok": True}
+
+    # _submit_operation is the single funnel for executor submissions.
+    ctrl._submit_operation("refresh", _task)
+
+    # No work scheduled.
+    _process_events(times=3)
+    assert work_ran == []
+
+
+def test_parallel_loader_submit_after_shutdown_is_dropped(qtbot, tmp_path):
+    """`ParallelItemLoader.download_item` / `delete_item` must absorb the
+    submit-after-shutdown race instead of raising on the dead executor."""
+
+    import os
+    import sys
+    from pathlib import Path
+
+    # Match the path-resolution dance the parallel-loader test file uses
+    # (the worktree's `src/` must beat any editable install).
+    here = Path(__file__).resolve().parent
+    src = here.parent / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+    # Reuse the fake-backend pattern from `test_parallel_item_loader.py`
+    # by importing the test module's helpers. Importing a sibling test
+    # module is unusual but cheaper than duplicating ~80 lines of fakes
+    # here, and the helpers have stable names.
+    from tests.test_parallel_item_loader import FakeBackend, _ConcreteLoader
+
+    backend = FakeBackend(available_names=("a", "b", "c"))
+    loader = _ConcreteLoader(backend)
+
+    loader.shutdown(timeout=0.5)
+    assert loader._shutdown_started is True
+
+    # Hand the loader a fresh backend with an installed item so the
+    # delete branch's preconditions also pass (shutdown guard must beat
+    # the precondition checks, but covering both branches keeps the test
+    # honest if someone reorders the guards later).
+    backend.mark_installed("a")
+
+    # Both submit paths must be no-ops post-shutdown — no RuntimeError,
+    # no state mutation, no executor work scheduled.
+    loader.download_item("b")
+    loader.delete_item("a")
+    _process_events(times=3)
+
+    # The backend records every download/remove call; both must be empty.
+    assert backend.calls == []
+    # State mutations must have rolled back / never occurred.
+    assert loader.active_items == frozenset()
+
+
+def test_mainwindow_context_length_submit_after_shutdown_is_dropped(
+    qtbot, tmp_path, monkeypatch
+):
+    """`MainWindow._submit_context_length_fetch` must absorb the
+    submit-after-shutdown race. Mirrors the LlmController test but
+    targets the dedicated context-length executor."""
+
+    import os
+    import sys
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    src = here.parent / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    # Reuse the QML stub + factory from the integration tests so we get
+    # a real MainWindow without standing up a Kirigami runtime.
+    from tests.fakes import (
+        FakeChatClient,
+        FakePlayer,
+        FakeRecorder,
+        FakeTranscriber,
+        FakeTts,
+    )
+    from tests.test_mainwindow_integration import _StubQmlEngine
+    from voiceagent.controller import VoiceController
+    from voiceagent.model_loader import WhisperModelLoader
+    from voiceagent.tts_loader import TtsVoiceLoader
+
+    monkeypatch.setattr(
+        "voiceagent.window.QQmlApplicationEngine", _StubQmlEngine
+    )
+
+    from voiceagent.window import MainWindow  # imported AFTER monkeypatch
+
+    transcriber = FakeTranscriber(model_root=tmp_path, model_name="tiny.en")
+    transcriber.download_item("tiny.en")
+    tts_service = FakeTts(model_root=tmp_path)
+    chat_client = FakeChatClient()
+    chat_client.context_length_value = 16384
+
+    controller = VoiceController(
+        recorder=FakeRecorder(),
+        transcriber=transcriber,
+        chat_client=chat_client,
+        tts_service=tts_service,
+        player=FakePlayer(),
+    )
+    model_loader = WhisperModelLoader(transcriber)
+    tts_loader = TtsVoiceLoader(tts_service)
+
+    window = MainWindow(controller, model_loader, tts_loader)
+    chat_client.set_model("test-model-7b")
+    chat_client.fetch_context_length_calls = 0
+
+    # Tear the window down, then drive a submit. `_shutting_down` is
+    # flipped before the executor.shutdown call inside `MainWindow.shutdown`.
+    window.shutdown()
+    assert window._shutting_down is True
+
+    # The submit must be a no-op — neither the flag-check guard nor
+    # (if missed) the `RuntimeError` catch should let an exception
+    # bubble out of this slot.
+    window._submit_context_length_fetch("test-model-7b")
+    _process_events(times=3)
+
+    # The fetch must NOT have been issued.
+    assert chat_client.fetch_context_length_calls == 0

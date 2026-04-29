@@ -367,17 +367,15 @@ Kirigami.ApplicationWindow {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    // 250 ms cross-fade when the responsive breakpoint
-                    // flips. opacity drives a smooth transition; visible
-                    // follows opacity so the Item drops out of layout
-                    // after fade. Loader.active still gates instantiation
-                    // by mode (smooth fade-IN, instant unload on hide is
-                    // an acceptable simplification — the new mode's
-                    // content fades in over the disappearing one).
-                    opacity: root.mediumMode ? 1 : 0
-                    visible: opacity > 0.01
+                    // No opacity fade — AGENTS.md "Mode transition
+                    // animation" forbids it (the user explicitly
+                    // preferred motion over dissolves). The visual
+                    // transition between compact and medium is carried
+                    // by the page-level mic's geometry slide
+                    // (`Behavior on x/y/width/height` below); the
+                    // panes themselves swap visibility instantly.
+                    visible: root.mediumMode
                     spacing: Kirigami.Units.largeSpacing
-                    Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.InOutQuad } }
 
                     Loader {
                         id: sessionPaneLoader
@@ -398,9 +396,7 @@ Kirigami.ApplicationWindow {
                 Loader {
                     id: compactLoader
                     anchors.fill: parent
-                    opacity: root.compactMode ? 1 : 0
-                    visible: opacity > 0.01
-                    Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.InOutQuad } }
+                    visible: root.compactMode
                     active: root.compactMode
                     sourceComponent: conversationPaneComponent
                 }

@@ -1,6 +1,6 @@
 pkgbase = voiceagent
 	pkgdesc = Push-to-talk KDE-friendly desktop voice assistant
-	pkgver = 0.4.0
+	pkgver = 0.10.2
 	pkgrel = 1
 	url = https://github.com/pizzimenti/voiceagent
 	arch = x86_64
@@ -16,7 +16,7 @@ pkgbase = voiceagent
 	depends = pyside6
 	depends = aria2
 	depends = portaudio
-	source = voiceagent-0.4.0.tar.gz::https://github.com/pizzimenti/voiceagent/archive/refs/tags/v0.4.0.tar.gz
+	source = voiceagent-0.10.2.tar.gz::https://github.com/pizzimenti/voiceagent/archive/refs/tags/v0.10.2.tar.gz
 	sha256sums = SKIP
 
 pkgname = voiceagent

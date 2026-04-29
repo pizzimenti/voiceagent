@@ -35,7 +35,6 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QTimer  # noqa: E402
-from PySide6.QtQuick import QQuickWindow  # noqa: E402  -- registers the type so grabWindow() resolves on engine.rootObjects()[0]
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 _HERE = Path(__file__).resolve().parent
@@ -46,9 +45,9 @@ sys.path.insert(0, str(_REPO / "src"))
 from tests.fakes import build_compiletest_window  # noqa: E402
 
 # Bracket the responsive breakpoints:
-#   minimumWidth  ≈ 18gu ≈ 324 px @1.0x  (smallest legal)
-#   compactMode   ≈ 40gu ≈ 720 px @1.0x  (compact ↔ medium)
-#   ultraCompact  height < 28gu ≈ 504 px (when compact AND short)
+#   minimumWidth   ≈ 6gu  ≈ 108 px @1.0x   (postage-stamp floor; v0.8.4+)
+#   compactMode    ≈ 40gu ≈ 720 px @1.0x   (compact ↔ medium; v0.8.2+)
+#   ultraCompact   height < 10gu ≈ 180 px  (compact AND short; v0.8.6+)
 # Capture both width-scan at typical height (700) AND short-height
 # captures at narrow widths to confirm ultraCompactMode trips.
 WIDTHS = [340, 400, 600, 800, 1000, 1200]

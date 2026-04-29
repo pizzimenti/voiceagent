@@ -37,7 +37,6 @@ if str(_SRC) not in sys.path:
 # Headless Qt for any environment that didn't already set this.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import pytest
 from PySide6.QtCore import QCoreApplication
 
 from voiceagent.services.playback import AudioPlayer

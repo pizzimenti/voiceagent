@@ -264,7 +264,6 @@ class AudioPlayer(QObject):
         path: Path,
         stop_event: threading.Event,
     ) -> None:
-        emitted_started = False
         try:
             chunk_writes = 0
             muted_chunk_sleeps = 0
@@ -293,7 +292,6 @@ class AudioPlayer(QObject):
                         self._stream = stream
                         self._emit_state_changed(gen, str(path), "PlayingState")
                         self._emit_started(gen, str(path))
-                        emitted_started = True
                     while not stop_event.is_set():
                         with self._pause_condition:
                             while self._paused and not stop_event.is_set():

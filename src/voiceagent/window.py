@@ -67,6 +67,19 @@ class _CatalogStateAdapter:
 
 
 class MainWindow(QObject):
+    """QObject bridge between the QML root window and the Python backend.
+
+    Owns the Q_PROPERTYs QML binds to (theme mode, model selectors,
+    catalogs, conversation model, error / status state, context-token
+    counters, etc.) and the Slots QML invokes (model select / install
+    / remove, theme cycle, replay, set-thinking-expanded). State
+    mutations route through the conversation coordinator, the LLM
+    controller, or the model loaders — this class is mostly a property
+    surface and signal-relay. Cross-thread state writes (e.g. the
+    context-length probe completing on a worker) marshal through
+    private signals so the GUI thread stays the sole writer.
+    """
+
     ui_changed = Signal()
     progress_changed = Signal()
     conversation_changed = Signal()
@@ -892,10 +905,22 @@ class MainWindow(QObject):
         self.ui_changed.emit()
 
     def _submit_context_length_fetch(self, model: str) -> None:
+        # `_shutting_down` is set BEFORE `_context_length_executor.shutdown()`
+        # in `shutdown()`, so any queued Qt slot that lands here after the
+        # window has begun tearing down sees the flag and bails out before
+        # touching a dead pool. The `RuntimeError` catch closes the residual
+        # race between the flag check above and the `submit` call itself —
+        # if the executor was shut down between those two lines, treat the
+        # submission as dropped (same outcome as if we'd checked after).
+        if self._shutting_down:
+            return
         chat_client = self.controller.chat_client
-        future = self._context_length_executor.submit(
-            chat_client.fetch_loaded_context_length
-        )
+        try:
+            future = self._context_length_executor.submit(
+                chat_client.fetch_loaded_context_length
+            )
+        except RuntimeError:
+            return
         future.add_done_callback(
             lambda completed, name=model: self._handle_context_length_future(
                 completed, name
