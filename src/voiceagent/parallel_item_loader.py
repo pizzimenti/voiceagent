@@ -298,6 +298,12 @@ class ParallelItemLoader(QObject):
     # -- core operations ---------------------------------------------------
 
     def download_item(self, name: str) -> None:
+        # Guard ahead of any state mutation: a Qt-queued QML click that
+        # lands here after `shutdown()` has flipped `_shutdown_started`
+        # must not flip `_active_items` / emit progress signals on a
+        # half-torn-down loader, and must not race the dying executor.
+        if self._shutdown_started:
+            return
         if (
             not name
             or name in self._active_items
@@ -317,11 +323,26 @@ class ParallelItemLoader(QObject):
         self.status_changed.emit(self._status_checking())
         self.progress_changed.emit(self._aggregate_progress())
 
-        future = self.executor.submit(self._download_worker, name)
+        try:
+            future = self.executor.submit(self._download_worker, name)
+        except RuntimeError:
+            # Race with shutdown between the flag check above and submit.
+            # Roll back the optimistic state mutations so the loader does
+            # not look "busy" forever for an item we never scheduled.
+            self._active_items.discard(name)
+            self._progress_by_item.pop(name, None)
+            self.item_loading_changed.emit(name, False)
+            if not self._active_items:
+                self.loading_changed.emit(False)
+            return
         self._track_inflight(future)
         future.add_done_callback(lambda f, n=name: self._handle_done(f, n, "download"))
 
     def delete_item(self, name: str) -> None:
+        # Same shutdown guard as `download_item`: refuse to mutate state or
+        # submit work if `shutdown()` has begun.
+        if self._shutdown_started:
+            return
         if (
             not name
             or name in self._active_items
@@ -344,7 +365,16 @@ class ParallelItemLoader(QObject):
         self.status_changed.emit(self._status_removing())
         self.progress_changed.emit(self._aggregate_progress())
 
-        future = self.executor.submit(self._delete_worker, name)
+        try:
+            future = self.executor.submit(self._delete_worker, name)
+        except RuntimeError:
+            # Race with shutdown — undo optimistic state mutations.
+            self._active_items.discard(name)
+            self._progress_by_item.pop(name, None)
+            self.item_loading_changed.emit(name, False)
+            if not self._active_items:
+                self.loading_changed.emit(False)
+            return
         self._track_inflight(future)
         future.add_done_callback(lambda f, n=name: self._handle_done(f, n, "delete"))
 

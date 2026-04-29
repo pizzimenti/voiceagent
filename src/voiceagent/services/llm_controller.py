@@ -56,6 +56,11 @@ class LlmController(QObject):
         self._llm_executor = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="voiceagent-llm"
         )
+        # Set BEFORE `_llm_executor.shutdown()` in `shutdown()` so that any
+        # Qt slot driving a fresh `_submit_operation` after teardown has
+        # begun sees the flag and bails out instead of racing with the
+        # dying pool.
+        self._shutdown_started = False
         self._llm_refresh_request_id = 0
         self._llm_active_refresh_request_id = 0
         self._startup_llm_connect_scheduled = False
@@ -214,6 +219,11 @@ class LlmController(QObject):
     # Lifecycle
     # ------------------------------------------------------------------
     def shutdown(self) -> None:
+        # Flip the flag BEFORE the executor.shutdown call so any submitter
+        # that checks `_shutdown_started` (the public `_submit_operation`
+        # gate below) sees the no-op signal even before the executor
+        # formally rejects further submissions.
+        self._shutdown_started = True
         self._llm_executor.shutdown(wait=False, cancel_futures=True)
 
     # ------------------------------------------------------------------
@@ -284,7 +294,16 @@ class LlmController(QObject):
         )
 
     def _submit_operation(self, operation: str, task: Callable[[], object]) -> None:
-        future = self._llm_executor.submit(task)
+        # Guard against a Qt slot landing here after `shutdown()` has flipped
+        # `_shutdown_started`. The `RuntimeError` catch closes the residual
+        # race between the flag check and the actual `submit` call (the
+        # executor can transition to "shutdown" between the two lines).
+        if self._shutdown_started:
+            return
+        try:
+            future = self._llm_executor.submit(task)
+        except RuntimeError:
+            return
         future.add_done_callback(
             lambda completed: self._emit_operation_result(operation, completed)
         )
