@@ -2,6 +2,23 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.8 — 2026-04-28
+
+**Cycling 3-way theme toggle.** The theme action was a submenu
+(`Kirigami.Action` with three checkable children inside an
+`ActionGroup`) — two clicks per mode change. Now a single
+icon-only action that cycles `Auto → Light → Dark → Auto` on each
+click. Icon and tooltip reflect current state + next state.
+
+### Changed
+
+- **`themeAction` in `MainWindow.qml`** — single cycling action
+  replacing the submenu. Icon: `preferences-desktop-theme-symbolic`
+  (Auto), `weather-clear-symbolic` (Light), `weather-clear-night-
+  symbolic` (Dark). Tooltip carries current+next state.
+- **`themeActionGroup` and three child actions** — dropped in
+  the same pass.
+
 ## 0.9.7 — 2026-04-28
 
 **Violet AI-app bubble palette.** Replaces v0.9.6's warm coffee
