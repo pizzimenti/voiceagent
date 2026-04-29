@@ -51,6 +51,55 @@ visual rhythm judgments that humans see better than diff tools.
 Behavioral and structural checks the manual smoke previously
 covered are now in the automation suite.
 
+## Responsive layout policy
+
+VoiceAgent has three responsive modes driven by `MainWindow.qml`'s
+`compactMode` and `ultraCompactMode` properties (declared on the root
+`Kirigami.ApplicationWindow`). Both are gridUnit-based so they scale
+correctly with Plasma 100% / 125% / 150% / 200%.
+
+### Modes
+
+| Mode | Trigger | Layout |
+| :--- | :--- | :--- |
+| **medium** | `width >= gridUnit * 40` | Side-by-side: `SessionSetupPane.qml` (Kirigami.FormLayout: Speech / Voice / LLM URL / Loaded Model) on the left, mic button (~gridUnit × 10 wide) on the right. `ConversationPane.qml` below. Page header: Mute, Voice Models, Theme, Verbose Log actions. |
+| **compact** | `width < gridUnit * 40 && height >= gridUnit * 10` | SessionSetupPane hidden. `ConversationPane.qml` fills the page: conversation feed on top + mic button (gridUnit × 5 tall) at the bottom. Page header: drops Voice Models action; rest visible. |
+| **ultraCompact** | `compactMode && height < gridUnit * 10` | Conversation feed entirely hidden via `Layout.maximumHeight: 0` collapse. Mic button fills the window with zero padding (hemmed against the window edges). Page header may cramp at the smallest sizes — by design. |
+
+### Window dimensions
+
+- **`minimumWidth: gridUnit * 6`** (~108 px @1.0x). The user explicitly opted into the postage-stamp mic-only-widget extreme. Title bar text may collapse to ellipsis at the narrow end — by design at this size.
+- **`minimumHeight: gridUnit * 8`** (~144 px @1.0x). The floor at which the mic button has room for icon + wrapped status text without its bottom curve clipping at the window edge.
+- **No upper cap.** Maximize, fullscreen, tiling all work as the compositor permits. v0.8.4 dropped the prior `maximumWidth` / `maximumHeight` caps after they proved more annoying than the alternative.
+
+### Mode transition animation
+
+- 250 ms `Easing.OutCubic` `Behavior on Layout.maximumHeight` on the conversation-feed Item in `ConversationPane.qml`. Animates 100000 ↔ 0 when `ultraCompactMode` flips. The mic button below has `Layout.fillHeight: ultraCompactMode`, so as the conversation collapses, the mic *slides up* into the freed vertical space. No dissolve.
+- **No opacity fades anywhere** — the user explicitly preferred motion over dissolves.
+- Compact ↔ medium does *not* currently animate — the mic in compact lives inside `ConversationPane.qml`, the mic in medium lives inside `SessionSetupPane.qml`, two separate component instances. Animating geometry between them needs a single-mic-instance refactor (deferred — see FOLLOWUPS.md).
+
+### Mic button sizing
+
+- **Icon size:** `Math.max(18, Math.min(48, height * 0.32))` — scales with frame height so short windows shrink the icon instead of overflowing.
+- **Font size:** `Math.max(10, Math.min(14, height * 0.10))` — same scaling logic.
+- **Status label wraps** via `wrapMode: Text.WordWrap` (custom `contentItem` in `MicButton.qml`). Long strings line-break ("No model loaded" → two lines) instead of truncating to "No model lo...".
+
+### Form layout (medium mode)
+
+- `SessionSetupPane.qml` uses `Kirigami.FormLayout` with `wideMode: !compactMode` for the responsive collapse.
+- Form ComboBoxes have `Layout.preferredWidth` (gu × 14 / gu × 16) but **no `Layout.fillWidth`** — preventing them from starving the right-aligned label column.
+- The inner `RowLayout` uses `anchors.fill: parent` (respects Pane padding), not `width: parent.width` (which overshoots the padding region).
+
+### Verifying responsive layout
+
+- **Headless:** `./voiceagent-visualtest.sh` captures 15 screenshots per scale × 5 widths plus 5 short-window captures per scale (3 scales × 10 = 30 PNGs). Output under `screenshots/` (gitignored). Driver: `tests/visual/visual_smoke.py`.
+- **Manual smoke:** launch `.venv/bin/voiceagent`, resize through the breakpoints. Watch for:
+  1. Form labels fully visible at the gridUnit × 40 medium-mode floor (no left-clipping).
+  2. Mic button bottom not clipped at minimum-height window.
+  3. Conversation feed collapses smoothly (~250 ms) at the ultraCompact threshold; mic button slides up into the freed space.
+  4. Title bar shows "Voice Agent" + Mute action down to gridUnit × 18 width or so. Below that the WM title bar may overflow to "..." — that's fine.
+  5. Mic status text wraps at narrow widths ("No model loaded" on two lines) instead of eliding.
+
 ## KDE/QML implementation memory
 
 - Prefer stable `QAbstractListModel` objects for live QML lists. Avoid replacing `QVariantList` values for frequently changing views because delegate rebuilds can reset `contentY`, disturb current index, and cause visible jumps.

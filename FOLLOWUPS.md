@@ -51,6 +51,33 @@ Everything else the v0.8.0 smoke checklist covered (form labels,
 header actions, scroll mode behavior, replay-failure toast firing)
 is now in the automated suite.
 
+## UI rough edges (deferred from v0.8.x responsive sweep)
+
+These shipped as-is across v0.8.0–v0.8.6 with the intent to refine in
+a later cycle. The "Responsive layout policy" section of `AGENTS.md`
+documents the shipped behavior; this is the punch list of what's
+known to be off.
+
+- **`SessionSetupPane.qml` "Loaded Model:" label can left-clip** at
+  the narrow end of mediumMode (just above the gridUnit × 40
+  breakpoint). Form has no headroom for the longest label at the
+  smallest mediumMode width. Either tighten the breakpoint another
+  notch or reduce control `Layout.preferredWidth` further.
+- **Medium-mode mic button can visually overlap the URL row's
+  Connect button** at the same narrow end of mediumMode. Same root
+  cause — form crowding the mic frame at the breakpoint floor. The
+  cleanest fix is the single-page-level mic-button refactor below
+  (since the mic could then leave a guaranteed gap).
+- **Compact ↔ medium mic-button "slide up and right" animation.**
+  The user requested that the mic button slide between positions
+  during a `compactMode` flip (bottom-of-conversation in compact →
+  right-of-form in medium). This requires a single page-level mic
+  button instance with animatable `x`/`y`/`width`/`height` bound to
+  the current mode, replacing the current two-instance approach
+  (one mic in `ConversationPane.qml`, one in `SessionSetupPane.qml`).
+  Roughly 150-line refactor; it would also resolve the mic-overlap
+  issue above.
+
 ## Future feature work (lower priority)
 
 - **Kirigami dialog/page for model management.** The Model Manager is
