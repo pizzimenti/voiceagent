@@ -67,6 +67,19 @@ class _CatalogStateAdapter:
 
 
 class MainWindow(QObject):
+    """QObject bridge between the QML root window and the Python backend.
+
+    Owns the Q_PROPERTYs QML binds to (theme mode, model selectors,
+    catalogs, conversation model, error / status state, context-token
+    counters, etc.) and the Slots QML invokes (model select / install
+    / remove, theme cycle, replay, set-thinking-expanded). State
+    mutations route through the conversation coordinator, the LLM
+    controller, or the model loaders — this class is mostly a property
+    surface and signal-relay. Cross-thread state writes (e.g. the
+    context-length probe completing on a worker) marshal through
+    private signals so the GUI thread stays the sole writer.
+    """
+
     ui_changed = Signal()
     progress_changed = Signal()
     conversation_changed = Signal()

@@ -9,10 +9,10 @@ import org.kde.kirigami 2.20 as Kirigami
 // `micAnchor` here reserves the layout slot the mic occupies in this
 // pane.
 //
-// `root` here is aliased to the containing ApplicationWindow so the existing
-// bindings (root.compactMode, root.bubbleText(...), root.scrollList(...))
-// keep resolving against the MainWindow scope after the move out of the
-// inline Component definition.
+// `root` here is aliased to the containing ApplicationWindow so the
+// bindings on `root.compactMode`, `root.mediumMode`, `root.ultraCompactMode`,
+// `root.bubbleText(...)`, etc. resolve against the MainWindow scope after
+// the move out of the inline Component definition.
 Pane {
     id: conversationPane
 

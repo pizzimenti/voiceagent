@@ -6,6 +6,18 @@ from urllib import error, request
 
 
 class LmStudioClient:
+    """HTTP client for LM Studio's two API surfaces.
+
+    Wraps `urllib.request` with project-specific semantics over the
+    OpenAI-compatible `/v1/*` endpoints (`/models`, `/chat/completions`)
+    and LM Studio's native `/api/v1/*` endpoints (`/models`,
+    `/models/load`, `/models/unload`). Maintains a single "currently
+    selected" model pointer that the controller writes through on
+    selection changes; HTTP itself is stateless and re-resolves
+    `self.model` on every call. `complete()` SSE-streams chat
+    completions with optional per-chunk callbacks for live UI updates.
+    """
+
     def __init__(self, base_url: str, model: str, system_prompt: str, timeout_seconds: int = 60) -> None:
         self.base_url = ""
         self.model = model
