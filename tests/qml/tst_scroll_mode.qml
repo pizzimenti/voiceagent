@@ -78,7 +78,7 @@ TestCase {
 
     function test_inertial_branch_fires_flick_when_unstuck() {
         // stickToBottom false + positive pixelDelta.y → inertial path:
-        // flick(0, velocity) with velocity = pdy * 40 > 0 (positive y
+        // flick(0, velocity) with velocity = pdy * 80 > 0 (positive y
         // velocity scrolls content toward the start).
         const listView = _mockListView(false);
         const wheel = _mockWheel(5, 0);
@@ -91,9 +91,10 @@ TestCase {
         verify(listView.flickCalls[0].vy > 0,
             "flick y velocity must be positive for upward wheel "
             + "(saw " + listView.flickCalls[0].vy + ")");
-        // Magnitude check: pdy=5 → velocity=5*40=200.
-        compare(listView.flickCalls[0].vy, 200,
-            "pixelDelta path: velocity = pdy * 40");
+        // Magnitude check: pdy=5 → velocity=5*80=400 (v0.9.9 doubled
+        // the v0.8.0 PR #23 baseline of pdy*40).
+        compare(listView.flickCalls[0].vy, 400,
+            "pixelDelta path: velocity = pdy * 80");
         // Direct path must NOT have run: contentY unchanged from
         // assignment (we can't check that the setter wasn't called
         // without a Q_PROPERTY change-tracker, so we assert the value
@@ -106,15 +107,16 @@ TestCase {
 
     function test_direct_branch_assigns_contentY_when_stuck() {
         // stickToBottom true → direct path: contentY = clamp(...)
-        // with delta = pdy * 8 = 5 * 8 = 40, so new contentY =
-        // clamp(originY=0, max=600, 100 - 40) = 60.
+        // with delta = pdy * 16 = 5 * 16 = 80, so new contentY =
+        // clamp(originY=0, max=600, 100 - 80) = 20. (v0.9.9 doubled
+        // the v0.8.0 PR #23 baseline of pdy*8.)
         const listView = _mockListView(true);
         const wheel = _mockWheel(5, 0);
         window.scrollList(listView, wheel);
         compare(listView.flickCalls.length, 0,
             "direct branch must NOT call flick");
-        compare(listView.contentY, 60,
-            "direct branch sets contentY to clamp(0, 600, 100 - 40)");
+        compare(listView.contentY, 20,
+            "direct branch sets contentY to clamp(0, 600, 100 - 80)");
         verify(wheel.accepted);
     }
 

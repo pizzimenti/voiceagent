@@ -32,6 +32,18 @@ Button {
     // (e.g. compact mode) get the natural opaque look without extra wiring.
     property bool pulseActive: true
 
+    // Auto-derive icon + text color from the button background's
+    // luminance (ITU-R BT.601). Hardcoded white worked when the
+    // button was always saturated (Plasma highlight blue/teal),
+    // but breaks in Light mode when `buttonColor` falls back to
+    // `Kirigami.Theme.alternateBackgroundColor` — a near-white
+    // surface that swallows white text.
+    readonly property color autoTextColor: {
+        const bg = micButton.buttonColor;
+        const luma = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
+        return luma < 0.5 ? Qt.rgba(1, 1, 1, 1) : Qt.rgba(0, 0, 0, 1);
+    }
+
     enabled: micButton.voiceAgent ? micButton.voiceAgent.talkReady : false
     onClicked: {
         if (micButton.voiceAgent) {
@@ -45,8 +57,8 @@ Button {
     icon.name: "audio-input-microphone"
     icon.width: micButton.iconSize
     icon.height: micButton.iconSize
-    icon.color: "white"
-    palette.buttonText: "white"
+    icon.color: micButton.autoTextColor
+    palette.buttonText: micButton.autoTextColor
 
     scale: micButton.glowScaleSource
     opacity: micButton.pulseActive ? 1 : 0.92

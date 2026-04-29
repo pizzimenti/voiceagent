@@ -75,12 +75,13 @@ Kirigami.ApplicationWindow {
     //     lands at-or-near bottom (bottomEpsilon = 3 px), so
     //     auto-restore falls out of the existing state machine.
     //
-    // Velocity scale: pixelDelta path uses ~40 px/wheel-pixel, angleDelta
-    // path uses gridUnit*60 px/sec per 120-unit notch (one notch ≈ 18
-    // gridUnits at 1800 px/s² deceleration, comparable to one direct-
-    // assignment tick of gridUnit*12). Sign: Qt's positive yVelocity
-    // moves content toward the start (scrolls view up), matching the
-    // direct path's `contentY -= delta`.
+    // Velocity scale: doubled from the v0.8.0 PR #23 settings after
+    // user-reported regression in scroll responsiveness on Plasma 6 /
+    // Wayland — the pixelDelta path now scales 16x per wheel pixel
+    // (was 8x) and the angleDelta path scales gridUnit*24 per 120-unit
+    // notch (was gridUnit*12). Inertial-mode velocities scale the same
+    // 2x. Sign: Qt's positive yVelocity moves content toward the start
+    // (scrolls view up), matching the direct path's `contentY -= delta`.
     function scrollList(listView, wheel) {
         if (!listView) {
             return;
@@ -88,15 +89,15 @@ Kirigami.ApplicationWindow {
         const pdy = wheel.pixelDelta ? wheel.pixelDelta.y : 0;
         const ady = wheel.angleDelta ? wheel.angleDelta.y : 0;
         const delta = pdy !== 0
-            ? pdy * 8
-            : (ady / 120) * Kirigami.Units.gridUnit * 12;
+            ? pdy * 16
+            : (ady / 120) * Kirigami.Units.gridUnit * 24;
         const useInertial = (listView.stickToBottom !== undefined)
             ? !listView.stickToBottom
             : !listView.atYEnd;
         if (useInertial && delta !== 0) {
             const velocity = pdy !== 0
-                ? pdy * 40
-                : (ady / 120) * Kirigami.Units.gridUnit * 60;
+                ? pdy * 80
+                : (ady / 120) * Kirigami.Units.gridUnit * 120;
             listView.flick(0, velocity);
             wheel.accepted = true;
             return;
@@ -144,12 +145,12 @@ Kirigami.ApplicationWindow {
         id: themeAction
         text: {
             if (voiceAgent.themeMode === "auto") {
-                return i18nCtx.i18n("Theme: Auto (click for Light)");
+                return i18nCtx.i18n("Auto");
             }
             if (voiceAgent.themeMode === "light") {
-                return i18nCtx.i18n("Theme: Light (click for Dark)");
+                return i18nCtx.i18n("Light");
             }
-            return i18nCtx.i18n("Theme: Dark (click for Auto)");
+            return i18nCtx.i18n("Dark");
         }
         icon.name: {
             if (voiceAgent.themeMode === "auto") {
@@ -161,7 +162,10 @@ Kirigami.ApplicationWindow {
             return "weather-clear-night-symbolic";
         }
         icon.color: Kirigami.Theme.textColor
-        displayHint: Kirigami.DisplayHint.IconOnly
+        // KeepVisible (no IconOnly): show text+icon and never collapse
+        // to the overflow menu. Label cycles through Auto / Light /
+        // Dark so the toolbar always advertises the current state.
+        displayHint: Kirigami.DisplayHint.KeepVisible
         visible: !root.compactMode
         onTriggered: {
             const next = voiceAgent.themeMode === "auto" ? "light"
@@ -186,12 +190,12 @@ Kirigami.ApplicationWindow {
     // Hidden in compact mode (where the page header itself is hidden).
     Kirigami.Action {
         id: verboseLogAction
-        text: voiceAgent.logVerboseMode
-            ? i18nCtx.i18n("Hide pipeline activity in log")
-            : i18nCtx.i18n("Show pipeline activity in log (new entries only)")
+        text: i18nCtx.i18n("Verbose")
         icon.name: voiceAgent.logVerboseMode ? "view-visible-symbolic" : "view-hidden-symbolic"
         icon.color: Kirigami.Theme.textColor
-        displayHint: Kirigami.DisplayHint.IconOnly
+        // KeepVisible (no IconOnly): label is constant "Verbose"; the
+        // open-eye / slashed-eye icon carries the on/off state.
+        displayHint: Kirigami.DisplayHint.KeepVisible
         visible: !root.compactMode
         onTriggered: voiceAgent.setLogVerboseMode(!voiceAgent.logVerboseMode)
     }
