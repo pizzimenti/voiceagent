@@ -48,6 +48,11 @@ class WhisperModelLoader(ParallelItemLoader):
     # -- internal ----------------------------------------------------------
 
     def _emit_initial_state(self) -> None:
+        # No third "no-selection" branch (cf. `_status_idle_prompt` on
+        # the TTS subclass): the Whisper backend's `selected_item` is
+        # always populated by config defaults, so a Whisper unselected
+        # status row would be dead code today. Add the branch only if
+        # the Whisper backend ever surfaces a real no-selection state.
         self.ready_changed.emit(self.is_ready)
         self.loading_changed.emit(self.is_loading)
         if self.is_ready:
