@@ -74,9 +74,9 @@ correctly with Plasma 100% / 125% / 150% / 200%.
 
 ### Mode transition animation
 
-- 250 ms `Easing.OutCubic` `Behavior on Layout.maximumHeight` on the conversation-feed Item in `ConversationPane.qml`. Animates 100000 ↔ 0 when `ultraCompactMode` flips. The mic button below has `Layout.fillHeight: ultraCompactMode`, so as the conversation collapses, the mic *slides up* into the freed vertical space. No dissolve.
+- 250 ms `Easing.OutCubic` `Behavior on Layout.maximumHeight` on the conversation-feed Item in `ConversationPane.qml`. Animates 100000 ↔ 0 when `ultraCompactMode` flips. The mic button anchor in `ConversationPane.qml` has `Layout.fillHeight: ultraCompactMode`, so as the conversation collapses, the mic *slides up* into the freed vertical space. No dissolve.
 - **No opacity fades anywhere** — the user explicitly preferred motion over dissolves.
-- Compact ↔ medium does *not* currently animate — the mic in compact lives inside `ConversationPane.qml`, the mic in medium lives inside `SessionSetupPane.qml`, two separate component instances. Animating geometry between them needs a single-mic-instance refactor (deferred — see FOLLOWUPS.md).
+- Compact ↔ medium animates via a single page-level `MicButtonFrame` declared in `MainWindow.qml`. Each pane (`SessionSetupPane.qml`, `ConversationPane.qml`) exposes a `micAnchor` alias — an empty Item that reserves the layout slot the mic occupies in that pane. The page-level mic binds `x` / `y` / `width` / `height` to whichever pane's `micAnchor` is active for the current mode, mapped via `mapToItem(parent, …)`. `Behavior on x` / `y` / `width` / `height` (250 ms `Easing.OutCubic`) smooths the transition when the breakpoint flips, producing the slide-between-positions animation.
 
 ### Mic button sizing
 

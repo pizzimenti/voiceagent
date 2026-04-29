@@ -379,9 +379,6 @@ Kirigami.ApplicationWindow {
             voiceAgent: root.voiceAgent
             compactMode: root.compactMode
             mediumMode: root.mediumMode
-            micPulseActive: root.micPulseActive
-            micButtonColor: root.micButtonColor
-            micPulseColor: root.micPulseColor
         }
     }
 
@@ -424,12 +421,14 @@ Kirigami.ApplicationWindow {
                     Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.InOutQuad } }
 
                     Loader {
+                        id: sessionPaneLoader
                         active: root.mediumMode
                         sourceComponent: sessionPaneComponent
                         Layout.fillWidth: true
                     }
 
                     Loader {
+                        id: mediumConversationLoader
                         active: root.mediumMode
                         sourceComponent: conversationPaneComponent
                         Layout.fillWidth: true
@@ -438,12 +437,68 @@ Kirigami.ApplicationWindow {
                 }
 
                 Loader {
+                    id: compactLoader
                     anchors.fill: parent
                     opacity: root.compactMode ? 1 : 0
                     visible: opacity > 0.01
                     Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.InOutQuad } }
                     active: root.compactMode
                     sourceComponent: conversationPaneComponent
+                }
+
+                // Single page-level mic button. Floats over whichever pane
+                // owns the active mic slot (compact: ConversationPane bottom;
+                // medium: SessionSetupPane right). x/y/width/height bind
+                // through `mapToItem(parent, …)` to that pane's `micAnchor`
+                // alias (an empty Item that reserves the layout slot). When
+                // `compactMode` flips, the binding switches anchors and the
+                // 250 ms `Behavior on …` smooths the geometry transition —
+                // the slide animation the previous two-instance mic could
+                // not produce. Unifying the instance also frees the medium-
+                // mode form's RowLayout from a per-pane mic, removing the
+                // overlap with the URL row's Connect button at the
+                // gridUnit×40 floor.
+                MicButtonFrame {
+                    id: pageMicButton
+
+                    readonly property Item activeAnchor:
+                        root.compactMode
+                            ? (compactLoader && compactLoader.item ? compactLoader.item.micAnchor : null)
+                            : (sessionPaneLoader && sessionPaneLoader.item ? sessionPaneLoader.item.micAnchor : null)
+
+                    // Re-evaluate when the anchor's local x/y/width/height
+                    // changes or the parent resizes — `mapToItem` itself
+                    // does not auto-track ancestor geometry.
+                    readonly property point activeAnchorPos: {
+                        if (!activeAnchor) return Qt.point(0, 0);
+                        activeAnchor.x; activeAnchor.y;
+                        activeAnchor.width; activeAnchor.height;
+                        parent.width; parent.height;
+                        return activeAnchor.mapToItem(parent, 0, 0);
+                    }
+
+                    z: 100
+                    voiceAgent: root.voiceAgent
+                    visible: !!activeAnchor && activeAnchor.visible
+                    iconSize: Math.max(18, Math.min(48, height * 0.32))
+                    fontPixel: Math.max(10, Math.min(14, height * 0.10))
+                    borderWidth: 3
+                    buttonColor: root.micButtonColor
+                    pulseColor: root.micPulseColor
+                    pulseActive: root.compactMode ? true : root.micPulseActive
+                    animatePulse: !root.compactMode
+                    glowOpacity: root.compactMode ? 0.85 : (root.micPulseActive ? 0.5 : 0.2)
+                    glowScale: 1.0
+
+                    x: activeAnchorPos.x
+                    y: activeAnchorPos.y
+                    width: activeAnchor ? activeAnchor.width : 0
+                    height: activeAnchor ? activeAnchor.height : 0
+
+                    Behavior on x { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+                    Behavior on y { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+                    Behavior on width { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+                    Behavior on height { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
                 }
             }
         }
