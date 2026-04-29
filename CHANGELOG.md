@@ -2,6 +2,36 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.10.1 — 2026-04-29
+
+**v0.10.0 cleanup pass.**
+
+### Fixed
+
+- **Conversation bubble alignment regression** — v0.10.0's
+  Layer-7 `assistantColumn` ColumnLayout wrapper around
+  `messageRow` broke `RowLayout.layoutDirection` ordering
+  under Qt6 Quick Layouts. User bubbles rendered left-aligned
+  instead of right-aligned, and the assistant bubble lost its
+  Replay button placement. Replaced `layoutDirection` with
+  explicit `Layout.alignment` + fillWidth spacers — bubbles now
+  align right (user) / left (assistant) regardless of
+  surrounding layout context.
+- **Whisper empty-transcript log spam** — v0.9.14 bumped the
+  empty-transcript log line from `INFO` to `WARNING`. The
+  partial-probe loop fires Whisper every ~350 ms while voice
+  is connected, so silent buffers produce a stderr WARNING per
+  probe. Walked back to `INFO` since empty results are common,
+  not exceptional. `tests/test_stt.py` assertion updated to
+  match.
+
+### Removed
+
+- **`FOLLOWUPS.md`** — file deleted. The deferred-indefinitely
+  note about `_emit_initial_state` moved to a one-line code
+  comment at `model_loader.py:50`. The user-smoke checklist
+  moved to a new "Subjective smoke" section in `AGENTS.md`.
+
 ## 0.10.0 — 2026-04-29
 
 **Streaming chat completions, thinking expander, context-token

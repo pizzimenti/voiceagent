@@ -390,12 +390,29 @@ Pane {
                     id: messageRow
                     Layout.fillWidth: true
                     spacing: Kirigami.Units.smallSpacing
-                    layoutDirection: assistant ? Qt.LeftToRight : Qt.RightToLeft
+                    // RowLayout under a ColumnLayout (the new
+                    // assistantColumn wrapper added in v0.10.0) does
+                    // not honor `layoutDirection` for visual ordering
+                    // — Qt6 Quick Layouts ignore it on RowLayout in
+                    // some configurations. Use explicit
+                    // `Layout.alignment` + a fillWidth spacer to push
+                    // the bubble to the correct side regardless.
+                    //
+                    //   user    : [    spacer    ][bubble]
+                    //   assist. : [bubble][replay][spacer]
+
+                    // Left spacer — visible on user rows only,
+                    // pushes the user's bubble to the right edge.
+                    Item {
+                        Layout.fillWidth: !assistant
+                        Layout.preferredWidth: 0
+                        visible: !assistant
+                    }
 
                     Frame {
                         id: bubbleFrame
-                        Layout.fillWidth: true
                         Layout.maximumWidth: maxBubbleWidth
+                        Layout.preferredWidth: maxBubbleWidth
 
                         // Disable Kirigami theme inheritance — both
                         // bubble sides ship explicit branded colors,
@@ -477,6 +494,15 @@ Pane {
                                 conversationPane.voiceAgent.replayMessage(index);
                             }
                         }
+                    }
+
+                    // Right spacer — visible on assistant rows only,
+                    // pushes the assistant bubble (and its Replay
+                    // button) to the left edge.
+                    Item {
+                        Layout.fillWidth: assistant
+                        Layout.preferredWidth: 0
+                        visible: assistant
                     }
                 }
                 }

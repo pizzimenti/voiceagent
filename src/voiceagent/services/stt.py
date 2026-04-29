@@ -285,8 +285,13 @@ class WhisperTranscriber(SpeechToTextBackend):
         )
         transcript = " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
         if not transcript:
+            # INFO not WARNING — empty transcripts are expected under
+            # the partial-probe loop on every silent buffer, so a
+            # warning per probe floods stderr. v0.9.14 bumped this to
+            # WARNING for visibility under the assumption that empty
+            # results were exceptional; they are not.
             detected_language = getattr(info, "language", "unknown")
-            self._logger.warning(
+            self._logger.info(
                 "Whisper returned empty transcript path=%s detected_language=%s",
                 audio_path,
                 detected_language,

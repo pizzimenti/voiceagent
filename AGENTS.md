@@ -108,3 +108,13 @@ correctly with Plasma 100% / 125% / 150% / 200%.
 - Keep status/progress separate from conversation bubbles. Operational states such as `Thinking`, transcription, model loading, and playback belong in status rows, the microphone control, or — when the user has enabled verbose log mode — as inline plain-text status entries in the transcript. Bubbles remain reserved for final user and assistant content.
 - Treat `voiceagent-buildtest.sh` as a long-running app launcher. If another Voice Agent instance or lock exists, assume it may be intentional; do not kill the process or remove the runtime lock without explicit user approval.
 - Keep network/model refreshes off the first paint path. Launch the QML window first, then defer autoconnect, model refresh, and heavy backend work.
+
+## Subjective smoke (user-only, no automation)
+
+These are the items the user judges by eye when validating a release; automation can confirm the animation runs but not whether it *feels* right. Worth a manual pass after any change in the relevant area.
+
+- **Mic-button pulse breathing tempo** — the `SequentialAnimation` pulse rate / amplitude. Look + feel call.
+- **Compact-vs-medium layout shaping** — does the form-stack collapse at the responsive breakpoint feel natural; do controls have breathing room; does no widget visually clip at the smallest supported width.
+- **Conversation-pane visual rhythm** — bubble spacing, font weights, color contrast for the assistant-vs-user distinction under both Breeze Light and Dark.
+- **Slide animation on compact ↔ medium flip** (v0.9.0+) — the page-level mic should glide between bottom-of-conversation and right-of-form over ~250 ms.
+- **Theme palette across modes** — switch Auto / Light / Dark via the toolbar toggle and confirm bubbles, mic button, toolbar icons, and status purple all repaint cleanly in each mode.

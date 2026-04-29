@@ -361,14 +361,15 @@ def test_transcribe_returns_empty_on_empty_segments(monkeypatch, model_root, cap
     )
 
     transcriber = WhisperTranscriber("tiny.en")
-    with caplog.at_level(logging.WARNING, logger="voiceagent.services.stt"):
+    with caplog.at_level(logging.INFO, logger="voiceagent.services.stt"):
         result = transcriber.transcribe(Path("/tmp/fake.wav"))
     assert result == ""
-    # The warning log entry must remain visible so verbose logs show
-    # that Whisper did run and reported zero segments.
+    # INFO not WARNING — empty transcripts fire on every silent
+    # partial probe, so WARNING would flood stderr (v0.10.1 walked
+    # back v0.9.14's level bump for that reason).
     assert any(
         "Whisper returned empty transcript" in record.message
-        and record.levelno == logging.WARNING
+        and record.levelno == logging.INFO
         for record in caplog.records
     )
 
