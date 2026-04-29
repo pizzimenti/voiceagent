@@ -44,6 +44,50 @@ class _FakeResponse:
         return self._buffer.read(*args, **kwargs)
 
 
+class _FakeSSEResponse:
+    """Streaming-mode `urlopen` stand-in for `complete()` tests.
+
+    Iterates SSE-formatted lines (`data: {...}\\n`) terminated by
+    `data: [DONE]\\n`. Each chunk is a chat-completion delta dict
+    (matching the OpenAI / LM Studio shape).
+    """
+
+    def __init__(self, chunks: list[dict]) -> None:
+        lines: list[bytes] = []
+        for chunk in chunks:
+            lines.append(f"data: {json.dumps(chunk)}\n".encode("utf-8"))
+        lines.append(b"data: [DONE]\n")
+        self._lines = lines
+
+    def __enter__(self) -> "_FakeSSEResponse":
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+    def __iter__(self):
+        return iter(self._lines)
+
+
+def _content_chunk(text: str) -> dict:
+    return {"choices": [{"delta": {"content": text}}]}
+
+
+def _thinking_chunk(text: str) -> dict:
+    return {"choices": [{"delta": {"reasoning_content": text}}]}
+
+
+def _usage_chunk(prompt: int, completion: int) -> dict:
+    return {
+        "choices": [],
+        "usage": {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+        },
+    }
+
+
 def _install_fake_urlopen(monkeypatch, handler):
     """Replace `chat.request.urlopen` with `handler(req, timeout)`."""
     monkeypatch.setattr(
@@ -344,9 +388,10 @@ def test_complete_happy_path(monkeypatch):
     def _serve(req, timeout):
         captured["url"] = req.full_url
         captured["body"] = json.loads(req.data.decode("utf-8"))
-        return _FakeResponse(
-            {"choices": [{"message": {"content": "  hi there  "}}]}
-        )
+        return _FakeSSEResponse([
+            _content_chunk("  hi"),
+            _content_chunk(" there  "),
+        ])
 
     _install_fake_urlopen(monkeypatch, _serve)
 
@@ -361,7 +406,95 @@ def test_complete_happy_path(monkeypatch):
         "role": "user",
         "content": "ping",
     }
-    assert captured["body"]["stream"] is False
+    assert captured["body"]["stream"] is True
+    assert captured["body"]["stream_options"] == {"include_usage": True}
+
+
+def test_complete_streams_content_chunks_to_callback(monkeypatch):
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="m", system_prompt="p"
+    )
+    received: list[str] = []
+    _install_fake_urlopen(
+        monkeypatch,
+        lambda req, timeout: _FakeSSEResponse([
+            _content_chunk("Hello"),
+            _content_chunk(", "),
+            _content_chunk("world"),
+        ]),
+    )
+    result = client.complete("hi", on_content_chunk=received.append)
+    assert result == "Hello, world"
+    assert received == ["Hello", ", ", "world"]
+
+
+def test_complete_streams_thinking_chunks_to_callback(monkeypatch):
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="m", system_prompt="p"
+    )
+    thinking: list[str] = []
+    content: list[str] = []
+    _install_fake_urlopen(
+        monkeypatch,
+        lambda req, timeout: _FakeSSEResponse([
+            _thinking_chunk("Let me consider this."),
+            _thinking_chunk(" Two plus two."),
+            _content_chunk("4"),
+        ]),
+    )
+    result = client.complete(
+        "ignored",
+        on_content_chunk=content.append,
+        on_thinking_chunk=thinking.append,
+    )
+    assert result == "4"
+    assert thinking == ["Let me consider this.", " Two plus two."]
+    assert content == ["4"]
+
+
+def test_complete_invokes_on_usage_with_final_usage_dict(monkeypatch):
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="m", system_prompt="p"
+    )
+    captured_usage: list[dict] = []
+    _install_fake_urlopen(
+        monkeypatch,
+        lambda req, timeout: _FakeSSEResponse([
+            _content_chunk("ok"),
+            _usage_chunk(prompt=120, completion=8),
+        ]),
+    )
+    client.complete("hi", on_usage=captured_usage.append)
+    assert captured_usage == [
+        {"prompt_tokens": 120, "completion_tokens": 8, "total_tokens": 128},
+    ]
+
+
+def test_complete_ignores_malformed_sse_payloads(monkeypatch):
+    """Garbage data: lines, blank deltas, or non-JSON payloads are
+    silently skipped — the stream continues and content keeps
+    accumulating from valid chunks."""
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="m", system_prompt="p"
+    )
+
+    class _MixedSSE:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def __iter__(self):
+            yield b"\n"
+            yield b": comment line\n"
+            yield b"data: not-json\n"
+            yield b"data: " + json.dumps({"choices": [{}]}).encode() + b"\n"
+            yield b"data: " + json.dumps(_content_chunk("ok")).encode() + b"\n"
+            yield b"data: [DONE]\n"
+
+    _install_fake_urlopen(monkeypatch, lambda req, timeout: _MixedSSE())
+    assert client.complete("hi") == "ok"
 
 
 def test_complete_raises_when_unconfigured():
@@ -398,26 +531,32 @@ def test_complete_wraps_url_error_with_timeout(monkeypatch):
         client.complete("hi")
 
 
-def test_complete_unexpected_payload_raises(monkeypatch):
+def test_complete_no_chunks_raises_empty_response(monkeypatch):
+    """A stream that emits zero content deltas is treated as an empty
+    response — the user-visible failure mode is identical to the
+    pre-streaming `empty content` case."""
     client = LmStudioClient(
         base_url="http://localhost:1234", model="m", system_prompt="p"
     )
     _install_fake_urlopen(
-        monkeypatch, lambda req, timeout: _FakeResponse({"choices": []})
+        monkeypatch, lambda req, timeout: _FakeSSEResponse([]),
     )
-    with pytest.raises(RuntimeError, match="unexpected response payload"):
+    with pytest.raises(RuntimeError, match="empty response"):
         client.complete("hi")
 
 
-def test_complete_empty_string_raises(monkeypatch):
+def test_complete_only_whitespace_chunks_raises_empty_response(monkeypatch):
+    """All-whitespace deltas accumulate to a strippable string and
+    fail the empty-response guard the same way."""
     client = LmStudioClient(
         base_url="http://localhost:1234", model="m", system_prompt="p"
     )
     _install_fake_urlopen(
         monkeypatch,
-        lambda req, timeout: _FakeResponse(
-            {"choices": [{"message": {"content": "   "}}]}
-        ),
+        lambda req, timeout: _FakeSSEResponse([
+            _content_chunk("   "),
+            _content_chunk("\n"),
+        ]),
     )
     with pytest.raises(RuntimeError, match="empty response"):
         client.complete("hi")
@@ -579,3 +718,94 @@ def test_load_model_raises_without_model_name():
     )
     with pytest.raises(RuntimeError, match="LLM model is not configured"):
         client.load_model("")
+
+
+# --- fetch_loaded_context_length -----------------------------------------
+
+
+def test_fetch_loaded_context_length_returns_loaded_context(monkeypatch):
+    client = LmStudioClient(
+        base_url="http://localhost:1234",
+        model="my-model",
+        system_prompt="p",
+    )
+    _install_fake_urlopen(
+        monkeypatch,
+        lambda req, timeout: _FakeResponse({
+            "models": [
+                {
+                    "type": "llm",
+                    "key": "my-model",
+                    "loaded_instances": [
+                        {"id": "i1", "loaded_context_length": 32768},
+                    ],
+                },
+            ],
+        }),
+    )
+    assert client.fetch_loaded_context_length() == 32768
+
+
+def test_fetch_loaded_context_length_falls_back_to_context_length(monkeypatch):
+    client = LmStudioClient(
+        base_url="http://localhost:1234",
+        model="my-model",
+        system_prompt="p",
+    )
+    _install_fake_urlopen(
+        monkeypatch,
+        lambda req, timeout: _FakeResponse({
+            "models": [
+                {
+                    "type": "llm",
+                    "key": "my-model",
+                    "loaded_instances": [
+                        {"id": "i1", "context_length": 8192},
+                    ],
+                },
+            ],
+        }),
+    )
+    assert client.fetch_loaded_context_length() == 8192
+
+
+def test_fetch_loaded_context_length_skips_non_matching_models(monkeypatch):
+    client = LmStudioClient(
+        base_url="http://localhost:1234",
+        model="my-model",
+        system_prompt="p",
+    )
+    _install_fake_urlopen(
+        monkeypatch,
+        lambda req, timeout: _FakeResponse({
+            "models": [
+                {
+                    "type": "llm",
+                    "key": "different-model",
+                    "loaded_instances": [
+                        {"id": "i1", "loaded_context_length": 99999},
+                    ],
+                },
+            ],
+        }),
+    )
+    assert client.fetch_loaded_context_length() == 0
+
+
+def test_fetch_loaded_context_length_returns_zero_when_endpoint_fails(monkeypatch):
+    client = LmStudioClient(
+        base_url="http://localhost:1234",
+        model="my-model",
+        system_prompt="p",
+    )
+
+    def _raise(req, timeout):
+        raise error.URLError(reason=ConnectionRefusedError("nope"))
+
+    _install_fake_urlopen(monkeypatch, _raise)
+    assert client.fetch_loaded_context_length() == 0
+
+
+def test_fetch_loaded_context_length_returns_zero_without_base_url():
+    client = LmStudioClient(base_url="", model="m", system_prompt="p")
+    assert client.fetch_loaded_context_length() == 0

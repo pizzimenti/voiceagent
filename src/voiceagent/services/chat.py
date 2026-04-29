@@ -184,7 +184,60 @@ class LmStudioClient:
         self.unload_other_models(keep_model=None)
         self.model = ""
 
-    def complete(self, user_text: str) -> str:
+    def fetch_loaded_context_length(self) -> int:
+        """Return the context-window size of the currently-loaded LLM in
+        tokens, via LM Studio's native `/api/v1/models` endpoint. Returns
+        0 when nothing is loaded or the field is absent (so callers can
+        treat 0 as "unknown" rather than a divide-by-zero hazard)."""
+        native_api_root = self._native_api_root()
+        if not native_api_root:
+            return 0
+        try:
+            data = self._json_request(f"{native_api_root}/models", method="GET")
+        except RuntimeError:
+            return 0
+        models = data.get("models", [])
+        if not isinstance(models, list):
+            return 0
+        for item in models:
+            if not isinstance(item, dict) or item.get("type") != "llm":
+                continue
+            model_key = item.get("key")
+            if not isinstance(model_key, str) or model_key.strip() != self.model:
+                continue
+            instances = item.get("loaded_instances", [])
+            if not isinstance(instances, list):
+                continue
+            for instance in instances:
+                if not isinstance(instance, dict):
+                    continue
+                ctx = instance.get("loaded_context_length") or instance.get("context_length")
+                if isinstance(ctx, int) and ctx > 0:
+                    return ctx
+        return 0
+
+    def complete(
+        self,
+        user_text: str,
+        *,
+        on_content_chunk=None,
+        on_thinking_chunk=None,
+        on_usage=None,
+    ) -> str:
+        """Stream a chat completion. Returns the full assembled answer
+        text. Optional callbacks fire from this thread as chunks arrive:
+
+        - `on_content_chunk(text)` — incremental answer text
+        - `on_thinking_chunk(text)` — incremental reasoning_content for
+          R1-style thinking models (LM Studio exposes thinking on the
+          `delta.reasoning_content` field of each SSE chunk)
+        - `on_usage(usage_dict)` — fires once on the final chunk that
+          carries `usage` (driven by `stream_options.include_usage`)
+
+        Switching to streaming closes the v0.9.x timeout class —
+        `timeout_seconds` is now a per-read gap, not a total-response
+        cap, so multi-minute generations are fine as long as tokens
+        keep arriving."""
         if not self.base_url:
             raise RuntimeError("LLM URL is not configured.")
         model = self.ensure_model()
@@ -196,7 +249,8 @@ class LmStudioClient:
                 {"role": "user", "content": user_text},
             ],
             "temperature": 0.2,
-            "stream": False,
+            "stream": True,
+            "stream_options": {"include_usage": True},
         }
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(
@@ -206,16 +260,49 @@ class LmStudioClient:
             method="POST",
         )
 
+        accumulated_content: list[str] = []
+        accumulated_thinking: list[str] = []
+
         try:
             with request.urlopen(req, timeout=self.timeout_seconds) as response:
-                data = json.load(response)
+                for raw_line in response:
+                    line = raw_line.strip()
+                    if not line or not line.startswith(b"data:"):
+                        continue
+                    payload_bytes = line[5:].strip()
+                    if payload_bytes == b"[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload_bytes)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+
+                    usage = chunk.get("usage")
+                    if isinstance(usage, dict) and on_usage is not None:
+                        on_usage(usage)
+
+                    choices = chunk.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
+                    if not isinstance(delta, dict):
+                        continue
+
+                    content_chunk = delta.get("content")
+                    if isinstance(content_chunk, str) and content_chunk:
+                        accumulated_content.append(content_chunk)
+                        if on_content_chunk is not None:
+                            on_content_chunk(content_chunk)
+
+                    thinking_chunk = delta.get("reasoning_content")
+                    if isinstance(thinking_chunk, str) and thinking_chunk:
+                        accumulated_thinking.append(thinking_chunk)
+                        if on_thinking_chunk is not None:
+                            on_thinking_chunk(thinking_chunk)
         except error.URLError as exc:
             raise RuntimeError(f"LM Studio request failed: {self._format_url_error(exc)}") from exc
 
-        try:
-            message = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError("LM Studio returned an unexpected response payload.") from exc
+        message = "".join(accumulated_content)
 
         message = message.strip()
         if not message:
