@@ -2,6 +2,35 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.3 — 2026-04-28
+
+**Model Manager → `Kirigami.Page` on `pageStack`.** The Manager
+was a top-level modal `Window` opened over the main page; it now
+lives in the same QML tree as the rest of the UI, integrated via
+Kirigami's standard pageStack navigation conventions (header
+title, page actions, padding). Closes the lone "Future feature
+work" entry in `FOLLOWUPS.md`.
+
+### Changed
+
+- **`src/voiceagent/qml/ModelManagerPage.qml` (new, 163 LOC)** —
+  `Kirigami.Page` hosting the existing TabBar + StackLayout +
+  CatalogList structure. `Close` action pops via
+  `applicationWindow().pageStack.pop()`.
+- **`src/voiceagent/qml/MainWindow.qml`** drops the 145-line inline
+  `Window { id: modelManagerWindow ... }` block and the manual
+  centering math in `modelManagerAction.onTriggered`. The action
+  now calls `pageStack.push(modelManagerPageComponent)`. An
+  `objectName: "modelManagerPage"` guard against double-push
+  handles repeated action triggers.
+- **`FOLLOWUPS.md`** "Future feature work" section pruned (only
+  item shipped).
+
+### Tests
+
+- 320 pytest passes (unchanged), 16 qatest passes (unchanged),
+  compiletest green, 30 visualtest captures unchanged.
+
 ## 0.9.2 — 2026-04-28
 
 **Decompose `services/audio.py:_handle_audio_chunk` into named
