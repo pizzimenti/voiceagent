@@ -2,6 +2,34 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.5 — 2026-04-28
+
+**Bubble colorSet correction + explicit toolbar icon tint.**
+v0.9.4 placed assistant bubbles in `alternateBackgroundColor`,
+Kirigami's zebra-stripe slot, not its panel slot — bubbles ended
+up ~5 % off Window in both Breeze themes (effectively invisible).
+Plus Plasma's symbolic-icon auto-tint dropping out in IconOnly
+toolbar slots left the four header icons reading as background.
+
+### Changed
+
+- **Assistant bubbles**: `Kirigami.Theme.colorSet = Theme.View`
+  (the canonical "elevated panel" set — what NeoChat / Tokodon
+  use for incoming bubbles).
+- **User-sent bubbles**: `colorSet = Theme.Selection` (same
+  pixels as the v0.9.4 highlight pair, but the colorSet form
+  stays consistent with the assistant side and inherits naturally
+  for child Labels).
+- **Draft bubbles**: `colorSet = Theme.Window` so the explicit
+  pink override doesn't fight an inherited set.
+- **1-px `separatorColor` border** on non-draft bubbles for edge
+  definition on Breeze Light (View bg only ~5 % brighter than
+  Window there).
+- **`icon.color: Kirigami.Theme.textColor`** on the four
+  `Kirigami.Action` instances in `MainWindow.qml` (mute / theme /
+  model-manager / verbose-log) — belt-and-suspenders for Plasma's
+  symbolic-icon auto-tint dropouts.
+
 ## 0.9.4 — 2026-04-28
 
 **Conversation bubbles use Kirigami theme roles.** Hardcoded
