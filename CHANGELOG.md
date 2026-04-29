@@ -2,6 +2,53 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.0 — 2026-04-28
+
+**Single page-level mic with animated cross-mode geometry.** Closes
+the three UI rough edges deferred from the v0.8.x responsive sweep.
+The previous design used two `MicButtonFrame` instances (one per
+pane) and could not animate geometry between the medium-mode
+right-of-form position and the compact-mode bottom-of-conversation
+position; it also crowded the form's `RowLayout` at the
+`gridUnit × 40` floor, causing overlap between the mic and the
+URL row's Connect button plus left-clipping on the "Loaded Model:"
+label.
+
+### Changed
+
+- **`MainWindow.qml`** now hosts a single `MicButtonFrame` at the
+  `dashboardModes` level. Its `x` / `y` / `width` / `height` bind
+  via `mapToItem(parent, …)` to whichever pane's `micAnchor` alias
+  is active for the current mode. `Behavior on …` 250 ms
+  `Easing.OutCubic` smooths the geometry transition when
+  `compactMode` flips, producing the slide-between-positions
+  animation the user requested.
+- **`SessionSetupPane.qml`** and **`ConversationPane.qml`** each
+  expose a `micAnchor` alias — an empty `Item` reserving the
+  layout slot the mic occupies — instead of instantiating their
+  own `MicButtonFrame`. The unused `micPulseActive` /
+  `micButtonColor` / `micPulseColor` required properties on
+  `SessionSetupPane` drop in the same pass; `MainWindow` now
+  feeds those colors directly to its page-level mic.
+
+### Tests
+
+- `tests/qml/tst_session_setup_pane.qml` updated to drop the
+  removed mic-color literal props from the inline component
+  definition. Full QA suite: 16 passed.
+- `pytest tests/`: 222 passed.
+- `./voiceagent-visualtest.sh`: 30 PNGs across scale × width.
+  Labels fully visible at width 800 / scale 1.0 (the
+  `gridUnit × 40` medium-mode floor); mic correctly positioned
+  in both modes; `ultraCompactMode` mic-fills-window intact.
+
+### Documentation
+
+- **`AGENTS.md`** "Mode transition animation" section now
+  documents the page-level mic + `micAnchor` alias pattern.
+- **`FOLLOWUPS.md`** UI rough edges section pruned (all three
+  items shipped).
+
 ## 0.8.7 — 2026-04-28
 
 **Detect partial-download voices via stale `.aria2` sidecars.** Closes
