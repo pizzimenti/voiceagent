@@ -50,7 +50,7 @@ external dependencies, so unit tests build a real model + a real
 coordinator and assert on rows. `QSignalSpy` catches the single
 `conversation_changed` notify signal the coordinator emits when the
 model has been mutated; `MainWindow` re-emits that on its own
-QML-bound `conversation_changed`.
+observer-facing `conversation_changed`.
 
 This trade is documented at the top of the file precisely so future
 maintainers (and `ConversationLogController` in cycle 7, which builds

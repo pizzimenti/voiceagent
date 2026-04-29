@@ -21,8 +21,6 @@ QtObject {
     property var ttsOptions: ["en_US-amy-low"]
     property string selectedSttModel: "tiny.en"
     property string selectedTtsModel: "en_US-amy-low"
-    property string modelStatus: "(ready)"
-    property string ttsStatus: "(ready)"
     property var llmUrls: ["http://localhost:1234"]
     property string currentLlmUrl: "http://localhost:1234"
     property string llmConnectionButtonText: "Connect"
@@ -78,13 +76,10 @@ QtObject {
     function setThinkingExpanded(index, value) {}
     function replayMessage(index) {}
     function stopSpeaking() {}
-    function pttPress() {}
-    function pttRelease() {}
 
     // Replay-failure signal — must match the production Python signal
     // name `replay_failed` exactly (not camelCased) so QML stubs
     // exercise the same binding shape MainWindow.qml uses to wire the
     // passive-notification toast (`voiceAgent.replay_failed.connect(...)`).
     signal replay_failed(string reason)
-    signal conversation_cleared(string reason)
 }

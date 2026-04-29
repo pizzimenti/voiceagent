@@ -689,7 +689,7 @@ def test_toggle_llm_connection_blocked_while_busy(
 def test_disconnect_llm_blocked_while_model_busy(
     main_window_factory, monkeypatch,
 ):
-    """`disconnectLlmServer` must early-return when EITHER
+    """The internal LLM disconnect helper must early-return when EITHER
     `connection_busy` OR `model_busy` is set — disconnecting mid-load
     would race the in-flight HTTP requests.
     """
@@ -708,7 +708,7 @@ def test_disconnect_llm_blocked_while_model_busy(
         llm, "disconnect_server", lambda: disconnect_calls.append("disconnect")
     )
 
-    window.disconnectLlmServer()
+    window._disconnect_llm_server()
     _drain_events()
 
     assert disconnect_calls == [], (
@@ -752,7 +752,7 @@ def test_set_thinking_expanded_forwards_to_coordinator(main_window_factory):
 def test_chat_thinking_chunk_forwards_to_coordinator(main_window_factory):
     """`_on_chat_thinking_chunk` threads the chunk text into the
     coordinator's streaming-thinking method and pulses
-    `conversation_changed` so QML rebinds.
+    `conversation_changed` for direct MainWindow observers.
     """
     window = main_window_factory()
     chunks: list[str] = []
@@ -766,8 +766,8 @@ def test_chat_thinking_chunk_forwards_to_coordinator(main_window_factory):
     _drain_events()
 
     assert chunks == ["step 1...", " step 2."]
-    # At least one notification per chunk arrival; the property may
-    # also tick for unrelated reasons, so we only require >= 2.
+    # At least one notification per chunk arrival; the coordinator may
+    # also emit on its own, so we only require >= 2.
     assert len(notifications) >= 2
 
 

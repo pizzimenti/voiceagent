@@ -70,8 +70,8 @@ class MainWindow(QObject):
     """QObject bridge between the QML root window and the Python backend.
 
     Owns the Q_PROPERTYs QML binds to (theme mode, model selectors,
-    catalogs, conversation model, error / status state, context-token
-    counters, etc.) and the Slots QML invokes (model select / install
+    catalogs, conversation model, context-token counters, etc.) and
+    the Slots QML invokes (model select / install
     / remove, theme cycle, replay, set-thinking-expanded). State
     mutations route through the conversation coordinator, the LLM
     controller, or the model loaders — this class is mostly a property
@@ -139,8 +139,6 @@ class MainWindow(QObject):
         self._turn_coordinator.conversation_changed.connect(
             self.conversation_changed
         )
-        self._error_message = ""
-        self._status_message = "Ready"
         self._llm = LlmController(self.controller.chat_client, self.settings, parent=self)
         self._shutting_down = False
         self._state = "idle"
@@ -225,7 +223,7 @@ class MainWindow(QObject):
             self._tts_catalog, self._tts_state_adapter, self
         )
 
-        self.controller.status_changed.connect(self._set_status_message)
+        self.controller.status_changed.connect(self._emit_ui_changed)
         self.controller.connection_changed.connect(self._handle_connection_changed)
         self.controller.live_transcript_changed.connect(self._sync_live_user_message)
         self.controller.transcript_changed.connect(self._append_user_message)
@@ -344,7 +342,7 @@ class MainWindow(QObject):
             self._window.requestActivate()
         if not self._llm.startup_connect_scheduled and self.currentLlmUrl:
             self._llm.mark_startup_connect_scheduled()
-            schedule_after_first_frame(self._window, self.autoconnectLlmServer)
+            schedule_after_first_frame(self._window, self._autoconnect_llm_server)
         # Defer the Piper `voices.json` network fetch until after QML
         # paints — see AGENTS.md's "keep network/model refreshes off the
         # first paint path" rule. The catalog starts populated with
@@ -426,14 +424,6 @@ class MainWindow(QObject):
         current = self.tts_loader.selected_model or ""
         return current if current in self.ttsOptions else ""
 
-    @Property(str, notify=ui_changed)
-    def modelStatus(self) -> str:  # noqa: N802
-        if self.model_loader.is_loading:
-            return f"Downloading {self.model_loader.transcriber.backend_name} model"
-        if self.sttOptions:
-            return f"{len(self.sttOptions)} installed STT model(s)"
-        return "No STT models installed"
-
     @Property(bool, notify=ui_changed)
     def modelLoading(self) -> bool:  # noqa: N802
         return self.model_loader.is_loading
@@ -449,14 +439,6 @@ class MainWindow(QObject):
     @Property(str, notify=progress_changed)
     def modelProgressText(self) -> str:  # noqa: N802
         return self._model_progress_text
-
-    @Property(str, notify=ui_changed)
-    def ttsStatus(self) -> str:  # noqa: N802
-        if self.tts_loader.is_loading:
-            return f"Downloading {self.tts_loader.tts_service.backend_name} voice"
-        if self.ttsOptions:
-            return f"{len(self.ttsOptions)} installed TTS voice(s)"
-        return "No TTS voices installed"
 
     @Property(bool, notify=ui_changed)
     def ttsLoading(self) -> bool:  # noqa: N802
@@ -555,10 +537,6 @@ class MainWindow(QObject):
     def voiceConnectionEnabled(self) -> bool:  # noqa: N802
         return self.controller.voice_connection_enabled
 
-    @Property(str, notify=ui_changed)
-    def voiceConnectionLabel(self) -> str:  # noqa: N802
-        return "Voice Connection On" if self.controller.voice_connection_enabled else "Voice Connection Off"
-
     @Property(int, notify=ui_changed)
     def speakingRow(self) -> int:  # noqa: N802
         """Row index of the assistant bubble whose audio is currently
@@ -574,10 +552,6 @@ class MainWindow(QObject):
         normalized = stored.strip().lower()
         return normalized if normalized in {"auto", "light", "dark"} else "auto"
 
-    @Property(str, notify=ui_changed)
-    def themeModeLabel(self) -> str:  # noqa: N802
-        return {"auto": "Auto", "light": "Light", "dark": "Dark"}.get(self.themeMode, "Auto")
-
     @Property(bool, notify=ui_changed)
     def logVerboseMode(self) -> bool:  # noqa: N802
         return self.settings.value("log_verbose_mode", False, bool)
@@ -585,22 +559,6 @@ class MainWindow(QObject):
     @Property(QObject, constant=True)
     def conversationModel(self) -> ConversationModel:  # noqa: N802
         return self._conversation_model
-
-    @Property(int, notify=conversation_changed)
-    def conversationMessageCount(self) -> int:  # noqa: N802
-        return self._conversation_model.rowCount()
-
-    @Property(str, notify=ui_changed)
-    def errorMessage(self) -> str:  # noqa: N802
-        return self._error_message
-
-    @Property(str, notify=ui_changed)
-    def statusMessage(self) -> str:  # noqa: N802
-        return self._status_message
-
-    @Property(str, notify=ui_changed)
-    def state(self) -> str:
-        return self._state
 
     @Slot(str)
     def selectSttModel(self, model_name: str) -> None:  # noqa: N802
@@ -648,10 +606,6 @@ class MainWindow(QObject):
     def persistCurrentLlmUrl(self) -> None:  # noqa: N802
         self._llm.persist_current_url()
 
-    @Slot(bool)
-    def refreshLlmModels(self, show_error: bool) -> None:  # noqa: N802
-        self._llm.refresh_models(show_error)
-
     @Slot(str)
     def selectLlmModel(self, model_name: str) -> None:  # noqa: N802
         self._llm.select_model(model_name)
@@ -661,24 +615,21 @@ class MainWindow(QObject):
         if self._llm.connection_busy and self._llm.server_connected:
             return
         if self._llm.server_connected:
-            self.disconnectLlmServer()
+            self._disconnect_llm_server()
             return
-        self.connectLlmServer(value, True)
+        self._connect_llm_server(value, True)
 
-    @Slot(str, bool)
-    def connectLlmServer(self, value: str, show_error: bool = True) -> None:  # noqa: N802
+    def _connect_llm_server(self, value: str, show_error: bool = True) -> None:
         self._llm.connect_server(value, show_error)
 
-    @Slot()
-    def disconnectLlmServer(self) -> None:  # noqa: N802
+    def _disconnect_llm_server(self) -> None:
         if self._llm.connection_busy or self._llm.model_busy:
             return
         if self.voiceConnectionEnabled:
             self.controller.stop_recording()
         self._llm.disconnect_server()
 
-    @Slot()
-    def autoconnectLlmServer(self) -> None:
+    def _autoconnect_llm_server(self) -> None:
         self._llm.autoconnect_server()
 
     @Slot(bool)
@@ -894,7 +845,6 @@ class MainWindow(QObject):
 
     def _apply_model_status(self, status: str) -> None:
         if self.model_loader.is_loading:
-            self._status_message = status
             self._append_log_message(status, "status")
         self.ui_changed.emit()
 
@@ -906,7 +856,6 @@ class MainWindow(QObject):
 
     def _apply_tts_status(self, status: str) -> None:
         if self.tts_loader.is_loading:
-            self._status_message = status
             self._append_log_message(status, "status")
         self.ui_changed.emit()
 
@@ -940,25 +889,14 @@ class MainWindow(QObject):
         # Per-turn ordering (promote-draft, dedupe, queue/flush of
         # verbose pipeline status rows, RECORDING/IDLE boundary
         # reset) lives in the coordinator. MainWindow only owns the
-        # `state` property + `ui_changed` notification here.
+        # derived-state repaint here.
         self._turn_coordinator.on_state_changed(state)
         self.ui_changed.emit()
 
-    def _set_status_message(self, message: str) -> None:
-        # Status text drives the mic-button label only. Pipeline activity
-        # routed through the conversation log goes via _apply_state's
-        # role="status" path, gated on logVerboseMode. Appending here
-        # would (a) defeat simple mode and (b) duplicate the role="status"
-        # row in verbose mode.
-        self._status_message = message
-        self.ui_changed.emit()
-
     def _set_error_message(self, message: str, *, discard_draft: bool = True) -> None:
-        # MainWindow only owns the `errorMessage` property text +
-        # `ui_changed` notification; the coordinator handles the
-        # discard-draft + append-log-row policy. discard_draft default
-        # documented at the coordinator's `on_error_message`.
-        self._error_message = message
+        # The coordinator owns the discard-draft + append-log-row
+        # policy. discard_draft default documented at its
+        # `on_error_message`.
         self._turn_coordinator.on_error_message(message, discard_draft=discard_draft)
         self.ui_changed.emit()
 
@@ -1106,9 +1044,9 @@ class MainWindow(QObject):
     def _on_chat_thinking_chunk(self, text: str) -> None:
         # Thin forwarder — coordinator owns the streaming-thinking
         # bubble policy. `conversation_changed` propagates through the
-        # coordinator's own signal, but emitting here keeps the QML
-        # `conversationMessageCount` binding in lockstep with the chunk
-        # arrival even on the first chunk that promotes a draft row.
+        # coordinator's own signal, but emitting here also notifies any
+        # direct MainWindow observers when test doubles replace the
+        # coordinator method.
         self._turn_coordinator.on_chat_thinking_chunk(text)
         self.conversation_changed.emit()
 
@@ -1123,7 +1061,6 @@ class MainWindow(QObject):
     def _on_llm_status_message(self, message: str) -> None:
         if not message:
             return
-        self._status_message = message
         self._append_log_message(message, "status")
         self.ui_changed.emit()
 

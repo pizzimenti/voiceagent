@@ -3,7 +3,7 @@
 ## Review guidelines
 
 - Treat startup hangs, blank windows, or network/model refresh work that blocks first paint as P1.
-- Treat regressions in the two supported layouts as P1: compact under 250px and stacked medium mode up to the window's maximum width (`Kirigami.Units.gridUnit * 49`). The window is non-resizable above that cap; the prior large horizontal-tiling layout has been removed.
+- Treat regressions in the supported responsive layouts as P1: compact under 250px, ultra-compact short windows, and medium mode from `Kirigami.Units.gridUnit * 40` upward. The prior large horizontal-tiling layout and the old maximum-width cap have been removed.
 - Treat clipping of the session controls, conversation pane, or microphone control at window edges as P1.
 - Treat conversation-turn lifecycle regressions as P1. A user turn should keep one bubble from draft transcription through sent/final text. Bubbles are reserved for final user and assistant content; assistant thinking/progress belongs in status text and the microphone control. The opt-in verbose log mode may surface pipeline status (Transcribing, Thinking, Generating voice, Speaking) inline as plain styled text — these are not bubbles and do not weaken the rule.
 - Treat message ordering regressions as P1. The finalized user bubble must remain above its corresponding assistant bubble.
