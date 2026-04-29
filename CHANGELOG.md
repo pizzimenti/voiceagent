@@ -2,6 +2,30 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.1 — 2026-04-28
+
+**Direct test coverage for `services/chat.py` and `services/stt.py`.**
+Both modules previously had zero dedicated test files despite TTS
+having five. The two new test files mirror the `test_tts_*.py`
+pattern and bring the python suite from 222 to 306 tests.
+
+### Tests
+
+- **`tests/test_chat.py` (new, +581 LOC, 43 tests)** — covers
+  `LmStudioClient` URL normalization, error formatting (connect /
+  timeout / HTTP-status / generic exception classes), request
+  composition + response parsing happy paths, and timeout/connection-
+  error edge cases. `chat.py` uses `urllib.request.urlopen`, so the
+  fakes monkeypatch `voiceagent.services.chat.request.urlopen`
+  consistent with `test_tts_catalog_first_paint.py`.
+- **`tests/test_stt.py` (new, +675 LOC, 41 tests)** — covers
+  Whisper backend lifecycle (start / stop / restart), model-path
+  fallback when configured path is missing, compute-type inference
+  by hardware probe, and `AppState` / config hydration paths.
+  Mirrors the TTS fixture style.
+
+Net suite: 306 passed (was 222 before PR #26).
+
 ## 0.9.0 — 2026-04-28
 
 **Single page-level mic with animated cross-mode geometry.** Closes
