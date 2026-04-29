@@ -134,40 +134,40 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    ActionGroup {
-        id: themeActionGroup
-    }
-
+    // Three-way theme toggle: a single icon-only action that cycles
+    // Auto → Light → Dark → Auto on each click. Icon and tooltip
+    // reflect the current state plus the next state on click — the
+    // user always knows what mode they're in and what tapping will
+    // do, without expanding a submenu. Replaces the v0.9.x submenu
+    // approach (Kirigami.Action with three checkable children).
     Kirigami.Action {
         id: themeAction
-        text: i18nCtx.i18n("Theme")
-        icon.name: "preferences-desktop-theme-symbolic"
+        text: {
+            if (voiceAgent.themeMode === "auto") {
+                return i18nCtx.i18n("Theme: Auto (click for Light)");
+            }
+            if (voiceAgent.themeMode === "light") {
+                return i18nCtx.i18n("Theme: Light (click for Dark)");
+            }
+            return i18nCtx.i18n("Theme: Dark (click for Auto)");
+        }
+        icon.name: {
+            if (voiceAgent.themeMode === "auto") {
+                return "preferences-desktop-theme-symbolic";
+            }
+            if (voiceAgent.themeMode === "light") {
+                return "weather-clear-symbolic";
+            }
+            return "weather-clear-night-symbolic";
+        }
         icon.color: Kirigami.Theme.textColor
         displayHint: Kirigami.DisplayHint.IconOnly
         visible: !root.compactMode
-
-        Kirigami.Action {
-            text: i18nCtx.i18n("Auto")
-            checkable: true
-            checked: voiceAgent.themeMode === "auto"
-            ActionGroup.group: themeActionGroup
-            onTriggered: voiceAgent.setThemeMode("auto")
-        }
-
-        Kirigami.Action {
-            text: i18nCtx.i18n("Light")
-            checkable: true
-            checked: voiceAgent.themeMode === "light"
-            ActionGroup.group: themeActionGroup
-            onTriggered: voiceAgent.setThemeMode("light")
-        }
-
-        Kirigami.Action {
-            text: i18nCtx.i18n("Dark")
-            checkable: true
-            checked: voiceAgent.themeMode === "dark"
-            ActionGroup.group: themeActionGroup
-            onTriggered: voiceAgent.setThemeMode("dark")
+        onTriggered: {
+            const next = voiceAgent.themeMode === "auto" ? "light"
+                       : voiceAgent.themeMode === "light" ? "dark"
+                       : "auto";
+            voiceAgent.setThemeMode(next);
         }
     }
 
