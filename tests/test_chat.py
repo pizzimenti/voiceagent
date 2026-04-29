@@ -808,6 +808,90 @@ def test_load_model_unloads_previous_only_after_load_confirmed(monkeypatch):
     assert client.model == "alpha"
 
 
+def test_load_model_keeps_canonical_key_when_alias_resolves(monkeypatch):
+    """When `/api/v1/models/load` accepts an alias and reports the
+    canonical key on the post-load `/api/v1/models` listing, the unload
+    step must keep by the canonical key — not the requested alias —
+    or it evicts the just-loaded instance.
+
+    The pre/post snapshot diff identifies the new instance regardless
+    of name resolution; this test locks that behavior so a future
+    "simplify" doesn't reintroduce the alias-bypass bug Codex flagged.
+    """
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="previous", system_prompt="p"
+    )
+
+    # Pre-load: only `previous` is loaded.
+    pre_load_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "previous",
+                "loaded_instances": [{"id": "p1"}],
+            }
+        ]
+    }
+    # Post-load: server resolves the requested alias `nemo` to canonical
+    # key `org/nemotron-3-nano-4b`, returns it under that name with a
+    # NEW instance id `n1`. `previous` is still there too — the unload
+    # step has not run yet at this point.
+    post_load_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "previous",
+                "loaded_instances": [{"id": "p1"}],
+            },
+            {
+                "type": "llm",
+                "key": "org/nemotron-3-nano-4b",
+                "loaded_instances": [{"id": "n1"}],
+            },
+        ]
+    }
+
+    list_call_count = {"n": 0}
+    unloaded_instances: list[str] = []
+    load_fired = {"yes": False}
+
+    def _handler(req, timeout):
+        if req.get_method() == "POST":
+            url = req.full_url
+            body = json.loads(req.data.decode("utf-8"))
+            if url.endswith("/api/v1/models/load"):
+                load_fired["yes"] = True
+                return _FakeResponse({"status": "loaded"})
+            if url.endswith("/api/v1/models/unload"):
+                unloaded_instances.append(body["instance_id"])
+                return _FakeResponse({"status": "ok"})
+            return _FakeResponse({"status": "ok"})
+        # GET on /api/v1/models — returns pre-load until /models/load
+        # has fired, then post-load. This sidesteps having to count
+        # exactly which GET is the pre-snapshot vs the post-snapshot
+        # (`list_loaded_models()` from the "already loaded" check
+        # also hits this path before the load).
+        list_call_count["n"] += 1
+        return _FakeResponse(
+            post_load_payload if load_fired["yes"] else pre_load_payload
+        )
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    # Caller asks for the alias `nemo`; server resolves to a different
+    # canonical key. Without the snapshot-diff fix, the keep filter
+    # would be `nemo`, which doesn't match `org/nemotron-3-nano-4b`,
+    # and the just-loaded `n1` would get unloaded.
+    assert client.load_model("nemo") == "org/nemotron-3-nano-4b"
+    # The previous model `p1` got unloaded; the just-loaded `n1` did NOT.
+    assert "p1" in unloaded_instances
+    assert "n1" not in unloaded_instances
+    # And `client.model` is now the canonical key, not the alias —
+    # subsequent `complete()` requests must use what the server
+    # actually has.
+    assert client.model == "org/nemotron-3-nano-4b"
+
+
 def test_load_model_raises_without_url():
     client = LmStudioClient(base_url="", model="", system_prompt="p")
     with pytest.raises(RuntimeError, match="LLM URL is not configured"):

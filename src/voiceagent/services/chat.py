@@ -177,6 +177,14 @@ class LmStudioClient:
         if not native_api_root:
             raise RuntimeError("LM Studio native API root could not be determined.")
 
+        # Snapshot loaded instances before the load so we can identify
+        # the newly-loaded one as the diff after `/models/load` returns.
+        # The request `model_name` is what the user typed; LM Studio's
+        # canonical key (the one /api/v1/models reports) may differ
+        # (alias vs fully-qualified key). Comparing pre/post lets us
+        # keep the actual new instance regardless of name resolution.
+        pre_load = set(self.list_loaded_model_instances())
+
         # Load FIRST. Previous models stay loaded until the server
         # confirms the new one — that way a failed load can't strand
         # the user with no working LLM.
@@ -186,10 +194,24 @@ class LmStudioClient:
         if status != "loaded":
             raise RuntimeError(f"LM Studio did not confirm model load for '{model_name}'.")
 
-        # Now safe to evict the previous selection.
-        self.unload_other_models(keep_model=model_name)
-        self.model = model_name
-        return model_name
+        # Identify the newly-loaded instance(s) by set-diff against the
+        # pre-load snapshot. If LM Studio reports a different canonical
+        # key than what we requested (alias resolution), we use THAT key
+        # as the unload-others keep filter — otherwise `unload_other_models`
+        # would evict the model we just loaded.
+        post_load = self.list_loaded_model_instances()
+        new_instances = [pair for pair in post_load if pair not in pre_load]
+        if new_instances:
+            keep_key = new_instances[0][0]
+        else:
+            # No new instance appeared — load reported success but the
+            # diff is empty. Fall back to the requested name and accept
+            # the original eager-keep semantics.
+            keep_key = model_name
+
+        self.unload_other_models(keep_model=keep_key)
+        self.model = keep_key
+        return keep_key
 
     def unload_model_instance(self, instance_id: str) -> None:
         native_api_root = self._native_api_root()
