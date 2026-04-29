@@ -923,6 +923,60 @@ def test_load_model_keeps_canonical_key_when_alias_resolves(monkeypatch):
     assert client.model == "org/nemotron-3-nano-4b"
 
 
+def test_load_model_uses_response_instance_id_to_resolve_alias(monkeypatch):
+    """When `/api/v1/models/load` returns an `instance_id` for the
+    resolved instance, look up its canonical key directly. Bypasses
+    the diff / substring heuristics — the server has already told
+    us exactly which instance the alias resolved to.
+    """
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="initial", system_prompt="p"
+    )
+
+    # Multiple loaded LLMs; the alias is "qwen" but the canonical key
+    # is something the substring heuristic could plausibly match more
+    # than once. Without the instance_id path, this would either
+    # raise (multi-match) or guess. With it, the lookup is exact.
+    same_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "Qwen/qwen2.5-7b",
+                "loaded_instances": [{"id": "q7"}],
+            },
+            {
+                "type": "llm",
+                "key": "Qwen/qwen2.5-14b",
+                "loaded_instances": [{"id": "q14"}],
+            },
+        ]
+    }
+    unloaded: list[str] = []
+
+    def _handler(req, timeout):
+        if req.get_method() == "POST":
+            url = req.full_url
+            body = json.loads(req.data.decode("utf-8"))
+            if url.endswith("/api/v1/models/load"):
+                # Server returns the canonical instance_id for the
+                # resolved alias.
+                return _FakeResponse({"status": "loaded", "instance_id": "q14"})
+            if url.endswith("/api/v1/models/unload"):
+                unloaded.append(body["instance_id"])
+                return _FakeResponse({"status": "ok"})
+            return _FakeResponse({"status": "ok"})
+        return _FakeResponse(same_payload)
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    # The response.instance_id == "q14" → canonical key "Qwen/qwen2.5-14b".
+    # Substring "qwen" would otherwise match BOTH 7b and 14b and raise.
+    assert client.load_model("qwen") == "Qwen/qwen2.5-14b"
+    assert client.model == "Qwen/qwen2.5-14b"
+    # The 7b instance gets unloaded; the 14b stays.
+    assert unloaded == ["q7"]
+
+
 def test_load_model_alias_to_already_loaded_skips_unload(monkeypatch):
     """When `/models/load` reports success but no new instance appears
     in `/api/v1/models` (alias resolves to a model that was already

@@ -198,15 +198,33 @@ class LmStudioClient:
         if status != "loaded":
             raise RuntimeError(f"LM Studio did not confirm model load for '{model_name}'.")
 
-        # Identify the newly-loaded instance(s) by set-diff against the
-        # pre-load snapshot. If LM Studio reports a different canonical
-        # key than what we requested (alias resolution), we use THAT key
-        # as the unload-others keep filter — otherwise `unload_other_models`
-        # would evict the model we just loaded.
+        # Identify the newly-loaded instance(s).
         post_load = self.list_loaded_model_instances()
-        new_instances = [pair for pair in post_load if pair not in pre_load]
-        if new_instances:
-            keep_key = new_instances[0][0]
+
+        # Path 0 (preferred): the load response itself may carry an
+        # `instance_id` for the resolved model. When LM Studio provides
+        # it, it's the authoritative answer to "which instance did the
+        # alias resolve to" — no diff or substring guess needed. Look
+        # the id up in `post_load` to recover the canonical key.
+        response_instance_id = response.get("instance_id")
+        keep_key: str | None = None
+        if isinstance(response_instance_id, str) and response_instance_id.strip():
+            for k, i in post_load:
+                if i == response_instance_id.strip():
+                    keep_key = k
+                    break
+
+        # Path 1: set-diff against the pre-load snapshot. Catches the
+        # common "fresh instance loaded" case when the response lacks
+        # an instance_id field (older LM Studio servers, custom
+        # forks, etc.).
+        if keep_key is None:
+            new_instances = [pair for pair in post_load if pair not in pre_load]
+            if new_instances:
+                keep_key = new_instances[0][0]
+
+        if keep_key is not None:
+            pass
         elif post_load:
             # Empty diff but something is loaded — `/models/load` reported
             # "loaded" without adding a fresh instance. Most likely the
