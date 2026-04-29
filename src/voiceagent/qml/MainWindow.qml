@@ -57,62 +57,6 @@ Kirigami.ApplicationWindow {
     readonly property real pageContentMargin: root.ultraCompactMode ? 0 : (root.compactMode ? Kirigami.Units.smallSpacing : (root.mediumMode ? Kirigami.Units.mediumSpacing : Kirigami.Units.largeSpacing))
     readonly property real pageContentSpacing: root.compactMode ? Kirigami.Units.smallSpacing : Kirigami.Units.largeSpacing
 
-    // Wheel handler with two scrolling modes, gated on the ListView's
-    // sticky-to-bottom state (see AGENTS.md "KDE/QML implementation
-    // memory" — sticky-state owner must not fight Flickable movement):
-    //
-    //   Mode A (direct, when stickToBottom or no state-machine present):
-    //     Direct `contentY` assignment with bounds clamp. Bypasses
-    //     Flickable.flick() so the sticky-bottom state machine never
-    //     sees movementStarted / movementEnded firings it would treat
-    //     as the user manually detaching from bottom.
-    //
-    //   Mode B (inertial, when user has scrolled up off the tail):
-    //     Convert wheel delta into a pixels-per-second velocity and
-    //     call `Flickable.flick(0, velocity)` for native momentum
-    //     scrolling. The existing onMovementEnded handler in
-    //     ConversationPane reattaches stickToBottom if the flick
-    //     lands at-or-near bottom (bottomEpsilon = 3 px), so
-    //     auto-restore falls out of the existing state machine.
-    //
-    // Velocity scale, v0.9.11 retune: the v0.9.9 2x multiplier bump
-    // didn't close the gap because the inertial path's glide distance
-    // is `velocity² / (2 × flickDeceleration)` — quadratic in
-    // velocity. v0.9.11 bumps inertial velocities another 2x AND
-    // lowers ListView.flickDeceleration from 1800 → 900 (see
-    // ConversationPane.qml), so the combined glide distance per
-    // wheel notch is ~8x v0.9.9. Direct path multipliers stay at
-    // v0.9.9 levels (pdy*16, gridUnit*24) — they were already in a
-    // reasonable range, only the post-detach inertial branch felt
-    // sluggish. Sign: Qt's positive yVelocity moves content toward
-    // the start (scrolls view up), matching the direct path's
-    // `contentY -= delta`.
-    function scrollList(listView, wheel) {
-        if (!listView) {
-            return;
-        }
-        const pdy = wheel.pixelDelta ? wheel.pixelDelta.y : 0;
-        const ady = wheel.angleDelta ? wheel.angleDelta.y : 0;
-        const delta = pdy !== 0
-            ? pdy * 16
-            : (ady / 120) * Kirigami.Units.gridUnit * 24;
-        const useInertial = (listView.stickToBottom !== undefined)
-            ? !listView.stickToBottom
-            : !listView.atYEnd;
-        if (useInertial && delta !== 0) {
-            const velocity = pdy !== 0
-                ? pdy * 160
-                : (ady / 120) * Kirigami.Units.gridUnit * 240;
-            listView.flick(0, velocity);
-            wheel.accepted = true;
-            return;
-        }
-        const minY = listView.originY || 0;
-        const maxY = minY + Math.max(0, listView.contentHeight - listView.height);
-        listView.contentY = Math.max(minY, Math.min(maxY, listView.contentY - delta));
-        wheel.accepted = true;
-    }
-
     function bubbleText(text) {
         const content = (text || "").trim();
         return content;
