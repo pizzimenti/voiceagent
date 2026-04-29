@@ -2,6 +2,28 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.4 — 2026-04-28
+
+**Conversation bubbles use Kirigami theme roles.** Hardcoded
+`#34c759` assistant green plus white text lacked contrast on
+Breeze Light and didn't track theme flips. Switched to Kirigami's
+documented color pairs so the palette adapts to Breeze Light /
+Dark and to the user's accent color automatically.
+
+### Changed
+
+- **Assistant bubbles**: `alternateBackgroundColor` +
+  `textColor` — quiet, like a system panel.
+- **User-sent bubbles**: `highlightColor` +
+  `highlightedTextColor` — Plasma's "selection" pair, naturally
+  accented.
+- **User-draft (transcribing) bubbles**: pink (`#ff5c8a`)
+  preserved as a transient state marker; flips to the highlight
+  pair on finalize.
+- **Bubble timestamp**: tracks `bubbleTextColor` at 0.72 opacity
+  instead of hardcoded white at 0.72 — reads on both bubble
+  styles.
+
 ## 0.9.3 — 2026-04-28
 
 **Model Manager → `Kirigami.Page` on `pageStack`.** The Manager
