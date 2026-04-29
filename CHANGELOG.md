@@ -2,6 +2,35 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.13 — 2026-04-28
+
+**Two reverts from v0.9.12 user testing.**
+
+### Reverted
+
+- **Model Manager back to a modal `Window`** (undoes v0.9.3).
+  The Kirigami.Page approach pushed onto pageStack hid the
+  Voice Models toolbar action in a "More Actions" hamburger and
+  left no obvious close affordance. User explicitly preferred
+  the original separate-window dialog. `ModelManagerPage.qml`
+  deleted; `Window { id: modelManagerWindow ... }` restored
+  inline in `MainWindow.qml`.
+- **Conversation scroll back to direct-only** (undoes v0.9.12,
+  invalidates the v0.9.9–v0.9.11 multiplier rounds). The
+  Kirigami.WheelHandler experiment shipped at "1/5 native speed
+  and no inertial" per user. CatalogList — which scrolls fast —
+  uses the original PR #23 multipliers (`pdy * 8` /
+  `gridUnit * 12`), a `MouseArea` overlay, and no inertial
+  flick branch. Conversation view now matches that pattern
+  verbatim. `ListView.flickDeceleration: 1800` restored.
+
+The multiplier-tuning rounds were chasing a problem that didn't
+actually exist at PR #23 multipliers — the perceived slowness
+was specific to the conversation view's wiring (Kirigami.Wheel-
+Handler in v0.9.12, plus the inertial-flick branch that
+overrode each wheel event in v0.9.x). CatalogList has been
+scrolling fast with unchanged multipliers throughout.
+
 ## 0.9.12 — 2026-04-28
 
 **Replace custom scroll curve with `Kirigami.WheelHandler`.** Three
