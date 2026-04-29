@@ -184,24 +184,26 @@ Pane {
                 property bool assistant: model.messageRole === "assistant"
                 readonly property string bubbleState: model.bubbleState || "sent"
                 readonly property bool draft: bubbleState === "draft"
-                // Theme luminance check — Kirigami doesn't expose a
-                // "complementary panel" color set, so we hand-pick the
-                // assistant bubble palette per theme. ITU-R BT.601
-                // luma; the page bg's lightness is the only signal we
-                // need (background under 0.5 → dark theme).
+                // Theme luminance check — we override Kirigami's
+                // color sets entirely for both bubble sides to land a
+                // consistent violet "AI app" identity instead of
+                // tracking the user's Plasma accent. ITU-R BT.601
+                // luma; bg under 0.5 → dark theme.
                 readonly property bool darkTheme: {
                     const bg = Kirigami.Theme.backgroundColor;
                     return (0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b) < 0.5;
                 }
-                // Warm coffee / cream palette — complementary (~25°)
-                // to the teal/green Plasma highlight typical of Breeze
-                // accents (~170°). Inverted lightness across themes
-                // keeps the visual identity coherent. Bypasses Kirigami
-                // colorSet for the assistant bubble because every
-                // available set converges near the page bg in dark
-                // mode and reads as flat black.
-                readonly property color assistantBg: darkTheme ? "#3d3027" : "#f4e3d0"
-                readonly property color assistantTextColor: darkTheme ? "#f4e3d0" : "#3d3027"
+                // Violet branded palette — `sent` is the user's bubble
+                // (saturated violet pill, no border); `recv` is the
+                // assistant's bubble (soft lavender on light, cool
+                // gray on dark, with explicit border). Hand-tuned per
+                // theme — Kirigami color sets all converge near page
+                // bg on dark and don't give us this visual identity.
+                readonly property color sentBg: darkTheme ? "#A78BFA" : "#7C3AED"
+                readonly property color sentTextColor: darkTheme ? "#140A2B" : "#FFFFFF"
+                readonly property color recvBg: darkTheme ? "#374151" : "#EDE9FE"
+                readonly property color recvTextColor: darkTheme ? "#F9FAFB" : "#1F1736"
+                readonly property color recvBorderColor: darkTheme ? "#475569" : "#DDD6FE"
                 readonly property color systemTextColor: (model.level || "status") === "error"
                     ? Kirigami.Theme.negativeTextColor
                     : Kirigami.Theme.disabledTextColor
@@ -253,40 +255,34 @@ Pane {
                         Layout.fillWidth: true
                         Layout.maximumWidth: maxBubbleWidth
 
-                        // User-sent bubbles use Kirigami's `Selection`
-                        // colorSet (Plasma "this-is-yours" highlight
-                        // pair) so they track the user's accent. The
-                        // assistant bubble uses an explicit warm
-                        // coffee / cream palette — a complementary
-                        // hue to teal/green that Kirigami's color
-                        // sets don't offer and that hand-flips
-                        // cleanly between Breeze Light and Dark.
-                        Kirigami.Theme.colorSet: assistant
-                            ? Kirigami.Theme.Window
-                            : Kirigami.Theme.Selection
+                        // Disable Kirigami theme inheritance — both
+                        // bubble sides ship explicit branded colors,
+                        // so the resolved colorSet is irrelevant for
+                        // bg/text. We still set Window so anything
+                        // inside that *does* read theme roles falls
+                        // back to a sane default.
+                        Kirigami.Theme.colorSet: Kirigami.Theme.Window
                         Kirigami.Theme.inherit: false
 
-                        // Resolved bg / text per state. Assistant uses
-                        // hand-picked palette; user-sent reads from
-                        // the Selection colorSet (highlightColor /
-                        // highlightedTextColor under the hood); draft
-                        // (transcribing) keeps the pink hold-over.
+                        // Resolved bg / text / border per role and
+                        // state. Sent (user) is a saturated violet
+                        // pill with no border; recv (assistant) is a
+                        // soft panel with an explicit lavender/cool-
+                        // gray border; draft (transcribing) keeps the
+                        // pink hold-over as a transient marker.
                         readonly property color resolvedBg: draft
                             ? "#ff5c8a"
-                            : (assistant ? assistantBg : Kirigami.Theme.backgroundColor)
+                            : (assistant ? recvBg : sentBg)
                         readonly property color resolvedText: draft
                             ? "#ffffff"
-                            : (assistant ? assistantTextColor : Kirigami.Theme.textColor)
+                            : (assistant ? recvTextColor : sentTextColor)
+                        readonly property bool showBorder: !draft && assistant
 
                         background: Rectangle {
                             radius: root.compactMode ? Kirigami.Units.mediumSpacing : Kirigami.Units.largeSpacing
                             color: bubbleFrame.resolvedBg
-                            // Subtle border so the bubble has edge
-                            // definition on Breeze Light too (the
-                            // assistant cream bg only differs from
-                            // page bg by a few %).
-                            border.color: Kirigami.Theme.separatorColor
-                            border.width: draft ? 0 : 1
+                            border.color: bubbleFrame.showBorder ? recvBorderColor : "transparent"
+                            border.width: bubbleFrame.showBorder ? 1 : 0
                         }
 
                         contentItem: ColumnLayout {
