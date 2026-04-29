@@ -2,6 +2,48 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.8.7 — 2026-04-28
+
+**Detect partial-download voices via stale `.aria2` sidecars.** Closes
+a class of TTS failures that pre-dates the v0.3.2 layer-4 smoke-load
+verifier — voices downloaded before that protection shipped never
+went through ONNX validation, and an interrupted download leaves a
+truncated `.onnx` next to a `<onnx>.aria2` aria2 control file. The
+loader treated those as available, synthesis crashed inside Piper's
+`synthesize_wav` without writing WAV headers, and the user saw
+`wave.Error: # channels not specified` (the WAV close raises because
+`setnchannels` was never called).
+
+### Fixed
+
+- **`PiperTtsService.is_voice_available`** now returns False when a
+  `<onnx>.aria2` sidecar exists alongside the `.onnx`. Aria2 leaves
+  that file behind only when the transfer didn't complete; its
+  presence is a definitive marker for a partial install.
+- **`PiperTtsService._resolve_existing_model_path`** now skips
+  candidates with a `.aria2` sidecar, so `synthesize()` correctly
+  raises its missing-model RuntimeError instead of proceeding to
+  `wave.open` and crashing later.
+
+### Tests
+
+- 3 new tests in `tests/test_tts_is_available_consistency.py`:
+  `is_available_false_when_aria2_sidecar_present`,
+  `is_available_recovers_after_aria2_sidecar_removed`,
+  `resolve_path_skips_partial_download`. The existing 4 tests in
+  the file still pass — total 7.
+
+### Migration note
+
+If you have voices in your TTS model directory with `.aria2` files
+sitting next to them, those voices are corrupt and the v0.8.7 loader
+will correctly hide them from the UI. To replace them, delete the
+`.onnx` + `.onnx.aria2` + `.onnx.json` triple by hand (or via the
+Voice Models UI's Remove action) and re-download fresh. The new
+download goes through the v0.7.0 SHA-pinning + layer 2/3 size+md5
+verification + layer 4 smoke-load, so it can't end up in the same
+state.
+
 ## 0.8.6 — 2026-04-28
 
 **Sliding height-collapse instead of opacity fade + smaller

@@ -165,17 +165,32 @@ class PiperTtsService(TextToSpeechBackend):
         # `.onnx`. Reporting "available" without that sidecar lets a
         # bare `custom.onnx` masquerade as ready and crash on first
         # synthesis. Require both files for every resolved branch.
+        #
+        # Also reject any voice with a stale `<onnx>.aria2` sidecar:
+        # aria2 leaves that control file behind only when a download
+        # was interrupted. The `.onnx` next to it is partial and will
+        # crash Piper inside `synthesize_wav` (manifests as the
+        # baffling `wave.Error: # channels not specified` because the
+        # WAV is closed without `setnchannels` ever being called).
+        # Layer-4 smoke-load catches new corruption at download time;
+        # this guard catches LEGACY corruption from pre-v0.3.2
+        # installs that never went through layer-4.
+        def _is_complete(onnx: Path) -> bool:
+            return not Path(f"{onnx}.aria2").exists()
+
         candidate = Path(model_path).expanduser()
         if candidate.exists():
-            return Path(f"{candidate}.json").exists()
+            return _is_complete(candidate) and Path(f"{candidate}.json").exists()
 
         local_candidate = model_root / model_path
         if local_candidate.exists():
-            return Path(f"{local_candidate}.json").exists()
+            return _is_complete(local_candidate) and Path(f"{local_candidate}.json").exists()
 
         onnx_candidate = model_root / f"{model_path}.onnx"
         json_candidate = model_root / f"{model_path}.onnx.json"
-        return onnx_candidate.exists() and json_candidate.exists()
+        if not (onnx_candidate.exists() and json_candidate.exists()):
+            return False
+        return _is_complete(onnx_candidate)
 
     def is_item_available(self, item_name: str) -> bool:
         return self.is_voice_available(self.model_root, item_name)
@@ -393,16 +408,24 @@ class PiperTtsService(TextToSpeechBackend):
     def _resolve_existing_model_path(self) -> Path | None:
         assert self.model_path is not None
 
+        # Skip any candidate with a stale `<onnx>.aria2` sidecar — same
+        # rationale as `is_voice_available`. Resolving to a partial
+        # `.onnx` lets `synthesize()` proceed past its missing-model
+        # guard and crash inside `synthesize_wav` with the unhelpful
+        # `wave.Error: # channels not specified`.
+        def _is_complete(path: Path) -> bool:
+            return not Path(f"{path}.aria2").exists()
+
         candidate = Path(self.model_path).expanduser()
-        if candidate.exists():
+        if candidate.exists() and _is_complete(candidate):
             return candidate
 
         local_candidate = self.model_root / self.model_path
-        if local_candidate.exists():
+        if local_candidate.exists() and _is_complete(local_candidate):
             return local_candidate
 
         onnx_candidate = self.model_root / f"{self.model_path}.onnx"
-        if onnx_candidate.exists():
+        if onnx_candidate.exists() and _is_complete(onnx_candidate):
             return onnx_candidate
 
         return None
