@@ -882,6 +882,36 @@ def test_trim_drops_oldest_pair_after_cap_exceeded(model_and_coordinator):
     assert [(r or {}).get("text") for r in rows] == ["u1", "a1", "u2", "a2"]
 
 
+def test_trim_emits_rows_dropped_from_front_signal(model_and_coordinator):
+    """Round-3 #4: the coordinator emits `rows_dropped_from_front`
+    with the count of rows just removed from the front of the model.
+    External row-index trackers (e.g. `MainWindow._speaking_row`)
+    rely on this to shift in lockstep with the trim — without it,
+    the inline ▶/🤫 toggle renders on the wrong row after a trim
+    fires."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(4)
+    spy = QSignalSpy(coord.rows_dropped_from_front)
+
+    # First 2 pairs land — no trim yet (count == cap).
+    for i in range(2):
+        coord.on_user_transcript(f"u{i}")
+        coord.on_assistant_response(f"a{i}")
+    assert spy.count() == 0
+
+    # 3rd pair pushes past the cap → trim drops 2 rows from the front.
+    coord.on_user_transcript("u2")
+    coord.on_assistant_response("a2")
+    assert spy.count() == 1
+    assert spy.at(0)[0] == 2
+
+    # 4th pair → trim again, drops another 2.
+    coord.on_user_transcript("u3")
+    coord.on_assistant_response("a3")
+    assert spy.count() == 2
+    assert spy.at(1)[0] == 2
+
+
 def test_trim_skipped_when_cap_zero(model_and_coordinator):
     """`max_history_turns=0` is the unbounded-history sentinel —
     trim must NOT fire."""

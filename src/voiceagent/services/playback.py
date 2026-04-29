@@ -353,10 +353,32 @@ class AudioPlayer(QObject):
                     exc,
                 )
             else:
-                self._logger.exception(
-                    "Audio playback failed gen=%s path=%s", gen, path
-                )
-                self._emit_failed(gen, str(path), str(exc) or "Audio playback failed.")
+                # Re-check immediately before emit. The window between the
+                # initial check above and the call below is tiny but real
+                # — a fast `stop()` from the GUI thread can flip
+                # stop_event right after we entered this branch, or a
+                # concurrent `play_file` can supersede our generation.
+                # CodeRabbit round-3 finding: without this re-check, a
+                # user-initiated stop arriving after the initial check
+                # can still surface playback_failed in the conversation
+                # pane for a turn the user just chose to silence.
+                if stop_event.is_set() or not self._is_current_generation(gen):
+                    self._logger.info(
+                        "Audio playback exception suppressed at emit-time recheck "
+                        "gen=%s path=%s stop_event=%s current=%s exc=%s",
+                        gen,
+                        path,
+                        stop_event.is_set(),
+                        self._is_current_generation(gen),
+                        exc,
+                    )
+                else:
+                    self._logger.exception(
+                        "Audio playback failed gen=%s path=%s", gen, path
+                    )
+                    self._emit_failed(
+                        gen, str(path), str(exc) or "Audio playback failed."
+                    )
         else:
             if not stop_event.is_set():
                 self._logger.info(

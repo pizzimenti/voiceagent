@@ -149,6 +149,18 @@ class MainWindow(QObject):
         self._turn_coordinator.conversation_changed.connect(
             self.conversation_changed
         )
+        # When the coordinator's history-cap trim drops rows from the
+        # FRONT of the model, every row index above the dropped range
+        # shifts by `count`. Our `_speaking_row` is one such index; if
+        # we don't shift it in lockstep, the inline ▶/🤫 toggle
+        # renders on the wrong row after the trim fires. The
+        # coordinator already adjusts its own
+        # `_streaming_assistant_index` the same way; this connection
+        # extends that pattern to MainWindow's row tracker.
+        # CodeRabbit round-3 P1.
+        self._turn_coordinator.rows_dropped_from_front.connect(
+            self._on_rows_dropped_from_front
+        )
         self._llm = LlmController(self.controller.chat_client, self.settings, parent=self)
         self._shutting_down = False
         self._state = "idle"
@@ -183,6 +195,14 @@ class MainWindow(QObject):
             max_workers=1, thread_name_prefix="voiceagent-replay-synth"
         )
         self._replay_executor_shutdown = False
+        # Tracks the in-flight replay synth future so a fresh
+        # `replayMessage` click can cancel a still-pending prior synth
+        # before queueing the new one. Without this, rapid spam-clicks
+        # accumulate jobs in the single-worker executor's queue and
+        # each one runs to completion just to be discarded by the
+        # cancellation check inside `_on_replay_synth_completed`.
+        # CodeRabbit round-3 P2.
+        self._replay_synth_future: Future[object] | None = None
         self._replay_synth_completed.connect(self._on_replay_synth_completed)
         # Row index of the assistant bubble whose TTS audio is currently
         # being read aloud. -1 when nothing is playing. Drives the
@@ -192,6 +212,15 @@ class MainWindow(QObject):
         # Set when playback_started fires on either player; reset on
         # finished / failed / explicit stop.
         self._speaking_row: int = -1
+        # Which player currently OWNS the speaking row. Values:
+        # `"controller"` (in-pipeline auto-play), `"replay"`
+        # (user-triggered replay), or `""` (nothing playing).
+        # Without this, a late `playback_finished` from the
+        # `controller.player` (e.g. an in-pipeline auto-play that
+        # was abandoned mid-stream) could wipe a `_speaking_row`
+        # that belongs to a separate, still-running replay.
+        # CodeRabbit round-3 P2.
+        self._speaking_owner: str = ""
         # Wire the controller's history snapshot provider so each
         # voice turn captures the visible transcript on the GUI thread
         # before the executor takes over. The closure reads
@@ -263,22 +292,23 @@ class MainWindow(QObject):
             self._on_main_playback_started
         )
         self.controller.player.playback_finished.connect(
-            self._on_any_playback_ended
+            self._on_main_playback_ended
         )
         self.controller.player.playback_failed.connect(
-            self._on_any_playback_ended_with_message
+            self._on_main_playback_failed
         )
-        # Replay-side speakingRow: replayMessage sets _speaking_row
-        # synchronously the moment the user clicks ▶ (so the toggle
-        # responds immediately), then dispatches synth on the
-        # _replay_executor. Playback_started carries no extra info
-        # we need — the row is already correct. Only the end-of-
-        # playback resets matter on this signal.
+        # Replay-side speakingRow: replayMessage sets _speaking_row +
+        # _speaking_owner synchronously the moment the user clicks ▶
+        # (so the toggle responds immediately), then dispatches synth
+        # on the _replay_executor. Playback_started carries no extra
+        # info we need — the row + owner are already correct. Only
+        # the end-of-playback resets matter on this signal, and only
+        # if "replay" still owns the row at that point.
         self.replay_player.playback_finished.connect(
-            self._on_any_playback_ended
+            self._on_replay_playback_ended
         )
         self.replay_player.playback_failed.connect(
-            self._on_any_playback_ended_with_message
+            self._on_replay_playback_failed
         )
         self.model_loader.ready_changed.connect(self._emit_ui_changed)
         self.model_loader.loading_changed.connect(self._emit_ui_changed)
@@ -688,8 +718,9 @@ class MainWindow(QObject):
         """
         self.replay_player.stop()
         self.controller.cancel_playbacks()
-        if self._speaking_row != -1:
+        if self._speaking_row != -1 or self._speaking_owner:
             self._speaking_row = -1
+            self._speaking_owner = ""
             self.ui_changed.emit()
 
     @Slot(bool)
@@ -752,9 +783,21 @@ class MainWindow(QObject):
         # `_speaking_row`; the synth-completion handler sees the
         # mismatch and discards the audio without starting playback.
         self._speaking_row = index
+        self._speaking_owner = "replay"
         self.ui_changed.emit()
         if self._replay_executor_shutdown:
             return
+        # Cancel a still-pending prior synth before queueing the new
+        # one. The single-worker executor serializes jobs, so a rapid
+        # spam-click would otherwise stack: synth #1 completes,
+        # `_speaking_row != #1` triggers cancellation discard, synth
+        # #2 starts, etc. Cancelling outright (when possible) keeps
+        # the queue at one job and lets `_handle_replay_synth_done`
+        # short-circuit on `future.cancelled()`. CodeRabbit round-3
+        # P2.
+        previous_future = self._replay_synth_future
+        if previous_future is not None and not previous_future.done():
+            previous_future.cancel()
         try:
             future = self._replay_executor.submit(
                 self._run_replay_synth, index, text
@@ -764,8 +807,10 @@ class MainWindow(QObject):
             # and the submit. Roll back the optimistic toggle.
             if self._speaking_row == index:
                 self._speaking_row = -1
+                self._speaking_owner = ""
                 self.ui_changed.emit()
             return
+        self._replay_synth_future = future
         future.add_done_callback(self._handle_replay_synth_done)
 
     def _run_replay_synth(self, index: int, text: str) -> tuple[int, object, object]:
@@ -787,6 +832,13 @@ class MainWindow(QObject):
         # when add_done_callback registers against an already-done
         # future). Bridge across `_replay_synth_completed` so the
         # GUI thread is the sole writer to `_speaking_row`.
+        # Cancelled futures: a fresh `replayMessage` cancelled this
+        # one before it completed. `future.result()` would raise
+        # `CancelledError`; we want to skip the emit entirely so
+        # the cancelled work doesn't trigger a stale completion
+        # path on the GUI thread. CodeRabbit round-3 P2.
+        if future.cancelled():
+            return
         try:
             index, audio_path, error_message = future.result()
         except Exception as exc:  # pragma: no cover - defensive
@@ -798,18 +850,32 @@ class MainWindow(QObject):
     def _on_replay_synth_completed(self, index: int, payload: object) -> None:
         # Runs on the GUI thread (queued from the worker via
         # `_replay_synth_completed`).
+        # Shutdown guard. If `MainWindow.shutdown()` already tore
+        # down the replay player + conversation model, a late-
+        # arriving completion that calls `play_file` would crash.
+        # CodeRabbit round-3 P2.
+        if self._replay_executor_shutdown or self._shutting_down:
+            audio_path, _ = payload  # type: ignore[misc]
+            if audio_path is not None:
+                try:
+                    Path(str(audio_path)).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return
         audio_path, error_message = payload  # type: ignore[misc]
         if error_message is not None:
             wrapped = f"Replay failed: {error_message}"
             self._set_error_message(wrapped, discard_draft=False)
             self.replay_failed.emit(wrapped)
-            if self._speaking_row == index:
+            if self._speaking_row == index and self._speaking_owner == "replay":
                 self._speaking_row = -1
+                self._speaking_owner = ""
                 self.ui_changed.emit()
             return
         if audio_path is None:
-            if self._speaking_row == index:
+            if self._speaking_row == index and self._speaking_owner == "replay":
                 self._speaking_row = -1
+                self._speaking_owner = ""
                 self.ui_changed.emit()
             return
         # Cancellation check. If the user clicked 🤫 (stopSpeaking)
@@ -825,7 +891,18 @@ class MainWindow(QObject):
                     audio_path,
                 )
             return
-        self.replay_player.play_file(audio_path)
+        # `play_file` returns False when a concurrent supersede mints
+        # a newer generation between our entry and the worker
+        # registering its own thread (the AudioPlayer drops superseded
+        # play attempts entirely and unlinks the temp file). If that
+        # happens we'd otherwise leave `_speaking_row` pinned to this
+        # index forever, with no `playback_started` signal coming to
+        # bring it back. CodeRabbit round-3 Major.
+        dispatched = self.replay_player.play_file(audio_path)
+        if not dispatched and self._speaking_row == index:
+            self._speaking_row = -1
+            self._speaking_owner = ""
+            self.ui_changed.emit()
 
     def _handle_inventory_change(self) -> None:
         self._refresh_stt_catalog_if_changed()
@@ -901,24 +978,70 @@ class MainWindow(QObject):
         # In-pipeline auto-play: the speaking row is the most recent
         # finalized assistant bubble. The pipeline appends the
         # assistant turn to the model BEFORE invoking play_file, so
-        # this find is reliable.
+        # this find is reliable. Claim the row + owner; if a replay
+        # is somehow already running we still take over because the
+        # in-pipeline auto-play is a fresh turn (the replay's audio
+        # would race ours anyway).
         self._speaking_row = self._conversation_model.find_message_index(
             "assistant", bubble_state="sent", turn_pending=False
         )
+        self._speaking_owner = "controller"
         self.ui_changed.emit()
 
-    def _on_any_playback_ended(self, _path: str) -> None:
-        if self._speaking_row != -1:
+    def _on_main_playback_ended(self, _path: str) -> None:
+        # Only reset if the controller still owns the row. A
+        # late-arriving finished signal from an abandoned in-pipeline
+        # worker that completed AFTER the user started a replay
+        # otherwise wipes the replay's row → 🤫 disappears mid-
+        # replay. CodeRabbit round-3 P2.
+        if self._speaking_owner == "controller":
             self._speaking_row = -1
+            self._speaking_owner = ""
             self.ui_changed.emit()
 
-    def _on_any_playback_ended_with_message(
-        self, _path: str, _message: str
-    ) -> None:
-        # Two-arg variant for `playback_failed(path, message)`.
-        if self._speaking_row != -1:
+    def _on_main_playback_failed(self, _path: str, _message: str) -> None:
+        if self._speaking_owner == "controller":
             self._speaking_row = -1
+            self._speaking_owner = ""
             self.ui_changed.emit()
+
+    def _on_replay_playback_ended(self, _path: str) -> None:
+        if self._speaking_owner == "replay":
+            self._speaking_row = -1
+            self._speaking_owner = ""
+            self.ui_changed.emit()
+
+    def _on_replay_playback_failed(self, _path: str, _message: str) -> None:
+        if self._speaking_owner == "replay":
+            self._speaking_row = -1
+            self._speaking_owner = ""
+            self.ui_changed.emit()
+
+    def _on_rows_dropped_from_front(self, count: int) -> None:
+        """Shift `_speaking_row` to track a coordinator front-trim.
+
+        When `_trim_to_history_cap` removes the oldest N rows from
+        the model, every row index above the dropped range shifts
+        down by N. Our `_speaking_row` is a row index into the same
+        model; if we don't shift it, the ▶/🤫 toggle renders on
+        the wrong row after the trim. If `_speaking_row` itself was
+        inside the dropped range, the bubble is gone — reset to -1.
+        Mirrors the same pattern the coordinator applies to its own
+        `_streaming_assistant_index`. CodeRabbit round-3 P1.
+        """
+        if count <= 0:
+            return
+        if self._speaking_row < 0:
+            return
+        if self._speaking_row < count:
+            # The speaking bubble itself was inside the dropped range;
+            # nothing to track. Clear ownership too — neither player
+            # owns a row that no longer exists.
+            self._speaking_row = -1
+            self._speaking_owner = ""
+        else:
+            self._speaking_row -= count
+        self.ui_changed.emit()
 
     def _apply_theme_mode(self, mode: str) -> None:
         app = QApplication.instance()

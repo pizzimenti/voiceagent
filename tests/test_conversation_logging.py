@@ -25,6 +25,7 @@ import pytest
 from voiceagent.logging_utils import (
     CONVERSATION_BACKUP_COUNT,
     CONVERSATION_LOGGER_NAME,
+    configure_logging,
     rotate_conversation_log,
 )
 
@@ -103,6 +104,61 @@ def test_rotate_conversation_log_with_gaps(tmp_path: Path) -> None:
     assert (tmp_path / "conversation.log.3").read_text() == "backup-2"
     # The old .4 shifted to .5.
     assert (tmp_path / "conversation.log.5").read_text() == "backup-4"
+
+
+# --- conversation logger survives a pre-configured root -----------------
+
+
+def test_conversation_logger_installed_even_when_root_already_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CodeRabbit round-3 fix: when root logger already has handlers
+    (e.g. a process embedding voiceagent that configured logging
+    first), `configure_logging()` previously short-circuited and
+    silently dropped the conversation logger. Now the conversation
+    logger setup is independent of the root-logger gate."""
+    monkeypatch.setattr(
+        "voiceagent.logging_utils.default_log_dir", lambda: tmp_path
+    )
+    # Pretend something else already configured root.
+    root = logging.getLogger()
+    pre_existing = logging.NullHandler()
+    root.addHandler(pre_existing)
+    # Snapshot conversation-logger state so we can restore exactly
+    # what other tests in this file rely on (which is: a conversation
+    # logger with default `propagate=True` and no handlers, so
+    # caplog's root-level capture works via propagation).
+    conversation_logger = logging.getLogger(CONVERSATION_LOGGER_NAME)
+    saved_handlers = list(conversation_logger.handlers)
+    saved_propagate = conversation_logger.propagate
+    saved_level = conversation_logger.level
+    try:
+        # Wipe any leftover conversation logger state from prior tests
+        # so the install path under test runs clean.
+        for handler in list(conversation_logger.handlers):
+            conversation_logger.removeHandler(handler)
+
+        configure_logging()
+        assert conversation_logger.handlers, (
+            "conversation logger must install even when root logger was "
+            "already configured before configure_logging() ran"
+        )
+    finally:
+        root.removeHandler(pre_existing)
+        # Restore conversation logger to its pre-test shape so other
+        # tests that rely on caplog-via-propagation still work. The
+        # FileHandler we just installed points at tmp_path which
+        # pytest will clean up; closing it first avoids a leaked fd.
+        for handler in list(conversation_logger.handlers):
+            conversation_logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:  # pragma: no cover - defensive
+                pass
+        for handler in saved_handlers:
+            conversation_logger.addHandler(handler)
+        conversation_logger.propagate = saved_propagate
+        conversation_logger.setLevel(saved_level)
 
 
 # --- controller emits the documented lines ------------------------------

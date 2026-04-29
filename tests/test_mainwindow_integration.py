@@ -1244,6 +1244,196 @@ def test_stop_speaking_does_not_schedule_resume_when_voice_off(
     assert schedules == []
 
 
+def test_speaking_row_shifts_with_history_trim(main_window_factory):
+    """Round-3 #4: when the coordinator's history-cap trim drops
+    rows from the FRONT of the model, MainWindow's `_speaking_row`
+    must shift in lockstep. Otherwise the ▶/🤫 toggle renders on
+    the wrong row after a trim fires mid-playback."""
+    window = main_window_factory()
+    coord = window._turn_coordinator
+    coord.set_max_history_turns(4)  # last 4 entries = 2 pairs
+    # Land 4 pairs (8 finalized rows). Trim doesn't fire yet because
+    # the count == cap*2 only after the 2nd-to-last pair lands AND
+    # the threshold is exceeded.
+    for i in range(4):
+        coord.on_user_transcript(f"u{i}")
+        coord.on_assistant_response(f"a{i}")
+    _drain_events()
+    # Now the model has the last 4 rows: u2, a2, u3, a3 (2 pairs).
+    assert window._conversation_model.rowCount() == 4
+    # Pretend playback is currently on the LAST row (a3 — index 3).
+    window._speaking_row = 3
+    window._speaking_owner = "controller"
+
+    # Land a 5th pair → trim fires, drops u2/a2 (2 rows from the front).
+    coord.on_user_transcript("u4")
+    coord.on_assistant_response("a4")
+    _drain_events()
+
+    # After trim, indices shifted: a3 is now at row 1 (was row 3).
+    # speaking_row should track that shift.
+    assert window.speakingRow == 1
+    rows = [
+        (window._conversation_model.message(i) or {}).get("text")
+        for i in range(window._conversation_model.rowCount())
+    ]
+    assert rows[1] == "a3", (
+        f"speaking_row=1 should still point at a3 after trim; saw {rows!r}"
+    )
+
+
+def test_speaking_row_resets_when_speaking_bubble_trimmed(main_window_factory):
+    """Round-3 #4: if the trim drops the bubble that's currently
+    speaking (e.g. cap shrunk drastically), `_speaking_row` must
+    reset to -1 — there's no bubble to point at anymore."""
+    window = main_window_factory()
+    coord = window._turn_coordinator
+    coord.set_max_history_turns(4)
+    for i in range(4):
+        coord.on_user_transcript(f"u{i}")
+        coord.on_assistant_response(f"a{i}")
+    _drain_events()
+    # Speaking on the OLDEST row (u2 at index 0). The next trim will
+    # drop it.
+    window._speaking_row = 0
+    window._speaking_owner = "replay"
+
+    coord.on_user_transcript("u4")
+    coord.on_assistant_response("a4")
+    _drain_events()
+
+    assert window.speakingRow == -1
+    assert window._speaking_owner == ""
+
+
+def test_main_playback_finished_does_not_clear_replay_row(main_window_factory):
+    """Round-3 #9: the in-pipeline `controller.player`'s
+    `playback_finished` arriving LATE (e.g. an abandoned auto-play
+    worker that finally exited) must not wipe a `_speaking_row`
+    that's currently owned by the replay player."""
+    window = main_window_factory()
+    # Simulate: replay is currently playing row 3.
+    window._speaking_row = 3
+    window._speaking_owner = "replay"
+
+    # Late finish from the controller player arrives.
+    window.controller.player.playback_finished.emit("/tmp/abandoned.wav")
+    _drain_events()
+
+    assert window.speakingRow == 3
+    assert window._speaking_owner == "replay"
+
+
+def test_replay_play_file_returning_false_resets_speaking_row(
+    main_window_factory,
+):
+    """Round-3 #6: if `replay_player.play_file()` returns False
+    (e.g. concurrent supersede), speakingRow must reset — otherwise
+    the toggle stays pinned forever because no `playback_started`
+    will follow."""
+    window = main_window_factory()
+    tts = window.tts_loader.tts_service
+    tts.set_available(True)
+
+    window.replay_player.play_file = lambda _path: False  # supersede simulation
+
+    window._append_assistant_message("doomed reply")
+    window.replayMessage(0)
+    _wait_until(lambda: window.speakingRow == -1)
+    assert window.speakingRow == -1
+    assert window._speaking_owner == ""
+
+
+def test_replay_synth_completion_after_shutdown_is_silent(
+    main_window_factory,
+):
+    """Round-3 #10: a synth-completion signal that arrives AFTER
+    `MainWindow.shutdown()` started must not call into a torn-down
+    replay player. Set the shutdown flag and verify the completion
+    handler short-circuits."""
+    window = main_window_factory()
+    tts = window.tts_loader.tts_service
+    tts.set_available(True)
+
+    play_calls: list = []
+    window.replay_player.play_file = lambda path: (
+        play_calls.append(path) or True
+    )
+    window._append_assistant_message("post-shutdown reply")
+    # Force the shutdown flag BEFORE the synth completes.
+    window._replay_executor_shutdown = True
+
+    # Drive the completion handler directly — simulating a future that
+    # was already in flight when shutdown flipped.
+    window._replay_synth_completed.emit(
+        0, (Path("/tmp/dummy.wav"), None)
+    )
+    _drain_events()
+
+    assert play_calls == [], (
+        "play_file must not run after _replay_executor_shutdown is set"
+    )
+
+
+def test_stale_replay_synth_future_is_cancelled(main_window_factory):
+    """Round-3 #11: when the user spam-clicks ▶, a still-QUEUED
+    prior synth future is cancelled before queueing a new one.
+    `Future.cancel()` only succeeds on tasks that haven't started
+    yet — so this test fires three clicks: the first is running
+    (blocked), the second is queued, the third's submission cancels
+    the second and queues itself. The cancelled future must report
+    `cancelled() == True`."""
+    window = main_window_factory()
+    tts = window.tts_loader.tts_service
+    tts.set_available(True)
+    synth_can_complete = threading.Event()
+    real = tts.synthesize
+
+    def _slow(text: str):
+        synth_can_complete.wait(timeout=3.0)
+        return real(text)
+
+    tts.synthesize = _slow  # type: ignore[method-assign]
+    window.replay_player.play_file = lambda _path: True
+
+    window._append_assistant_message("a0")
+    window._append_assistant_message("a1")
+    window._append_assistant_message("a2")
+
+    # Click 1 → submit A. The single-worker executor picks it up
+    # immediately and blocks inside _slow.
+    window.replayMessage(0)
+    future_a = window._replay_synth_future
+    assert future_a is not None
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not future_a.running():
+        _drain_events(2)
+        time.sleep(0.01)
+    assert future_a.running(), "first synth never started running"
+
+    # Click 2 → cancel A (running, no-op), submit B. B sits in the
+    # executor's queue waiting for A to finish.
+    window.replayMessage(1)
+    future_b = window._replay_synth_future
+    assert future_b is not future_a
+
+    # Click 3 → cancel B (queued, cancellation succeeds), submit C.
+    window.replayMessage(2)
+    future_c = window._replay_synth_future
+    assert future_c is not future_b
+    assert future_b.cancelled(), (
+        "queued previous future must be cancelled when a fresh "
+        f"replayMessage supersedes it; state was {future_b}"
+    )
+
+    # Release A so the executor can drain to C.
+    synth_can_complete.set()
+    _wait_until(
+        lambda: future_c.done() or window.speakingRow == -1,
+        timeout=3.0,
+    )
+
+
 def test_visible_transcript_trims_when_cap_hits(main_window_factory):
     """v0.11 invariant: the visible transcript matches what the LLM
     sees on the next call. When new pairs push past the cap, oldest

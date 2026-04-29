@@ -515,6 +515,15 @@ def test_stop_swallows_portaudio_error_during_teardown(qapp, tmp_path):
         _process_events(2)
         time.sleep(0.01)
 
+    # Capture the worker thread reference BEFORE stop() so we can
+    # wait for it to actually exit (not just for `is_playing` to flip).
+    # `is_playing` clears as soon as stop() resets `_current_file`,
+    # but the worker may still be running and could emit
+    # `playback_failed` AFTER our assertion. CodeRabbit round-3
+    # finding: polling `is_playing` lets the assertion race the
+    # exception path. Joining the actual thread closes that window.
+    worker_thread = player._thread
+
     # User-intentional stop. The worker is still blocked in write;
     # stop() will set stop_event then time-out joining.
     player.stop()
@@ -525,17 +534,123 @@ def test_stop_swallows_portaudio_error_during_teardown(qapp, tmp_path):
     # and never surfaces.
     teardown_after_stop.set()
 
-    # Drain the worker. Wait long enough for the exception path to
-    # complete in the background thread.
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline and player.is_playing:
-        _process_events(2)
-        time.sleep(0.02)
+    # Wait for the WORKER thread to actually exit, not for is_playing
+    # to flip. Joining gives the exception path time to complete in
+    # the background thread before we check the spy.
+    if worker_thread is not None:
+        worker_thread.join(timeout=2.0)
     _process_events(5)
 
     assert failed_spy.count() == 0, (
         f"playback_failed should not fire when the host-API error arrives "
         f"after stop_event was set; got {failed_spy.count()} emissions"
+    )
+
+
+def test_emit_recheck_suppresses_late_supersede(qapp, tmp_path):
+    """Round-3 #5: the worker re-checks stop_event/generation
+    IMMEDIATELY before `_emit_failed`. If the generation flips
+    (a fresh `play_file` superseded us) BETWEEN the initial
+    `intentionally_stopped` check at the top of `except` and the
+    would-be emit, the re-check catches it and suppresses the
+    would-be `playback_failed`.
+
+    Why this test exists: the original code computed
+    `intentionally_stopped` once and then used that one value all
+    the way through to the emit. The window between those two
+    points is small but not zero — a fast supersede or stop from
+    the GUI thread could flip the condition after the initial
+    check. Pre-fix, this leaked a stale `playback_failed` for a
+    turn the user already moved past. Post-fix, the re-check
+    catches the flip.
+
+    Mechanism: we override `_is_current_generation` with a stub
+    whose answer flips between the initial check (top of except,
+    returns True so `intentionally_stopped` reads False) and the
+    re-check immediately before emit (returns False, which makes
+    the recheck trigger the suppress branch). Within the except
+    branch the worker calls `_is_current_generation` exactly twice
+    in the new code; we count those two calls and answer
+    differently. `_is_current_generation` is also called during
+    the play loop and finalizer — the override gates by a
+    `worker_in_except` flag that the stream sets just before
+    raising, so only the in-except calls are affected.
+    """
+    from PySide6.QtTest import QSignalSpy
+
+    file_a = tmp_path / "racy.wav"
+    _write_wav(file_a, frames=4_000, marker=1)
+
+    worker_in_except = threading.Event()
+
+    class _LateFailingStream:
+        aborted = False
+
+        def write(self, _data: bytes) -> None:
+            # Signal we're about to enter the except branch, then
+            # raise. The override below will count calls to
+            # `_is_current_generation` from this point on.
+            worker_in_except.set()
+            raise RuntimeError("late ALSA error")
+
+        def abort(self) -> None:
+            self.aborted = True
+
+    @contextmanager
+    def _open(self, *, sample_rate, channels, dtype):
+        yield _LateFailingStream()
+
+    player = AudioPlayer()
+    player._open_output_stream = _open.__get__(player, AudioPlayer)
+
+    # Patch `_is_current_generation` to differentiate the two calls
+    # inside the except branch. Only the calls AFTER `worker_in_except`
+    # is set are affected — the play-loop and finalizer paths see the
+    # real answer (True for the live generation).
+    original_is_current = player._is_current_generation
+    in_except_calls = {"n": 0}
+
+    def _patched_is_current(gen):
+        if worker_in_except.is_set():
+            in_except_calls["n"] += 1
+            # Call 1: top-of-except check. Return True so
+            # `not self._is_current_generation(gen)` is False, which
+            # combined with stop_event being False makes
+            # `intentionally_stopped` evaluate to False — i.e. the
+            # initial check decides this is a real failure.
+            # Call 2: the re-check immediately before emit. Return
+            # False so the recheck condition fires, exercising the
+            # new suppress-at-recheck branch added in round-3.
+            # Subsequent calls (e.g. inside the finalizer) also
+            # return False, which is fine — by then the worker is
+            # already winding down.
+            if in_except_calls["n"] == 1:
+                return True
+            return False
+        return original_is_current(gen)
+
+    player._is_current_generation = _patched_is_current  # type: ignore[assignment]
+
+    failed_spy = QSignalSpy(player.playback_failed)
+
+    assert player.play_file(file_a)
+
+    # Wait for the worker thread to exit (raise + suppression path).
+    worker_thread = player._thread
+    if worker_thread is not None:
+        worker_thread.join(timeout=2.0)
+    _process_events(5)
+
+    assert worker_in_except.is_set(), \
+        "stream.write() never raised; test setup did not exercise except branch"
+    assert in_except_calls["n"] >= 2, (
+        f"expected at least 2 in-except calls to _is_current_generation "
+        f"(top-of-except + emit-time recheck); got {in_except_calls['n']}"
+    )
+    assert failed_spy.count() == 0, (
+        "Re-check at emit time must suppress playback_failed when the "
+        "generation flipped after the initial intentionally_stopped "
+        f"check; got {failed_spy.count()} emissions"
     )
 
 

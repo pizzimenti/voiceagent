@@ -118,6 +118,14 @@ class ConversationTurnCoordinator(QObject):
     """
 
     conversation_changed = Signal()
+    # Emitted with the number of rows just removed from the FRONT of
+    # `_model` by `_trim_to_history_cap`. `MainWindow` connects to
+    # this so its `_speaking_row` (a row index into the same model)
+    # can be reindexed atomically with the trim — without it, after
+    # a trim that drops oldest pairs, `speakingRow` points at the
+    # wrong (or no longer existing) bubble and the inline ▶/🤫
+    # toggle renders on the wrong row. CodeRabbit round-3 P1.
+    rows_dropped_from_front = Signal(int)
 
     def __init__(
         self,
@@ -542,6 +550,12 @@ class ConversationTurnCoordinator(QObject):
             cap,
             self._model.rowCount(),
         )
+        # Notify external row-index trackers (e.g.
+        # `MainWindow._speaking_row`) so they can shift in sync. The
+        # coordinator only knows about its OWN row-index field
+        # (`_streaming_assistant_index`, adjusted just above);
+        # everyone else hooks this signal. CodeRabbit round-3 P1.
+        self.rows_dropped_from_front.emit(keep_from_index)
 
     def _append_status_log_entry(self, state: str) -> None:
         self._model.append_message(
