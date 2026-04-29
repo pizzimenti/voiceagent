@@ -46,9 +46,9 @@ sys.path.insert(0, str(_REPO / "src"))
 from tests.fakes import build_compiletest_window  # noqa: E402
 
 # Bracket the responsive breakpoints:
-#   minimumWidth  ≈ 18gu ≈ 324 px @1.0x  (smallest legal)
-#   compactMode   ≈ 40gu ≈ 720 px @1.0x  (compact ↔ medium)
-#   ultraCompact  height < 28gu ≈ 504 px (when compact AND short)
+#   minimumWidth   ≈ 6gu  ≈ 108 px @1.0x   (postage-stamp floor; v0.8.4+)
+#   compactMode    ≈ 40gu ≈ 720 px @1.0x   (compact ↔ medium; v0.8.2+)
+#   ultraCompact   height < 10gu ≈ 180 px  (compact AND short; v0.8.6+)
 # Capture both width-scan at typical height (700) AND short-height
 # captures at narrow widths to confirm ultraCompactMode trips.
 WIDTHS = [340, 400, 600, 800, 1000, 1200]

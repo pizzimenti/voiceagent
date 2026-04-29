@@ -11,13 +11,13 @@
 
 ## Test gates and what they cover
 
-Three headless gates layer up; run them in order from cheapest to
+Four headless gates layer up; run them in order from cheapest to
 most thorough:
 
 1. **`pytest tests/`** — Python-side logic + pytest-qt interaction
    tests against a stubbed QML engine. Catches Python-side
    regressions and Python-to-QML signal/slot drift at the property
-   surface. ~219 tests, ~3s.
+   surface. ~363 tests, ~3s.
 2. **`./voiceagent-compiletest.sh`** — "does the QML load?" gate.
    qmllint each component standalone, then load `MainWindow.qml`
    into a *real* `QQmlApplicationEngine` against a *real*
@@ -37,8 +37,9 @@ most thorough:
    gate. Renders `MainWindow` against `QT_QPA_PLATFORM=offscreen`
    via `QQuickWindow.grabWindow()` at multiple combinations of
    `QT_SCALE_FACTOR` (1.0 / 1.25 / 1.5 — Plasma's common HiDPI
-   settings) and logical width (400 / 600 / 800 / 1000 / 1200 px),
-   saving 15 PNGs under `screenshots/` (gitignored). Catches layout
+   settings) and logical width (340 / 400 / 600 / 800 / 1000 /
+   1200 px) plus short-window captures driving ultraCompact mode,
+   saving 33 PNGs under `screenshots/` (gitignored). Catches layout
    regressions that only surface at specific scale × width
    combinations. The driver is `tests/visual/visual_smoke.py`. Use
    when changing responsive thresholds, FormLayout structure, or
