@@ -306,126 +306,151 @@ class MicrophoneRecorder:
             self._recent_input_chunk = chunk
             self._recent_input_timestamp = time.monotonic()
             if self._input_suspended:
-                self._current_input_level = 0.0
-                self._idle_peak_rms = max(self._idle_peak_rms, rms)
-                self._idle_log_frames += frames
-                if self._idle_log_frames >= self.sample_rate * 2:
-                    self._logger.info(
-                        "Microphone input suspended peak_rms=%.1f buffered_pre_roll=%s pending_segments=%s",
-                        self._idle_peak_rms,
-                        len(self._pre_roll_frames),
-                        len(self._pending_segments),
-                    )
-                    self._idle_peak_rms = 0.0
-                    self._idle_log_frames = 0
+                self._handle_suspended_input_locked(frames, rms)
                 return
             ignore_remaining_seconds = self._ignore_input_until_monotonic - time.monotonic()
             if ignore_remaining_seconds > 0:
-                self._current_input_level = 0.0
-                self._idle_peak_rms = max(self._idle_peak_rms, rms)
-                self._idle_log_frames += frames
-                self._append_pre_roll_locked(chunk, frames, rms)
-                if self._idle_log_frames >= self.sample_rate:
-                    self._logger.info(
-                        "Microphone ignore window active reason=%s remaining_seconds=%.2f peak_rms=%.1f buffered_pre_roll=%s",
-                        self._ignore_input_reason,
-                        ignore_remaining_seconds,
-                        self._idle_peak_rms,
-                        len(self._pre_roll_frames),
-                    )
-                    self._idle_peak_rms = 0.0
-                    self._idle_log_frames = 0
+                self._handle_ignore_window_locked(chunk, frames, rms, ignore_remaining_seconds)
                 return
 
             if self._segment_started:
-                self._frames.append(chunk)
-                total_turn_frames = self._speech_frames + self._silence_frames
-                if rms >= self._active_silence_threshold:
-                    if self._silence_frames > 0:
-                        self._logger.debug(
-                            "Microphone silence interrupted rms=%.1f silence_threshold=%.1f accumulated_silence_frames=%s",
-                            rms,
-                            self._active_silence_threshold,
-                            self._silence_frames,
-                        )
-                    self._speech_frames += frames
-                    self._silence_frames = 0
-                else:
-                    self._silence_frames += frames
-                    if self._silence_frames >= self.sample_rate and (
-                        self._silence_frames - frames
-                    ) < self.sample_rate:
-                        self._logger.info(
-                            "Microphone waiting for end-of-turn silence silence_seconds=%.2f silence_threshold=%.1f speech_frames=%s",
-                            self._silence_frames / self.sample_rate,
-                            self._active_silence_threshold,
-                            self._speech_frames,
-                        )
-                if self._silence_frames >= self._silence_timeout_frames:
-                    callback = self._finalize_segment_locked("silence_timeout", callback)
-                elif total_turn_frames + frames >= self._max_turn_frames:
-                    self._logger.info(
-                        "Microphone max turn reached turn_seconds=%.2f max_turn_seconds=%.2f speech_frames=%s silence_frames=%s",
-                        (total_turn_frames + frames) / self.sample_rate,
-                        self._max_turn_frames / self.sample_rate,
-                        self._speech_frames,
-                        self._silence_frames,
-                    )
-                    callback = self._finalize_segment_locked("max_turn", callback)
+                self._track_active_segment_locked(chunk, frames, rms)
+                callback = self._finalize_on_silence_or_max_locked(frames, callback)
             else:
-                if rms >= self._active_speech_threshold:
-                    self._speech_candidate_frames += frames
-                    self._speech_candidate_peak_rms = max(self._speech_candidate_peak_rms, rms)
-                    self._append_pre_roll_locked(chunk, frames, rms)
-                    if self._speech_candidate_frames >= self._speech_trigger_frames:
-                        noise_floor = self._estimate_noise_floor_locked()
-                        self._segment_started = True
-                        self._frames = [data for data, _ in self._pre_roll_frames]
-                        self._pre_roll_frames.clear()
-                        self._pre_roll_rms.clear()
-                        self._pre_roll_frame_total = 0
-                        self._speech_frames = self._speech_candidate_frames
-                        self._silence_frames = 0
-                        self._active_speech_threshold = max(float(self._speech_threshold), noise_floor * 2.5)
-                        self._active_silence_threshold = max(float(self._silence_threshold), noise_floor * 1.35)
-                        self._logger.info(
-                            "Microphone speech detected rms=%.1f threshold=%.1f trigger_frames=%s pre_roll_frames=%s noise_floor=%.1f active_silence_threshold=%.1f",
-                            self._speech_candidate_peak_rms,
-                            self._active_speech_threshold,
-                            self._speech_candidate_frames,
-                            len(self._frames),
-                            noise_floor,
-                            self._active_silence_threshold,
-                        )
-                        self._speech_candidate_frames = 0
-                        self._speech_candidate_peak_rms = 0.0
-                else:
-                    if self._speech_candidate_frames > 0:
-                        self._logger.debug(
-                            "Microphone speech start candidate reset candidate_frames=%s peak_rms=%.1f threshold=%.1f",
-                            self._speech_candidate_frames,
-                            self._speech_candidate_peak_rms,
-                            self._active_speech_threshold,
-                        )
-                        self._speech_candidate_frames = 0
-                        self._speech_candidate_peak_rms = 0.0
-                    self._idle_peak_rms = max(self._idle_peak_rms, rms)
-                    self._idle_log_frames += frames
-                    if self._idle_log_frames >= self.sample_rate * 2:
-                        self._logger.info(
-                            "Microphone waiting for speech peak_rms=%.1f threshold=%s buffered_pre_roll=%s",
-                            self._idle_peak_rms,
-                            self._active_speech_threshold,
-                            len(self._pre_roll_frames),
-                        )
-                        self._idle_peak_rms = 0.0
-                        self._idle_log_frames = 0
-                    if rms > self._last_logged_rms:
-                        self._last_logged_rms = rms
-                    self._append_pre_roll_locked(chunk, frames, rms)
+                self._check_speech_candidate_locked(chunk, frames, rms)
 
         if callback is not None:
             callback()
+
+    def _handle_suspended_input_locked(self, frames: int, rms: float) -> None:
+        self._current_input_level = 0.0
+        self._idle_peak_rms = max(self._idle_peak_rms, rms)
+        self._idle_log_frames += frames
+        if self._idle_log_frames >= self.sample_rate * 2:
+            self._logger.info(
+                "Microphone input suspended peak_rms=%.1f buffered_pre_roll=%s pending_segments=%s",
+                self._idle_peak_rms,
+                len(self._pre_roll_frames),
+                len(self._pending_segments),
+            )
+            self._idle_peak_rms = 0.0
+            self._idle_log_frames = 0
+
+    def _handle_ignore_window_locked(
+        self,
+        chunk: bytes,
+        frames: int,
+        rms: float,
+        ignore_remaining_seconds: float,
+    ) -> None:
+        self._current_input_level = 0.0
+        self._idle_peak_rms = max(self._idle_peak_rms, rms)
+        self._idle_log_frames += frames
+        self._append_pre_roll_locked(chunk, frames, rms)
+        if self._idle_log_frames >= self.sample_rate:
+            self._logger.info(
+                "Microphone ignore window active reason=%s remaining_seconds=%.2f peak_rms=%.1f buffered_pre_roll=%s",
+                self._ignore_input_reason,
+                ignore_remaining_seconds,
+                self._idle_peak_rms,
+                len(self._pre_roll_frames),
+            )
+            self._idle_peak_rms = 0.0
+            self._idle_log_frames = 0
+
+    def _track_active_segment_locked(self, chunk: bytes, frames: int, rms: float) -> None:
+        self._frames.append(chunk)
+        if rms >= self._active_silence_threshold:
+            if self._silence_frames > 0:
+                self._logger.debug(
+                    "Microphone silence interrupted rms=%.1f silence_threshold=%.1f accumulated_silence_frames=%s",
+                    rms,
+                    self._active_silence_threshold,
+                    self._silence_frames,
+                )
+            self._speech_frames += frames
+            self._silence_frames = 0
+        else:
+            self._silence_frames += frames
+            if self._silence_frames >= self.sample_rate and (
+                self._silence_frames - frames
+            ) < self.sample_rate:
+                self._logger.info(
+                    "Microphone waiting for end-of-turn silence silence_seconds=%.2f silence_threshold=%.1f speech_frames=%s",
+                    self._silence_frames / self.sample_rate,
+                    self._active_silence_threshold,
+                    self._speech_frames,
+                )
+
+    def _finalize_on_silence_or_max_locked(
+        self, frames: int, callback: Callable[[], None] | None
+    ) -> Callable[[], None] | None:
+        total_turn_frames = self._speech_frames + self._silence_frames
+        if self._silence_frames >= self._silence_timeout_frames:
+            return self._finalize_segment_locked("silence_timeout", callback)
+        if total_turn_frames + frames >= self._max_turn_frames:
+            self._logger.info(
+                "Microphone max turn reached turn_seconds=%.2f max_turn_seconds=%.2f speech_frames=%s silence_frames=%s",
+                (total_turn_frames + frames) / self.sample_rate,
+                self._max_turn_frames / self.sample_rate,
+                self._speech_frames,
+                self._silence_frames,
+            )
+            return self._finalize_segment_locked("max_turn", callback)
+        return callback
+
+    def _check_speech_candidate_locked(self, chunk: bytes, frames: int, rms: float) -> None:
+        if rms >= self._active_speech_threshold:
+            self._speech_candidate_frames += frames
+            self._speech_candidate_peak_rms = max(self._speech_candidate_peak_rms, rms)
+            self._append_pre_roll_locked(chunk, frames, rms)
+            if self._speech_candidate_frames >= self._speech_trigger_frames:
+                noise_floor = self._estimate_noise_floor_locked()
+                self._segment_started = True
+                self._frames = [data for data, _ in self._pre_roll_frames]
+                self._pre_roll_frames.clear()
+                self._pre_roll_rms.clear()
+                self._pre_roll_frame_total = 0
+                self._speech_frames = self._speech_candidate_frames
+                self._silence_frames = 0
+                self._active_speech_threshold = max(float(self._speech_threshold), noise_floor * 2.5)
+                self._active_silence_threshold = max(float(self._silence_threshold), noise_floor * 1.35)
+                self._logger.info(
+                    "Microphone speech detected rms=%.1f threshold=%.1f trigger_frames=%s pre_roll_frames=%s noise_floor=%.1f active_silence_threshold=%.1f",
+                    self._speech_candidate_peak_rms,
+                    self._active_speech_threshold,
+                    self._speech_candidate_frames,
+                    len(self._frames),
+                    noise_floor,
+                    self._active_silence_threshold,
+                )
+                self._speech_candidate_frames = 0
+                self._speech_candidate_peak_rms = 0.0
+            return
+
+        if self._speech_candidate_frames > 0:
+            self._logger.debug(
+                "Microphone speech start candidate reset candidate_frames=%s peak_rms=%.1f threshold=%.1f",
+                self._speech_candidate_frames,
+                self._speech_candidate_peak_rms,
+                self._active_speech_threshold,
+            )
+            self._speech_candidate_frames = 0
+            self._speech_candidate_peak_rms = 0.0
+        self._idle_peak_rms = max(self._idle_peak_rms, rms)
+        self._idle_log_frames += frames
+        if self._idle_log_frames >= self.sample_rate * 2:
+            self._logger.info(
+                "Microphone waiting for speech peak_rms=%.1f threshold=%s buffered_pre_roll=%s",
+                self._idle_peak_rms,
+                self._active_speech_threshold,
+                len(self._pre_roll_frames),
+            )
+            self._idle_peak_rms = 0.0
+            self._idle_log_frames = 0
+        if rms > self._last_logged_rms:
+            self._last_logged_rms = rms
+        self._append_pre_roll_locked(chunk, frames, rms)
 
     def _append_pre_roll_locked(self, chunk: bytes, frames: int, rms: float) -> None:
         self._pre_roll_frames.append((chunk, frames))
