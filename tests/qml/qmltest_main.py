@@ -38,6 +38,17 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Allow `XMLHttpRequest` against `file://` URLs from inside the loaded
+# QML tests. `tst_layout_policy.qml` uses synchronous XHR to slurp the
+# production QML source files and assert the AGENTS.md
+# "Responsive layout policy" invariant that no `Behavior on opacity`
+# clauses exist anywhere — the QML object tree does NOT expose
+# `Behavior` value-interceptors through `children`/`data`/`resources`,
+# so a runtime tree walk cannot enforce the same invariant. Reading the
+# source text is the only path. Qt 6 disables file:// reads from QML
+# XHR by default for security; this `setdefault` flips the gate ON for
+# the test runner only (production engines never set this var).
+os.environ.setdefault("QML_XHR_ALLOW_FILE_READ", "1")
 
 from PySide6 import QtQuickTest  # noqa: E402
 from PySide6.QtCore import QObject, Slot  # noqa: E402
