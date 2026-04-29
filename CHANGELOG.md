@@ -2,6 +2,53 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.8.4 — 2026-04-28
+
+**Window-sizing rework: drop max caps, raise min width, fix mediumMode
+form column squeeze.** The visual smoke at 1.0x didn't reproduce the
+actual broken layout the user saw on Plasma at higher scale. Three
+coordinated fixes in MainWindow.qml + SessionSetupPane.qml.
+
+### Changed — window flags + sizing policy
+
+- **Removed `maximumWidth` / `maximumHeight` caps.** v0.7.0 capped
+  width at `gridUnit * 49` and height at `Screen.desktopAvailableHeight`
+  to suppress maximize. The caps were more annoying than helpful — fullscreen
+  blocking is worse UX than a layout that scales naturally. Window can
+  now be maximized / fullscreened freely; the layout adapts.
+- **Restored `Qt.WindowMaximizeButtonHint`** in the window flags.
+- **Removed the `onVisibilityChanged` snap-to-Windowed handler** that
+  forced any maximize / fullscreen request back to Windowed.
+- **Added `minimumWidth: gridUnit * 22`** floor. Below this, the title
+  bar collapses actions into "..." overflow and the compact mic button's
+  "LLM disconnected" status truncates. gridUnit-scaled keeps the floor
+  scale-aware across Plasma 100% / 125% / 150% / 200%.
+- **Added `minimumHeight: gridUnit * 18`** floor for the same reason.
+
+### Changed — compactMode threshold
+
+- **`compactMode` threshold raised 35 → 40 grid units.** v0.8.2's gu*35
+  fixed offscreen 1.0x captures but the user's actual Plasma desktop
+  at higher Wayland scale showed the same form-column squeeze + mic
+  overlap. At 1.5x scale the gridUnit-multiplied control widths don't
+  fit at typical 1000 px windows. gu*40 gives enough headroom that the
+  form fits at common Plasma scales without requiring an oversized
+  window.
+
+### Fixed — SessionSetupPane label clipping + mic overlap
+
+- **Inner `RowLayout` now uses `anchors.fill: parent`** instead of
+  `width: parent.width`. The latter overshoots into the Pane's padding,
+  letting children render flush against the window edge. That manifested
+  as form labels being left-clipped because the Pane's left padding
+  wasn't honored.
+- **Form ComboBoxes drop `Layout.fillWidth: true`.** With fillWidth on
+  every form child plus aggressive `Layout.preferredWidth: gu*14` /
+  `gu*16` hints, controls hogged horizontal space and starved the
+  Kirigami.FormLayout label column to ~50 px — labels left-clipped to
+  "eech:", "URL:", "odel:". Removing fillWidth lets controls size to
+  preferredWidth and gives the label column its natural width.
+
 ## 0.8.3 — 2026-04-28
 
 **Filter Kirigami `ToolBarLayout` incubation warnings.** Every launch

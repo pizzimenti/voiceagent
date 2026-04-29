@@ -9,51 +9,34 @@ Kirigami.ApplicationWindow {
 
     width: 512
     height: 512
-    // Cap horizontal width below the gridUnit*50 threshold that previously
-    // toggled the two-column dashboard layout. The single-pane layout is the
-    // only supported view above compactMode.
-    maximumWidth: Kirigami.Units.gridUnit * 49
-    // Cap height to the screen's available area (excluding panels). With
-    // both axes bounded against the workable screen, "maximize" via the
-    // title-bar button or Super+Up has no visible effect — the window is
-    // already at its maximum useful size. Pinning maximumHeight against a
-    // dynamic Screen value (rather than a fixed grid count) preserves the
-    // user's ability to grow the window vertically up to the workable area
-    // without ever stretching past it.
-    maximumHeight: Screen.desktopAvailableHeight
-    // Drop Qt.WindowMaximizeButtonHint so the WM does not advertise an
-    // affordance for an action that cannot meaningfully change the window
-    // beyond what the user has already done by hand.
+    // Floor on horizontal width: below ~22 grid units the title bar
+    // collapses actions into "..." overflow and the compact mic button's
+    // "LLM disconnected" status text truncates. gridUnit-scaled keeps
+    // the floor scale-aware (Plasma 125%–200% bumps it proportionally).
+    // No upper cap: maximize / fullscreen are allowed; the layout scales
+    // naturally up to whatever the user's compositor permits.
+    minimumWidth: Kirigami.Units.gridUnit * 22
+    minimumHeight: Kirigami.Units.gridUnit * 18
     flags: Qt.Window
         | Qt.WindowTitleHint
         | Qt.WindowSystemMenuHint
         | Qt.WindowMinimizeButtonHint
+        | Qt.WindowMaximizeButtonHint
         | Qt.WindowCloseButtonHint
     visible: true
     title: i18nCtx.i18n("Voice Agent")
     required property QtObject voiceAgent
 
-    // Belt-and-suspenders: KWin honors min/max size constraints in
-    // isResizable(), but the maximize button only disappears when
-    // BOTH axes are pinned (min == max). We deliberately keep the
-    // height resizable up to the screen cap, so isResizable() may
-    // still return true and the title-bar button may render. Snap
-    // back to Windowed if anything still triggers maximize, so the
-    // visible result is the same as the policy.
-    onVisibilityChanged: function(visibility) {
-        if (visibility === Window.Maximized || visibility === Window.FullScreen) {
-            root.visibility = Window.Windowed;
-        }
-    }
-
-    // CompactMode threshold raised from the legacy 25 grid units. In
-    // mediumMode the SessionSetupPane runs a side-by-side form + mic
-    // frame; below ~35 grid units the form's label column, controls, and
-    // the mic frame don't all fit without label clipping or mic overlap
-    // (visible at 600 px logical width on the v0.8.1 visual smoke run).
-    // gridUnit keeps the breakpoint scale-aware: at 1.5x Plasma scaling
-    // the gridUnit grows so the physical-pixel threshold scales up too.
-    readonly property bool compactMode: width < Kirigami.Units.gridUnit * 35
+    // CompactMode threshold raised from 35 → 40 grid units. v0.8.2 went
+    // 25 → 35 to fix offscreen 1.0x captures, but the user's actual
+    // Plasma desktop at higher Wayland scale showed the same form-column
+    // squeeze + mic-overlap that supposedly was fixed: at 1.5x scale the
+    // gridUnit-multiplied control widths (Speech/Voice combos, URL combo
+    // + Connect button, mic frame) cumulatively exceed what mediumMode
+    // can fit at typical 1000 px windows. 40 grid units gives enough
+    // headroom that the form fits at common Plasma scales without
+    // requiring an oversized window.
+    readonly property bool compactMode: width < Kirigami.Units.gridUnit * 40
     readonly property bool mediumMode: !compactMode
     readonly property bool ultraCompactMode: compactMode
     readonly property int sttInstalledCount: voiceAgent.sttInstalledCount

@@ -67,7 +67,13 @@ Pane {
 
             RowLayout {
                 id: sessionSetupRow
-                width: parent.width
+                // anchors.fill respects the Pane's padding (contentItem
+                // bounds); `width: parent.width` overshoots into the
+                // padding region and lets children render flush against
+                // the window edge. That manifested as form labels being
+                // left-clipped because the Pane's left padding wasn't
+                // honored.
+                anchors.fill: parent
                 spacing: Kirigami.Units.largeSpacing
 
                 Kirigami.FormLayout {
@@ -81,8 +87,7 @@ Pane {
                     ComboBox {
                         id: sttSelector
                         Kirigami.FormData.label: i18nCtx.i18n("Speech:")
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 0
+                        Layout.fillWidth: false
                         Layout.preferredWidth: Kirigami.Units.gridUnit * 14
                         model: sessionPane.voiceAgent ? sessionPane.voiceAgent.sttOptions : []
                         currentIndex: sessionPane.voiceAgent
@@ -99,8 +104,7 @@ Pane {
                     ComboBox {
                         id: ttsSelector
                         Kirigami.FormData.label: i18nCtx.i18n("Voice:")
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 0
+                        Layout.fillWidth: false
                         Layout.preferredWidth: Kirigami.Units.gridUnit * 14
                         model: sessionPane.voiceAgent ? sessionPane.voiceAgent.ttsOptions : []
                         currentIndex: sessionPane.voiceAgent
@@ -121,8 +125,7 @@ Pane {
 
                         ComboBox {
                             id: llmUrlBox
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: 0
+                            Layout.fillWidth: false
                             Layout.preferredWidth: Kirigami.Units.gridUnit * 16
                             editable: sessionPane.voiceAgent
                                 ? (!sessionPane.voiceAgent.llmServerConnected && !sessionPane.voiceAgent.llmModelBusy)
@@ -176,8 +179,7 @@ Pane {
 
                     ComboBox {
                         Kirigami.FormData.label: i18nCtx.i18n("Loaded Model:")
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 0
+                        Layout.fillWidth: false
                         Layout.preferredWidth: Kirigami.Units.gridUnit * 16
                         enabled: sessionPane.voiceAgent
                             ? (sessionPane.voiceAgent.llmServerConnected
