@@ -54,9 +54,16 @@ from tests.fakes import build_compiletest_window  # noqa: E402
 WIDTHS = [340, 400, 600, 800, 1000, 1200]
 HEIGHT = 700
 # (width, height) pairs for short-window captures — drives ultraCompactMode.
-# Includes very small (near minimumWidth/Height floor) so the mic-button
-# wordwrap + zero-padding hemming-in is verifiable.
-SHORT_CAPTURES = [(220, 200), (280, 280), (340, 360), (400, 460)]
+# Bracket the new gu*10 ultraCompact threshold (180 px @1.0x) and reach
+# down to the new gu*6 minimumWidth/Height floor (108 px @1.0x) so the
+# "postage stamp mic-only" extreme is verifiable too.
+SHORT_CAPTURES = [
+    (110, 145),  # near the gu*6 / gu*8 floor — title bar will cramp
+    (180, 150),  # height < gu*10 → ultraCompact; tight mic-only
+    (280, 160),  # ultraCompact, comfortable
+    (340, 220),  # compact (height > gu*10) — conversation peeks
+    (280, 380),  # compact, comparable to user's reported broken case
+]
 
 # Time to let layout + render settle after a resize. Two render frames
 # at 60 Hz is ~33 ms; 250 ms is generous to absorb any deferred

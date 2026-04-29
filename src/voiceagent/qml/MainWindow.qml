@@ -9,16 +9,16 @@ Kirigami.ApplicationWindow {
 
     width: 512
     height: 512
-    // Floors are tuned to the minimum at which the title bar shows
-    // *something* useful and the mic button has room for its icon and
-    // (wrapped) status text. Below this the WM's title bar collapses
-    // entirely and the mic frame becomes a uselessly small dot. The
-    // mic-button label uses Text.WordWrap (see MicButton.qml's custom
-    // contentItem) so long status strings line-break at narrow widths
-    // rather than truncating with "...". gridUnit-scaled keeps the
-    // floor scale-aware. No upper cap.
-    minimumWidth: Kirigami.Units.gridUnit * 12
-    minimumHeight: Kirigami.Units.gridUnit * 10
+    // Floors are intentionally aggressive: the user wants the option
+    // to shrink to a postage-stamp mic-only widget. Below ~6 grid
+    // units (~108 px @1.0x) the WM's title bar may itself cramp or
+    // collapse — that is by design at these sizes. Height floor is
+    // slightly higher (gu*8 ≈ 144 px) to keep the mic button from
+    // having its bottom curve clipped by the window edge — the
+    // alternative would be infinitely-shrinking icon/font sizes,
+    // which look terrible.
+    minimumWidth: Kirigami.Units.gridUnit * 6
+    minimumHeight: Kirigami.Units.gridUnit * 8
     flags: Qt.Window
         | Qt.WindowTitleHint
         | Qt.WindowSystemMenuHint
@@ -40,12 +40,12 @@ Kirigami.ApplicationWindow {
     // requiring an oversized window.
     readonly property bool compactMode: width < Kirigami.Units.gridUnit * 40
     readonly property bool mediumMode: !compactMode
-    // ultraCompactMode: window is too small for the conversation pane to be
-    // useful (height-driven). Below this threshold we hide the conversation
-    // entirely and let the mic button fill the window — the user has clearly
-    // shrunk the window down to "I just need the mic" mode. gridUnit-scaled
-    // so the threshold respects Plasma scale.
-    readonly property bool ultraCompactMode: compactMode && height < Kirigami.Units.gridUnit * 28
+    // ultraCompactMode: the conversation pane is down to ~one line of
+    // visible content (mic button + a sliver of conversation feed); any
+    // smaller and the conversation is dead space. Below this threshold
+    // we hide the conversation entirely and let the mic button fill the
+    // window. gridUnit-scaled so the threshold respects Plasma scale.
+    readonly property bool ultraCompactMode: compactMode && height < Kirigami.Units.gridUnit * 10
     readonly property int sttInstalledCount: voiceAgent.sttInstalledCount
     readonly property int ttsInstalledCount: voiceAgent.ttsInstalledCount
     readonly property color micPulseColor: voiceAgent.talkReady ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor

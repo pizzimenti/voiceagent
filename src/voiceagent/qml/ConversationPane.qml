@@ -39,9 +39,7 @@ Pane {
             // In ultraCompactMode the entire conversation feed is hidden
             // and the mic fills the window — collapse this header row too
             // so it doesn't reserve a tiny empty band above the mic.
-            opacity: root.ultraCompactMode ? 0 : 1
-            visible: opacity > 0.01
-            Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.InOutQuad } }
+            visible: !root.ultraCompactMode
 
             Kirigami.Heading {
                 visible: !root.compactMode
@@ -67,18 +65,16 @@ Pane {
         }
 
         Item {
-            // Conversation feed area. In ultraCompactMode (window has been
-            // shrunk so small the conversation pane is dead space) we hide
-            // it entirely and let the mic button fill the window — the
-            // user has clearly opted into "I just need the mic" mode. The
-            // opacity Behavior + visible-follows-opacity gives a 250 ms
-            // fade-out when the breakpoint flips.
-            opacity: root.ultraCompactMode ? 0 : 1
-            visible: opacity > 0.01
+            id: conversationFeedArea
+            // Conversation feed area. In ultraCompactMode the conversation
+            // is dead space — collapse it via Layout.maximumHeight so the
+            // mic button below smoothly slides up into the freed space
+            // (rather than fading and leaving empty room). 250 ms.
             Layout.fillWidth: true
             Layout.fillHeight: !root.ultraCompactMode
-            Layout.preferredHeight: root.ultraCompactMode ? 0 : -1
-            Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.InOutQuad } }
+            Layout.maximumHeight: root.ultraCompactMode ? 0 : 100000
+            visible: Layout.maximumHeight > 0
+            Behavior on Layout.maximumHeight { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
 
             ListView {
                 id: conversationView
@@ -293,7 +289,12 @@ Pane {
 
             Button {
                 id: scrollToBottomButton
-                visible: conversationView.contentHeight > conversationView.height && !conversationView.isAtBottom()
+                // Also gate on !ultraCompactMode — the scroll-to-bottom
+                // button is anchored to the conversation feed area; when
+                // that area collapses to 0 height, the button still
+                // renders at parent.bottom which floats it on top of
+                // the (otherwise empty) collapsed area.
+                visible: !root.ultraCompactMode && conversationView.contentHeight > conversationView.height && !conversationView.isAtBottom()
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 anchors.rightMargin: Kirigami.Units.largeSpacing
@@ -328,10 +329,19 @@ Pane {
         MicButtonFrame {
             visible: root.compactMode
             Layout.fillWidth: true
-            Layout.preferredHeight: Kirigami.Units.gridUnit * 5
+            // ultraCompact: claim all freed vertical space (the conversation
+            // area's Layout.maximumHeight collapses to 0, fillHeight here
+            // takes the rest). compact (with conversation): fixed gu*5 strip
+            // at the bottom.
+            Layout.fillHeight: root.ultraCompactMode
+            Layout.preferredHeight: root.ultraCompactMode ? -1 : Kirigami.Units.gridUnit * 5
+            Layout.minimumHeight: Kirigami.Units.gridUnit * 4
             voiceAgent: conversationPane.voiceAgent
-            iconSize: 30
-            fontPixel: 13
+            // Icon and font sizes scale with the actual frame height so
+            // the inner Button's contentItem doesn't overflow at small
+            // heights and look cut off at the bottom.
+            iconSize: Math.max(18, Math.min(48, height * 0.32))
+            fontPixel: Math.max(10, Math.min(14, height * 0.10))
             borderWidth: root.compactMode ? 3 : 0
             buttonColor: root.micButtonColor
             pulseColor: root.micPulseColor

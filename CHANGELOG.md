@@ -2,6 +2,73 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.8.6 — 2026-04-28
+
+**Sliding height-collapse instead of opacity fade + smaller
+ultraCompact threshold + mic button sizing fixes.** The v0.8.5 fades
+were the wrong direction — the user wants elements to *move* between
+positions, not dissolve. Plus several rough edges with the
+ultra-compact rendering.
+
+### Changed — animation: height collapse, not opacity fade
+
+- Removed the opacity Behaviors on the conversation Item, the
+  ConversationPane header row, and the medium/compact mode wrappers
+  in MainWindow.qml.
+- The conversation-feed Item now uses
+  `Layout.maximumHeight: ultraCompactMode ? 0 : 100000` with a
+  `Behavior on Layout.maximumHeight` (250 ms `Easing.OutCubic`). When
+  ultraCompactMode triggers, the conversation collapses smoothly to
+  zero height; the mic button below slides up to fill the freed
+  vertical space. No more dissolve transition.
+
+### Changed — `ultraCompactMode` threshold lowered
+
+- `compactMode && height < gridUnit * 28` → `compactMode && height < gridUnit * 10`.
+- The conversation now stays visible until it's down to roughly one
+  line of content. Below that, ultraCompact takes over and the mic
+  fills.
+
+### Changed — minimum window dimensions
+
+- `minimumWidth`: gridUnit × 12 → **gridUnit × 6** (~108 px @1.0x).
+- `minimumHeight`: gridUnit × 10 → **gridUnit × 8** (~144 px @1.0x).
+- The width floor lets the user shrink to a postage-stamp mic-only
+  window (title bar may cramp at this size — that's by design). The
+  height floor at gridUnit × 8 ensures the mic button has room for
+  icon + (wrapped) status text without bottom-clipping.
+
+### Fixed — mic button bottom-clipping in ultraCompact
+
+- `MicButtonFrame` in `ConversationPane.qml` now has
+  `Layout.fillHeight: ultraCompactMode` so the mic claims the
+  vertical space the conversation just gave up. Without this it
+  stayed at `preferredHeight: gridUnit * 5` and the inner Button's
+  `contentItem` (taller from the Cycle 8 wrapping label) would
+  overflow the frame and clip at the window edge.
+- `iconSize` and `fontPixel` now scale with the actual frame height
+  (`Math.max(18, Math.min(48, height * 0.32))` and
+  `Math.max(10, Math.min(14, height * 0.10))` respectively) so very
+  short windows shrink the icon/font instead of overflowing.
+
+### Fixed — orphaned scroll-to-bottom button in ultraCompact
+
+- The conversation-feed scroll-to-bottom button is anchored to its
+  parent's bottom; when the conversation Item collapsed to 0 height
+  in ultraCompact, the button still rendered floating at the top of
+  the (zero-height) collapsed area. Now also gated on
+  `!ultraCompactMode`.
+
+### Deferred — compact ↔ medium "slide up and right" animation
+
+- The user requested that the mic button slide between positions
+  during a `compactMode` flip (bottom-of-conversation in compact →
+  right-of-form in medium). This requires a single page-level mic
+  button instance with animatable x/y/width/height, replacing the
+  current two-instance approach (one mic in `ConversationPane.qml`,
+  one in `SessionSetupPane.qml`). That's a non-trivial refactor;
+  deferred to a follow-up.
+
 ## 0.8.5 — 2026-04-28
 
 **ultraCompactMode + 250 ms reorientation animations + smaller minimum
