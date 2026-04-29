@@ -1,9 +1,9 @@
 # Maintainer: Bradley <bradley@gennakersystems.com>
 
 pkgname=voiceagent
-pkgver=0.10.2
+pkgver=0.11.0
 pkgrel=1
-pkgdesc='Push-to-talk KDE-friendly desktop voice assistant'
+pkgdesc='KDE-friendly desktop voice assistant'
 arch=('x86_64')
 url='https://github.com/pizzimenti/voiceagent'
 license=('MIT')

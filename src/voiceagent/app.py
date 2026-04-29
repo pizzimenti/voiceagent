@@ -78,13 +78,15 @@ def build_controller(
         timeout_seconds=config.lm_studio_timeout_seconds,
     )
     player = AudioPlayer()
-    return VoiceController(
+    controller = VoiceController(
         recorder=recorder,
         transcriber=transcriber,
         chat_client=chat_client,
         tts_service=tts_service,
         player=player,
     )
+    controller.max_history_turns = config.max_history_turns
+    return controller
 
 
 def _prewarm_sounddevice(logger: logging.Logger) -> None:

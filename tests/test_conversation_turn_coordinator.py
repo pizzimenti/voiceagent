@@ -822,3 +822,43 @@ def test_streaming_chunks_emit_conversation_changed(model_and_coordinator):
     # Empty chunks are silent.
     coord.on_chat_content_chunk("")
     assert spy.count() == 3
+
+
+# --- v0.11 multi-turn history surface --------------------------------
+
+
+def test_clear_resets_model_and_internal_state(model_and_coordinator):
+    """Clear wipes rows AND the streaming-draft pointer, the
+    user-bubble-anchor flag, and the verbose-log dedupe state — so the
+    next turn starts from a fully fresh per-turn machine."""
+    model, coord = model_and_coordinator(verbose=True)
+    coord.on_state_changed(AppState.TRANSCRIBING.value)
+    coord.on_user_transcript("u1")
+    coord.on_chat_content_chunk("partial answer")
+    assert model.rowCount() > 0
+    assert coord.current_turn_user_bubble_present
+    assert coord._streaming_assistant_index >= 0  # pyright: ignore[reportPrivateUsage]
+
+    coord.clear()
+
+    assert model.rowCount() == 0
+    assert coord.current_turn_user_bubble_present is False
+    assert coord._streaming_assistant_index == -1  # pyright: ignore[reportPrivateUsage]
+    assert coord.last_logged_status_state is None
+    assert list(coord.pending_status_log_states) == []
+
+
+def test_clear_emits_conversation_changed_when_rows_present(model_and_coordinator):
+    model, coord = model_and_coordinator(verbose=False)
+    coord.on_user_transcript("u1")
+    spy = QSignalSpy(coord.conversation_changed)
+    coord.clear()
+    assert spy.count() == 1
+
+
+def test_clear_on_empty_transcript_is_silent(model_and_coordinator):
+    model, coord = model_and_coordinator(verbose=False)
+    spy = QSignalSpy(coord.conversation_changed)
+    coord.clear()
+    assert model.rowCount() == 0
+    assert spy.count() == 0

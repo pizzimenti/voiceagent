@@ -1,6 +1,6 @@
 # voiceagent
 
-Push-to-talk KDE-friendly desktop voice assistant for local speech workflows.
+KDE-friendly desktop voice assistant for local speech workflows.
 
 ## Stack
 

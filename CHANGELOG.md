@@ -2,6 +2,163 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.11.0 — 2026-04-29
+
+**Multi-turn conversation history.** Voiceagent up to v0.10.x was
+single-turn — `LmStudioClient.complete()` rebuilt `messages` from
+scratch on every call (system + user only), so the model saw each turn
+as a brand-new conversation. v0.11 ships history serialization, a
+turn-count cap, and clear-on-model-switch so follow-ups like "what
+about *that* one?" resolve correctly. Roadmap entry retired; v0.12
+(MCP tool calling) now unblocked.
+
+### How conversation memory works (newcomer note)
+
+When voiceagent talks to LM Studio over the OpenAI-compatible
+`/chat/completions` endpoint, the server is **stateless** — every
+request stands alone, and the server forgets everything as soon as it
+sends the reply. The only way to give the model "memory" is for the
+**caller** to include the full prior conversation in every new request.
+That conversation is sent as a structured `messages` array:
+`[{role: "system", content: "…"}, {role: "user", content: "…"},
+{role: "assistant", content: "…"}, …]`.
+
+v0.11 fixes the previous single-turn behavior by serializing the
+visible transcript into the `messages` array on each new turn. The
+model now sees prior turns and can resolve follow-ups. Token economics
+matter: every turn you keep makes the next request longer, and every
+model has a hard limit on how many *tokens* (chunks of ~0.75 words
+each) it can read in one call — its **context window**. v0.11 ships a
+simple turn-count cap (default: last 20 user/assistant entries) to
+keep the prompt bounded, configurable via
+`VOICEAGENT_MAX_HISTORY_TURNS`. A token-aware trim that adapts
+automatically to the loaded model's `loaded_context_length` is on the
+v0.11.x roadmap; turn-count is good enough to unblock the multi-turn
+experience and ship.
+
+The chosen design matches LangChain's `ConversationBufferWindowMemory`
+and Semantic Kernel's `ChatHistoryTruncationReducer`. Most local-LLM
+desktop apps (LM Studio's own UI, Open WebUI, GPT4All) ship hard
+truncation with no built-in summarization, so v0.11's explicit
+turn-count cap is more conservative — i.e. more correct — than what
+those apps default to internally. Fancier alternatives surveyed and
+deliberately rejected: summary-buffer hybrid (LLM summarization mid-
+pipeline = unacceptable latency for voice), RAG-as-memory (embedding
++ vector store = overkill for a single-user assistant),
+MemGPT-style tiered memory (designed for weeks-of-continuity agents).
+
+### Added — `LmStudioClient.complete()` signature change
+
+- **Signature: `user_text: str` → `messages: list[dict[str, str]]`**.
+  The caller now owns the full message list — no auto-injection of
+  the system prompt. `messages=[]` raises `RuntimeError` early.
+  Streaming, usage callback, thinking-channel routing all unchanged.
+  This is a public-API break for direct callers; voiceagent's
+  in-tree use site is the only known one.
+
+### Added — `ConversationModel`
+
+- **`to_openai_messages(system_prompt, max_turns=None)`** —
+  serializes finalized user/assistant turns to the OpenAI message
+  format. Skips `role="system"` operational notices,
+  `role="status"` pipeline rows, drafts (`bubbleState="draft"`),
+  in-flight turns (`turnPending=True`), and empty-text rows. The
+  assistant's `thinkingText` (`reasoning_content` channel) is NOT
+  replayed as content — DeepSeek and OpenAI both explicitly document
+  that intermediate reasoning tokens should not round-trip into the
+  next turn unless the turn includes tool calls (out of scope until
+  v0.12 MCP).
+- **Pair-integrity guard.** If the cap lands on an odd cut, the
+  slice can lead with `assistant` (no preceding `user`), which the
+  model interprets as unfinished. The guard drops one more entry so
+  history always starts on `user` (or empty) — mirrors LangChain
+  `ConversationBufferWindowMemory`'s "drop a complete pair"
+  semantics.
+- **`clear()`** — `beginResetModel` / `endResetModel` wipe; no-op +
+  signal-silent on an already-empty model.
+
+### Added — `ConversationTurnCoordinator.clear()`
+
+Wraps `model.clear()` and resets the four internal per-turn fields
+the coordinator owns: `_streaming_assistant_index`,
+`_current_turn_user_bubble_present`, `_pending_status_log_states`,
+`_last_logged_status_state`. Emits `conversation_changed` only when
+rows actually existed pre-clear.
+
+### Added — `AppConfig.max_history_turns` + env var
+
+- New `AppConfig.max_history_turns: int = 20`.
+- Env override: `VOICEAGENT_MAX_HISTORY_TURNS`. Invalid values fall
+  back to default; negative values clamp to 0 (= unbounded).
+- README env-var reference left for a follow-up touch-up; the
+  config field carries the documentation in source.
+
+### Added — `VoiceController` history hook
+
+- **`chat_history_provider: Callable[[], list[dict]] | None`** —
+  attribute set by callers (window) to a closure that returns the
+  current conversation history as an OpenAI messages list.
+- **`max_history_turns: int = 20`** — set by `app.py` from
+  `AppConfig.max_history_turns`.
+- **`_handle_segment_ready`** captures the snapshot via the provider
+  on the GUI thread *before* `executor.submit(...)` — the
+  `ConversationModel` is read while the GUI thread is still the sole
+  mutator. Provider exceptions log + fall through to the
+  v0.10-equivalent single-turn payload.
+- **`_run_pipeline(audio_path, history_snapshot)`** appends
+  `{"role": "user", "content": <transcript>}` to the snapshot and
+  posts the full list. Empty-transcript path (v0.9.14) skips the
+  chat call entirely so a no-speech turn does not land in history.
+
+### Added — Model-switch wipe + toast
+
+When `LlmController.selected_model_changed(model)` fires with a
+genuinely different model AND the previous model was non-empty AND
+the conversation has rows, `MainWindow` calls
+`coordinator.clear()` + emits a new `conversation_cleared(reason)`
+signal. QML wires it via the existing `replay_failed`-style passive-
+notification pattern. The initial `""` → first-load transition and
+no-op same-model fires both skip the clear path so an autoconnect or
+refresh does not surprise-wipe the transcript.
+
+### Tests (363 → 414, +51)
+
+- `tests/test_chat.py` (+3) — `test_complete_posts_messages_verbatim_no_injection`
+  locks the v0.11 contract that the client never injects the system
+  prompt on top of the caller's list. `test_complete_raises_when_messages_empty`
+  guards the empty-list shape. All existing `complete("...")` callers
+  migrated to messages-list shape.
+- `tests/test_conversation_model.py` (+10) — `clear` (with/without
+  reset-signal observation), `to_openai_messages` round-trip, skip
+  thinking, skip drafts/pending/system/status, skip empty text, omit
+  empty system prompt, max-turns cap behavior, cap=0/None unbounded,
+  pair-integrity guard on odd cut.
+- `tests/test_conversation_turn_coordinator.py` (+3) — coordinator
+  `clear` resets all internal state, emits signal only when
+  non-empty.
+- `tests/test_controller_history.py` (NEW, +10) — `_run_pipeline`
+  appends user turn after history; falls back when no provider; no
+  system message when chat client has empty prompt; provider list
+  not mutated; empty transcript skips chat call. Plus
+  `AppConfig.max_history_turns` env-var parsing (default, override,
+  invalid, negative-clamp).
+- `tests/test_mainwindow_integration.py` (+5) — provider wired to
+  window; serializes visible turns; model-switch with rows
+  clears + toasts; initial `""` → load is silent; same-model
+  repeat is silent; empty conversation switch is silent.
+- `tests/fakes.py` — `FakeChatClient` gained `system_prompt`
+  attribute + `complete()` keyword-args matching the real shape.
+
+### Note — visualtest gate
+
+`./voiceagent-visualtest.sh` continues to fail with
+`AttributeError: 'PySide6.QtGui.QWindow' object has no attribute
+'grabWindow'` on this branch. **Pre-existing on main** — confirmed
+by stashing v0.11 changes and running on a clean tree → identical
+failure. Caused by a PySide6 API drift (`grabWindow()` is on
+`QQuickWindow`, not `QWindow`); not addressed in this PR. The other
+three gates (pytest, compiletest, qatest) pass.
+
 ## 0.10.2 — 2026-04-29
 
 **First-party-surface review-feedback cleanup.** User did a thorough

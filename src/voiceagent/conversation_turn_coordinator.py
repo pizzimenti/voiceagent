@@ -415,6 +415,25 @@ class ConversationTurnCoordinator(QObject):
         if not enabled:
             self._discard_draft_user_message()
 
+    def clear(self) -> None:
+        """Reset the conversation transcript and all per-turn coordinator
+        state. Used by the model-switch path: history accumulated against
+        a different LLM (different tokenizer / context window /
+        fine-tuning) is not meaningful when replayed against the new one,
+        so the transcript is wiped along with the streaming-draft pointer
+        and the verbose-log dedupe flags. A no-op if the transcript is
+        already empty so a redundant signal does not spuriously emit
+        `conversation_changed`.
+        """
+        was_empty = self._model.rowCount() == 0
+        self._model.clear()
+        self._streaming_assistant_index = -1
+        self._current_turn_user_bubble_present = False
+        self._pending_status_log_states.clear()
+        self._last_logged_status_state = None
+        if not was_empty:
+            self.conversation_changed.emit()
+
     # -- internal helpers --------------------------------------------
 
     def _append_status_log_entry(self, state: str) -> None:

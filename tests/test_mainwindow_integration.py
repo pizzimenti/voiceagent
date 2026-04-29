@@ -891,3 +891,129 @@ def test_context_ceiling_drops_late_result_for_stale_model(
     _drain_events()
 
     assert window.contextTokensCeiling == 4096
+
+
+# --- v0.11 multi-turn history integration -----------------------------
+
+
+def test_chat_history_provider_wired_to_window(main_window_factory):
+    """MainWindow installs a closure on `controller.chat_history_provider`
+    so the history snapshot captured before each pipeline future is
+    consistent with the visible transcript at submit time."""
+    window = main_window_factory()
+    assert window.controller.chat_history_provider is not None
+    # Snapshot should round-trip an empty conversation as just the
+    # system prompt (or nothing if the chat client has no prompt).
+    snapshot = window.controller.chat_history_provider()
+    chat_client = window.controller.chat_client
+    if chat_client.system_prompt:
+        assert snapshot == [
+            {"role": "system", "content": chat_client.system_prompt}
+        ]
+    else:
+        assert snapshot == []
+
+
+def test_chat_history_provider_serializes_visible_turns(main_window_factory):
+    window = main_window_factory()
+    coord = window._turn_coordinator
+    coord.on_user_transcript("what is the capital of France?")
+    coord.on_assistant_response("Paris.")
+    coord.on_user_transcript("what is the population?")
+    _drain_events()
+
+    snapshot = window.controller.chat_history_provider()
+    # Drop the system prompt entry (which depends on chat_client config)
+    # and assert the user/assistant round-trip.
+    user_assistant = [m for m in snapshot if m["role"] != "system"]
+    assert user_assistant == [
+        {"role": "user", "content": "what is the capital of France?"},
+        {"role": "assistant", "content": "Paris."},
+        {"role": "user", "content": "what is the population?"},
+    ]
+
+
+def test_model_switch_clears_conversation_and_emits_toast(main_window_factory):
+    """A genuine model swap (previous model non-empty, new model
+    different) wipes the transcript and fires the
+    `conversation_cleared` signal so QML can surface a toast."""
+    from PySide6.QtTest import QSignalSpy
+
+    window = main_window_factory()
+    coord = window._turn_coordinator
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    _drain_events()
+    assert window._conversation_model.rowCount() > 0
+
+    # Seed previous model so the transition is "qwen → llama" rather
+    # than the initial "" → first-load case.
+    window._previous_loaded_model = "qwen"
+    spy = QSignalSpy(window.conversation_cleared)
+
+    window._llm.selected_model_changed.emit("llama")
+    _drain_events()
+
+    assert window._conversation_model.rowCount() == 0
+    assert spy.count() == 1
+    reason = spy.at(0)[0]
+    assert "model changed" in reason.lower()
+
+
+def test_initial_model_load_does_not_clear_or_toast(main_window_factory):
+    """First-time autoconnect "" → "qwen" must NOT fire the clear path
+    — there's nothing to clear and the toast would be noise on app
+    startup."""
+    from PySide6.QtTest import QSignalSpy
+
+    window = main_window_factory()
+    window._previous_loaded_model = ""
+    coord = window._turn_coordinator
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    _drain_events()
+    rows_before = window._conversation_model.rowCount()
+    spy = QSignalSpy(window.conversation_cleared)
+
+    window._llm.selected_model_changed.emit("qwen")
+    _drain_events()
+
+    assert window._conversation_model.rowCount() == rows_before
+    assert spy.count() == 0
+
+
+def test_repeat_same_model_signal_does_not_clear(main_window_factory):
+    """Repeat fires of `selected_model_changed("qwen")` (e.g. after a
+    refresh that didn't actually swap) must not clear the conversation."""
+    from PySide6.QtTest import QSignalSpy
+
+    window = main_window_factory()
+    window._previous_loaded_model = "qwen"
+    coord = window._turn_coordinator
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    _drain_events()
+    rows_before = window._conversation_model.rowCount()
+    spy = QSignalSpy(window.conversation_cleared)
+
+    window._llm.selected_model_changed.emit("qwen")
+    _drain_events()
+
+    assert window._conversation_model.rowCount() == rows_before
+    assert spy.count() == 0
+
+
+def test_model_switch_with_empty_conversation_emits_no_toast(main_window_factory):
+    """Switching models with no transcript to clear is silent — no
+    spurious toast on a swap that would not visibly change anything."""
+    from PySide6.QtTest import QSignalSpy
+
+    window = main_window_factory()
+    window._previous_loaded_model = "qwen"
+    spy = QSignalSpy(window.conversation_cleared)
+
+    window._llm.selected_model_changed.emit("llama")
+    _drain_events()
+
+    assert window._conversation_model.rowCount() == 0
+    assert spy.count() == 0

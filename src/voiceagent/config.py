@@ -24,6 +24,12 @@ class AppConfig:
     stt_model_root: Path
     tts_model_root: Path
     sample_rate: int = 16_000
+    # Conversation-history cap fed into `ConversationModel.to_openai_messages`.
+    # Counts finalized user + assistant rows, so the default `20` keeps the
+    # last 10 user / 10 assistant turns. The system prompt is always retained
+    # on top of this. A token-aware trim is the natural follow-up; turn-count
+    # is good enough to unblock multi-turn for v0.11.
+    max_history_turns: int = 20
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -40,6 +46,12 @@ class AppConfig:
             lm_studio_timeout_seconds = int(raw_timeout) if raw_timeout else 10
         except ValueError:
             lm_studio_timeout_seconds = 10
+        raw_history_turns = (os.environ.get("VOICEAGENT_MAX_HISTORY_TURNS", "") or "").strip()
+        try:
+            max_history_turns = int(raw_history_turns) if raw_history_turns else 20
+        except ValueError:
+            max_history_turns = 20
+        max_history_turns = max(0, max_history_turns)
         return cls(
             lm_studio_base_url=os.environ.get("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1").rstrip("/"),
             lm_studio_model=os.environ.get("LM_STUDIO_MODEL", "").strip(),
@@ -56,4 +68,5 @@ class AppConfig:
             tts_extra_args=shlex.split(os.environ.get("TTS_EXTRA_ARGS", "")),
             stt_model_root=stt_model_root,
             tts_model_root=tts_model_root,
+            max_history_turns=max_history_turns,
         )

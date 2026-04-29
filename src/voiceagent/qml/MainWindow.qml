@@ -188,6 +188,21 @@ Kirigami.ApplicationWindow {
                 root.showPassiveNotification(reason, "short");
             });
         }
+        // v0.11 multi-turn history: when the loaded LLM model is
+        // swapped, the controller wipes the conversation transcript
+        // (different tokenizer/context = no point replaying old
+        // turns). Surface the reason so the now-empty transcript is
+        // self-explanatory rather than a silent reset. Same
+        // `signal.connect(fn)` pattern as `replay_failed` — Qt's QML
+        // Connections handler-name resolution does NOT auto-camelCase
+        // a snake_case Python signal name, so a `Connections {
+        // function onConversationCleared(...) }` block would silently
+        // never fire.
+        if (voiceAgent && voiceAgent.conversation_cleared) {
+            voiceAgent.conversation_cleared.connect(function(reason) {
+                root.showPassiveNotification(reason, "short");
+            });
+        }
     }
 
     Window {

@@ -335,7 +335,7 @@ class LmStudioClient:
 
     def complete(
         self,
-        user_text: str,
+        messages: list[dict[str, str]],
         *,
         on_content_chunk=None,
         on_thinking_chunk=None,
@@ -351,20 +351,27 @@ class LmStudioClient:
         - `on_usage(usage_dict)` — fires once on the final chunk that
           carries `usage` (driven by `stream_options.include_usage`)
 
+        `messages` is the full conversation thread to post — the caller
+        owns the system prompt + history + current turn. The client
+        does NOT inject anything (system prompt or otherwise) on top.
+        v0.11 multi-turn history depends on this contract: the caller
+        accumulates prior turns in a `ConversationModel`,
+        `to_openai_messages()` serializes them, and the controller
+        appends the current user turn before calling here.
+
         Switching to streaming closes the v0.9.x timeout class —
         `timeout_seconds` is now a per-read gap, not a total-response
         cap, so multi-minute generations are fine as long as tokens
         keep arriving."""
         if not self.base_url:
             raise RuntimeError("LLM URL is not configured.")
+        if not messages:
+            raise RuntimeError("LLM messages list is empty.")
         model = self.ensure_model()
 
         payload = {
             "model": model,
-            "messages": [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_text},
-            ],
+            "messages": messages,
             "temperature": 0.2,
             "stream": True,
             "stream_options": {"include_usage": True},

@@ -95,6 +95,14 @@ class MainWindow(QObject):
     # real `KLocalizedContext` later.
     replay_failed = Signal(str)
 
+    # Fires after the conversation transcript is wiped because the
+    # loaded LLM was swapped for a different one (different tokenizer /
+    # context window / fine-tuning makes accumulated history invalid
+    # against the new model). QML wires this the same way as
+    # `replay_failed` — `Kirigami.ApplicationWindow.showPassiveNotification(...)`
+    # for a transient "Conversation cleared — model changed." toast.
+    conversation_cleared = Signal(str)
+
     # Internal worker-thread → main-thread bridge for the LM Studio
     # context-length fetch. Layer 5 / 6 design: when the selected LLM
     # model changes, hop a `fetch_loaded_context_length()` HTTP call off
@@ -144,6 +152,19 @@ class MainWindow(QObject):
         self._llm = LlmController(self.controller.chat_client, self.settings, parent=self)
         self._shutting_down = False
         self._state = "idle"
+        # v0.11 multi-turn history: track the last loaded model so a
+        # model swap can clear the conversation transcript (different
+        # tokenizer / context window / fine-tuning makes prior history
+        # incoherent against the new model). Initial value is the
+        # current chat_client.model so an autoconnect that resolves
+        # the same model does not spuriously fire the clear path.
+        self._previous_loaded_model: str = self.controller.chat_client.model
+        # Wire the controller's history snapshot provider so each
+        # voice turn captures the visible transcript on the GUI thread
+        # before the executor takes over. The closure reads `system_prompt`
+        # off the chat client (the v0.10 source-of-truth) and the cap
+        # off the controller (set from `AppConfig.max_history_turns`).
+        self.controller.chat_history_provider = self._build_chat_history_messages
         # Token-usage state for the QML context-window readout. `used`
         # is the running prompt + completion tokens reported on the
         # latest LM Studio chunk-with-usage; `ceiling` is the loaded
@@ -900,9 +921,41 @@ class MainWindow(QObject):
         # Token usage from the previous model's last turn is meaningless
         # against the new (or absent) model; clear it too.
         self._context_tokens_used = 0
+        # v0.11 multi-turn history: clear the conversation when the user
+        # genuinely swaps models. Skip the initial "" → first-model
+        # transition (autoconnect resolving the loaded model) and
+        # no-op repeat fires of the same model. The toast surfaces via
+        # the existing `replay_failed`-style passive-notification wiring
+        # in QML, so the empty transcript reads as "we cleared it" not
+        # "the app forgot something".
+        previous_model = self._previous_loaded_model
+        self._previous_loaded_model = model
+        if (
+            previous_model
+            and previous_model != model
+            and self._conversation_model.rowCount() > 0
+        ):
+            self._turn_coordinator.clear()
+            self.conversation_cleared.emit(
+                self._translator.i18n("Conversation cleared — model changed.")
+            )
+            self.conversation_changed.emit()
         if model:
             self._submit_context_length_fetch(model)
         self.ui_changed.emit()
+
+    def _build_chat_history_messages(self) -> list[dict[str, str]]:
+        """Snapshot the visible conversation as an OpenAI-shaped messages
+        list. Invoked by `VoiceController` on the GUI thread immediately
+        before each pipeline future is submitted, so the read of the
+        underlying `ConversationModel` is consistent with the visible
+        transcript at submit time. The current turn's user message is
+        NOT included here — `_run_pipeline` appends it after STT.
+        """
+        return self._conversation_model.to_openai_messages(
+            system_prompt=self.controller.chat_client.system_prompt,
+            max_turns=self.controller.max_history_turns,
+        )
 
     def _submit_context_length_fetch(self, model: str) -> None:
         # `_shutting_down` is set BEFORE `_context_length_executor.shutdown()`

@@ -4,6 +4,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 import logging
 from pathlib import Path
 import time
+from typing import Callable
 
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 
@@ -84,6 +85,22 @@ class VoiceController(QObject):
         self.player = player
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceagent")
         self.partial_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceagent-partial")
+        # v0.11 multi-turn history. Callers wire this to a closure that
+        # snapshots the current `ConversationModel` state via
+        # `to_openai_messages(...)` — invoked on the GUI thread before
+        # we hand control to the executor, so the snapshot is consistent
+        # with the visible transcript at submit time. None during early
+        # construction (window has not wired it yet) and in tests that
+        # exercise the controller without a window: in both cases we
+        # fall through to a "system prompt + current user turn" payload
+        # built off `chat_client.system_prompt`, preserving v0.10
+        # single-turn behavior as the safety net.
+        self.chat_history_provider: Callable[[], list[dict[str, str]]] | None = None
+        # Conversation-history cap used by the provider closure window
+        # installs above. Default mirrors `AppConfig.max_history_turns`
+        # so tests that build the controller in isolation have a sane
+        # value without needing to plumb config through.
+        self.max_history_turns: int = 20
         self.state = AppState.IDLE
         self._logger = logging.getLogger(__name__)
         self._voice_connection_enabled = False
@@ -200,7 +217,11 @@ class VoiceController(QObject):
         self.executor.shutdown(wait=False, cancel_futures=True)
         self.partial_executor.shutdown(wait=False, cancel_futures=True)
 
-    def _run_pipeline(self, audio_path: Path) -> PipelineResult:
+    def _run_pipeline(
+        self,
+        audio_path: Path,
+        history_snapshot: list[dict[str, str]] | None = None,
+    ) -> PipelineResult:
         try:
             self._logger.info(
                 "Voice pipeline starting path=%s transcriber_loaded=%s tts_enabled=%s",
@@ -234,8 +255,22 @@ class VoiceController(QObject):
                 completion_tokens = int(usage.get("completion_tokens", 0) or 0)
                 self.chat_usage_changed.emit(prompt_tokens, completion_tokens)
 
+            # Build the full messages list from the GUI-thread snapshot
+            # (multi-turn) or fall back to a single-turn payload built
+            # off the chat client's system prompt (v0.10 behavior, kept
+            # as a safety net for the no-provider case).
+            if history_snapshot is None:
+                messages: list[dict[str, str]] = []
+                if self.chat_client.system_prompt:
+                    messages.append(
+                        {"role": "system", "content": self.chat_client.system_prompt}
+                    )
+            else:
+                messages = list(history_snapshot)
+            messages.append({"role": "user", "content": transcript})
+
             response = self.chat_client.complete(
-                transcript,
+                messages,
                 on_content_chunk=self.chat_content_chunk.emit,
                 on_thinking_chunk=self.chat_thinking_chunk.emit,
                 on_usage=_on_usage,
@@ -416,7 +451,24 @@ class VoiceController(QObject):
         )
         self.recorder.suspend_input()
         self._apply_state(AppState.TRANSCRIBING.value, "Detected silence, processing turn")
-        future = self.executor.submit(self._run_pipeline, audio_path)
+        # Snapshot conversation history on the GUI thread before the
+        # executor takes over. The provider walks the `ConversationModel`,
+        # which is mutated only on the GUI thread — capturing here is
+        # the only safe read site. Falling through to None hands the
+        # executor an empty list and `_run_pipeline` rebuilds a
+        # single-turn payload from the chat client's system prompt.
+        history_snapshot: list[dict[str, str]] | None
+        if self.chat_history_provider is not None:
+            try:
+                history_snapshot = list(self.chat_history_provider())
+            except Exception:
+                self._logger.exception(
+                    "chat_history_provider raised; falling back to single-turn"
+                )
+                history_snapshot = None
+        else:
+            history_snapshot = None
+        future = self.executor.submit(self._run_pipeline, audio_path, history_snapshot)
         future.add_done_callback(self._handle_pipeline_done)
 
     def _schedule_partial_check(self) -> None:
