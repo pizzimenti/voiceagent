@@ -67,3 +67,11 @@ qt_api = "pyside6"
 target-version = "py311"
 line-length = 100
 extend-exclude = ["src/vendor"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files legitimately set `QT_QPA_PLATFORM` before importing
+# PySide6 — the import order is load-bearing, not a style issue.
+# Lambda assignments inside test fixtures are concise stubs (status
+# hooks, fake protocol implementations); rewriting them as `def` adds
+# noise without value.
+"tests/**" = ["E402", "E731"]

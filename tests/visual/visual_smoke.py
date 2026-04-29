@@ -35,7 +35,6 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QTimer  # noqa: E402
-from PySide6.QtQuick import QQuickWindow  # noqa: E402  -- registers the type so grabWindow() resolves on engine.rootObjects()[0]
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 _HERE = Path(__file__).resolve().parent

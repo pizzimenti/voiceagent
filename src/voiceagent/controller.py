@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 import time
 
-from PySide6.QtCore import QObject, Qt, Signal, Slot, QTimer
+from PySide6.QtCore import QObject, Signal, Slot, QTimer
 
 from voiceagent.backends import SpeechToTextBackend, TextToSpeechBackend
 from voiceagent.logging_utils import log_ui_timing

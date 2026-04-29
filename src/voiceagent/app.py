@@ -23,8 +23,7 @@ from voiceagent.tts_loader import TtsVoiceLoader
 from voiceagent.window import MainWindow
 
 if TYPE_CHECKING:
-    from voiceagent.services.stt import WhisperTranscriber
-    from voiceagent.services.tts import PiperTtsService
+    pass
 
 
 def build_shared_services(

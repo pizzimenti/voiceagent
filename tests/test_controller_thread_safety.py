@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Callable
 
 import pytest
 from PySide6.QtCore import QObject, QCoreApplication, Signal
@@ -492,7 +491,6 @@ def test_parallel_loader_submit_after_shutdown_is_dropped(qtbot, tmp_path):
         sys.path.insert(0, str(src))
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-    from voiceagent.parallel_item_loader import ParallelItemLoader
 
     # Reuse the fake-backend pattern from `test_parallel_item_loader.py`
     # by importing the test module's helpers. Importing a sibling test

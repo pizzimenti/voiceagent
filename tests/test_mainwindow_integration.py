@@ -28,7 +28,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 # Ensure the worktree's `src/` resolves before any editable install.
 _HERE = Path(__file__).resolve().parent
