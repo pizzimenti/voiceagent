@@ -2,6 +2,98 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.10.2 — 2026-04-29
+
+**First-party-surface review-feedback cleanup.** User did a thorough
+audit of the v0.9.0–v0.10.1 surface (mostly merged without bot
+review per the per-cycle subagent-PR convention) and surfaced 10
+findings: 1 P1, 5 P2, 4 P3. All ten addressed.
+
+### Fixed (P1)
+
+- **Opacity-fade policy violation** — v0.9.0's page-mic refactor
+  added `Behavior on opacity` Behaviors to the dashboardModes
+  ColumnLayout and the compactLoader, against AGENTS.md "Mode
+  transition animation" → "No opacity fades anywhere". Removed;
+  `visible: root.{medium,compact}Mode` drives the panes directly.
+  The page-level mic's `Behavior on x/y/width/height` carries the
+  visual transition via geometry slide.
+
+### Fixed (P2)
+
+- **Piper SHA pinning shared state** — `_current_download_sha` was
+  one shared scalar across `tts_loader`'s `max_workers=3`
+  executor, so two parallel voice installs could overwrite each
+  other's verifier context. Replaced with `_download_sha_by_name:
+  dict[str, str]` keyed by voice name, guarded by a dedicated
+  lock. Consume-on-read pop prevents unbounded growth. New
+  concurrency tests in `test_tts_sha_pinning.py` (+2).
+- **LLM model switch ordering** — `LmStudioClient.load_model()`
+  unloaded the previously-loaded model BEFORE confirming the new
+  load. A failed load left the user with no working LLM. Reordered:
+  load first, unload others only after `status == "loaded"`. Peak
+  memory briefly 2x; the trade keeps the working model alive on
+  load failures. New tests in `test_chat.py` (+2).
+- **Release metadata drift** — `PKGBUILD` was on 0.8.7 and
+  `packaging/PKGBUILD.aur` + `.SRCINFO` were on 0.4.0 while runtime
+  was on 0.10.1. All three bumped to 0.10.2. New
+  `tests/test_release_metadata.py` (+4) asserts the four release
+  files agree with `__version__` so future drift fails CI.
+- **Executor shutdown guards** — three executors
+  (`MainWindow._context_length_executor`,
+  `LlmController._llm_executor`, `ParallelItemLoader._executor`)
+  could accept `submit()` calls AFTER `shutdown()` returned.
+  Added `_shutdown_started` flags + `RuntimeError` catches at all
+  submit sites; `ParallelItemLoader` additionally rolls back
+  optimistic state mutations so cancelled installs don't leave
+  rows stuck "loading". New tests in
+  `test_controller_thread_safety.py` (+3).
+- **Layout policy not locked in tests** — `tests/visual/visual_smoke.py`
+  saves PNGs but doesn't assert. New `tests/qml/tst_layout_policy.qml`
+  string-greps production QML for `Behavior on opacity` and asserts
+  zero matches, so future re-introduction of the v0.9.0 slip fails
+  CI. Three additional structural tests (mic-anchor geometry,
+  ultraCompact feed collapse, mediumMode floor) ship as `skip()`
+  pending a richer `StubVoiceAgent`; the policy-grep test (the
+  highest-value invariant from the review) runs and passes.
+
+### Changed (P3)
+
+- **AGENTS.md stale numbers** — "Three" → "Four" gates, "~219
+  tests" → "~363", "saving 15 PNGs" → "33". `tests/visual/visual_smoke.py`
+  breakpoint comments refreshed to current thresholds (gu*6 floor,
+  gu*10 ultraCompact).
+- **QML stub signal name drift** — `StubVoiceAgent.qml` declared
+  `replayFailed` (camelCase) while production connects to
+  `voiceAgent.replay_failed` (snake_case, matching the Python
+  signal). Renamed stub so QML tests exercise production binding
+  shape.
+- **Ruff baseline** — `ruff check .` had 65 errors. 12 unused
+  imports auto-fixed; 1 unused local variable removed; 41 E402
+  + 9 E731 cases (legitimate Qt-bootstrap patterns + lambda stubs
+  in tests) configured as `per-file-ignores` for `tests/**` only.
+  Production source still enforces both rules. Final state:
+  `All checks passed!`.
+- **`roadmap.md` tracked** — moved from untracked to tracked at
+  lowercase `roadmap.md`. Private machine path
+  (`~/.claude/plans/...`) replaced with placeholder. Roadmap
+  fleshed out with v0.11 conversation-history plan and v0.12 MCP
+  internet-access plan.
+
+### Added — class docstrings
+
+Three core classes that lacked module-level documentation:
+`LmStudioClient`, `VoiceController`, `MainWindow`. Stale
+`root.scrollList(...)` reference in `ConversationPane.qml` module
+comment also cleaned up (orchestrator-level function deleted in
+v0.9.12).
+
+### Tests
+
+Net pytest delta: 363 → 374 (+11). qmltestrunner: 9 → 16
+(+1 layout-policy passing, +6 SessionSetupPane / MainWindow /
+ScrollMode unchanged).
+
 ## 0.10.1 — 2026-04-29
 
 **v0.10.0 cleanup pass.**
