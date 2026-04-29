@@ -2,6 +2,29 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.8.3 — 2026-04-28
+
+**Filter Kirigami `ToolBarLayout` incubation warnings.** Every launch
+was logging ~18 lines of:
+
+```
+WARNING: Could not create delegate for ToolBarLayout
+WARNING: ...ActionToolBar.qml: Object or context destroyed during incubation
+```
+
+Upstream Kirigami chatter — `Kirigami.ApplicationWindow`'s page-header
+`ActionToolBar` does async delegate incubation and the layout context
+gets re-evaluated mid-incubation during initial paint and at every
+responsive-mode transition. The toolbar renders correctly and every
+Kirigami app emits these; they're cosmetic noise.
+
+`app.py:_silence_upstream_qml_chatter()` adds
+`kf.kirigami.layouts.warning=false` to `QT_LOGGING_RULES` before
+`QApplication()` is constructed. Scoped category filter — real Qt /
+Kirigami warnings outside this category still surface. Respects any
+user-supplied `QT_LOGGING_RULES` so a developer setting them for
+diagnostics isn't clobbered.
+
 ## 0.8.2 — 2026-04-28
 
 **Visual-smoke framework + compactMode breakpoint fix.** The first

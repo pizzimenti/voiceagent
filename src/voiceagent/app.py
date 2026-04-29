@@ -109,6 +109,30 @@ def _prewarm_sounddevice(logger: logging.Logger) -> None:
     )
 
 
+def _silence_upstream_qml_chatter() -> None:
+    """Filter the noisy Kirigami `ToolBarLayout` incubation warning.
+
+    Kirigami 6.x's `ActionToolBar` (used by every `Kirigami.ApplicationWindow`
+    page header) logs `kf.kirigami.layouts: Could not create delegate for
+    ToolBarLayout / Object or context destroyed during incubation` repeatedly
+    during initial layout and at every responsive-mode transition. The
+    warning is upstream chatter — the delegates do get created, the
+    toolbar renders correctly, and every Kirigami app emits these.
+
+    Filter the specific category so real warnings still surface. Respect
+    any user-supplied `QT_LOGGING_RULES` so a developer setting them for
+    diagnostics isn't clobbered.
+
+    Must run before `QApplication()` is constructed because Qt reads
+    `QT_LOGGING_RULES` at logging init.
+    """
+    rule = "kf.kirigami.layouts.warning=false"
+    existing = os.environ.get("QT_LOGGING_RULES", "")
+    if rule in existing:
+        return
+    os.environ["QT_LOGGING_RULES"] = f"{existing};{rule}" if existing else rule
+
+
 def _ensure_qml_import_path() -> None:
     """Prepend system Qt 6 QML directories to QML_IMPORT_PATH if absent.
 
@@ -136,6 +160,7 @@ def main() -> int:
     logger.info("Starting voiceagent")
     console.info("Voice Agent %s", __version__)
     console.info("Starting services...")
+    _silence_upstream_qml_chatter()
     _ensure_qml_import_path()
     app = QApplication(sys.argv)
     app.setApplicationName("voiceagent")
