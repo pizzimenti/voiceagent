@@ -74,4 +74,10 @@ TestCase {
         verify(foundVerboseLog,
             "verbose-log toggle action present on page-header actions");
     }
+
+    function test_voice_agent_null_falls_back_to_inert_state() {
+        window.voiceAgent = null;
+        compare(window.sttInstalledCount, 0);
+        compare(window.ttsInstalledCount, 0);
+    }
 }

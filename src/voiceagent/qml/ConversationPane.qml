@@ -31,6 +31,13 @@ Pane {
 
     readonly property var root: ApplicationWindow.window
 
+    function tr(text) {
+        if (typeof i18nCtx !== "undefined" && i18nCtx) {
+            return i18nCtx.i18n(text);
+        }
+        return text;
+    }
+
     // ultraCompact: zero padding so the mic button reaches the pane
     // edges. compact/medium: small breathing room.
     padding: root.ultraCompactMode ? 0 : (root.compactMode ? Kirigami.Units.smallSpacing : (root.mediumMode ? Kirigami.Units.smallSpacing : Kirigami.Units.mediumSpacing))
@@ -49,7 +56,7 @@ Pane {
 
             Kirigami.Heading {
                 visible: !root.compactMode
-                text: i18nCtx.i18n("Conversation")
+                text: conversationPane.tr("Conversation")
                 level: 2
             }
 
@@ -65,7 +72,7 @@ Pane {
 
             Label {
                 visible: !root.compactMode
-                text: (conversationPane.voiceAgent && conversationPane.voiceAgent.voiceConnectionEnabled) ? i18nCtx.i18n("Live") : i18nCtx.i18n("Idle")
+                text: (conversationPane.voiceAgent && conversationPane.voiceAgent.voiceConnectionEnabled) ? conversationPane.tr("Live") : conversationPane.tr("Idle")
                 color: Kirigami.Theme.disabledTextColor
             }
         }
@@ -344,7 +351,7 @@ Pane {
                                     }
 
                                     Label {
-                                        text: i18nCtx.i18n("Thoughts")
+                                        text: conversationPane.tr("Thoughts")
                                         font.pixelSize: 11
                                         font.italic: true
                                         color: thoughtsLabelColor
@@ -449,7 +456,7 @@ Pane {
 
                             Label {
                                 visible: !root.compactMode
-                                text: assistant ? i18nCtx.i18n("Assistant") : i18nCtx.i18n("You")
+                                text: assistant ? conversationPane.tr("Assistant") : conversationPane.tr("You")
                                 color: bubbleFrame.resolvedText
                                 opacity: 0.8
                                 font.pixelSize: 12
@@ -487,7 +494,7 @@ Pane {
                         // QML's `visible: ... && undefined` produces a
                         // log warning per row per resize.
                         visible: !root.compactMode && !!model.replayable
-                        text: i18nCtx.i18n("Replay")
+                        text: conversationPane.tr("Replay")
                         Layout.alignment: Qt.AlignBottom
                         onClicked: {
                             if (conversationPane.voiceAgent) {
@@ -511,7 +518,7 @@ Pane {
                 footer: Kirigami.PlaceholderMessage {
                     width: conversationView.width
                     visible: conversationView.count === 0
-                    text: i18nCtx.i18n("Spoken turns will appear here once voice mode is active.")
+                    text: conversationPane.tr("Spoken turns will appear here once voice mode is active.")
                 }
             }
 
@@ -535,7 +542,7 @@ Pane {
                 opacity: 0.85
                 z: 10
                 ToolTip.visible: hovered
-                ToolTip.text: i18nCtx.i18n("Scroll to bottom")
+                ToolTip.text: conversationPane.tr("Scroll to bottom")
                 onClicked: {
                     conversationView.scrollToBottom();
                 }

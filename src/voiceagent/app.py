@@ -3,9 +3,11 @@ from __future__ import annotations
 import sys
 import logging
 import os
+import signal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -152,6 +154,33 @@ def _ensure_qml_import_path() -> None:
         os.environ[var] = os.pathsep.join(merged_parts)
 
 
+def _install_sigint_handler(
+    app: QApplication,
+) -> tuple[QTimer, dict[str, bool], object]:
+    """Let Ctrl+C leave through Qt's normal quit path.
+
+    Qt can sit in the C++ event loop long enough that Python's default
+    SIGINT handling lands during an arbitrary Python callback, including
+    QObject teardown. A tiny timer keeps Python signal checks alive while
+    the handler itself only requests a normal QApplication quit.
+    """
+
+    interrupted = {"value": False}
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    def _handle_sigint(_signum, _frame) -> None:
+        interrupted["value"] = True
+        app.quit()
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+
+    timer = QTimer(app)
+    timer.setInterval(250)
+    timer.timeout.connect(lambda: None)
+    timer.start()
+    return timer, interrupted, previous_handler
+
+
 def main() -> int:
     log_path = configure_logging()
     logger = logging.getLogger(__name__)
@@ -202,4 +231,10 @@ def main() -> int:
         name="sounddevice-prewarm",
     ).start()
     console.info("Ready.")
-    return app.exec()
+    sigint_timer, sigint_state, previous_sigint_handler = _install_sigint_handler(app)
+    try:
+        exit_code = app.exec()
+    finally:
+        sigint_timer.stop()
+        signal.signal(signal.SIGINT, previous_sigint_handler)
+    return 130 if sigint_state["value"] else exit_code

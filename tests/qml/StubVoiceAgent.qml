@@ -51,6 +51,8 @@ QtObject {
     property int ttsInstalledCount: 1
     property string themeMode: "auto"
     property bool logVerboseMode: false
+    property int contextTokensUsed: 0
+    property int contextTokensCeiling: 0
 
     // Catalog models — empty placeholders since CatalogList isn't on
     // the rendered surface for these tests.
@@ -72,6 +74,8 @@ QtObject {
     function setThemeMode(mode) {}
     function setAudioMuted(muted) {}
     function setLogVerboseMode(value) {}
+    function setVoiceConnectionEnabled(value) {}
+    function setThinkingExpanded(index, value) {}
     function replayMessage(index) {}
     function pttPress() {}
     function pttRelease() {}
@@ -81,4 +85,5 @@ QtObject {
     // exercise the same binding shape MainWindow.qml uses to wire the
     // passive-notification toast (`voiceAgent.replay_failed.connect(...)`).
     signal replay_failed(string reason)
+    signal conversation_cleared(string reason)
 }
