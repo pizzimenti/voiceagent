@@ -144,6 +144,11 @@ class ConversationTurnCoordinator(QObject):
         self._current_turn_user_bubble_present: bool = False
         self._pending_status_log_states: list[str] = []
         self._last_logged_status_state: str | None = None
+        # v0.10.0 streaming chat — the row index of the in-flight draft
+        # assistant bubble being built up from `on_chat_*_chunk` calls,
+        # or -1 when no draft exists. Reset on turn boundaries
+        # (RECORDING / IDLE) and after promotion to "sent".
+        self._streaming_assistant_index: int = -1
 
     # -- introspection (used by integration tests) --------------------
 
@@ -192,6 +197,10 @@ class ConversationTurnCoordinator(QObject):
             self._last_logged_status_state = None
             self._current_turn_user_bubble_present = False
             self._pending_status_log_states.clear()
+            # v0.10.0 streaming — release the draft-assistant pointer so
+            # the next turn's first chunk creates a fresh row instead of
+            # appending into the previous turn's (now-promoted) bubble.
+            self._streaming_assistant_index = -1
         if self._verbose_provider() and state in STATUS_LOG_LABELS:
             if state != self._last_logged_status_state:
                 self._last_logged_status_state = state
@@ -267,6 +276,36 @@ class ConversationTurnCoordinator(QObject):
         cleaned = text.strip()
         if not cleaned:
             return
+        # v0.10.0 streaming: if `on_chat_*_chunk` already built a draft
+        # assistant row for this turn, promote it in place instead of
+        # appending a second bubble. The accumulated `thinkingText`
+        # stays whatever the stream collected; only `text` swaps to the
+        # canonical final response (which may differ from the streamed
+        # accumulation if the chat client normalizes / strips between
+        # the per-chunk callbacks and the final return value).
+        draft_index = self._streaming_assistant_index
+        if draft_index >= 0:
+            draft = self._model.message(draft_index)
+            if (
+                draft is not None
+                and draft.get("role") == "assistant"
+                and draft.get("bubbleState") == "draft"
+            ):
+                self._model.update_message(
+                    draft_index,
+                    text=cleaned,
+                    replayable=True,
+                    bubbleState="sent",
+                    turnPending=False,
+                    timestampLabel=f"Received {self._clock_time()}",
+                )
+                self._streaming_assistant_index = -1
+                self.conversation_changed.emit()
+                return
+            # Stale pointer (row was removed / mutated underneath us).
+            # Drop it and fall through to the legacy append path so the
+            # final response still lands in the transcript.
+            self._streaming_assistant_index = -1
         self._model.append_message(
             {
                 "role": "assistant",
@@ -278,6 +317,55 @@ class ConversationTurnCoordinator(QObject):
             }
         )
         self.conversation_changed.emit()
+
+    # -- streaming chat chunks (v0.10.0) -----------------------------
+
+    def on_chat_thinking_chunk(self, text: str) -> None:
+        """Append a thinking-stream chunk to the in-flight draft
+        assistant row, creating the row on first chunk.
+
+        Empty chunks are ignored to avoid creating a draft row on a
+        no-op flush.
+        """
+        if not text:
+            return
+        index = self._ensure_streaming_assistant_row()
+        msg = self._model.message(index)
+        if msg is None:
+            return
+        accumulated = str(msg.get("thinkingText") or "") + text
+        self._model.update_message(index, thinkingText=accumulated)
+        self.conversation_changed.emit()
+
+    def on_chat_content_chunk(self, text: str) -> None:
+        """Append a content-stream chunk to the in-flight draft
+        assistant row, creating the row on first chunk.
+        """
+        if not text:
+            return
+        index = self._ensure_streaming_assistant_row()
+        msg = self._model.message(index)
+        if msg is None:
+            return
+        accumulated = str(msg.get("text") or "") + text
+        self._model.update_message(index, text=accumulated)
+        self.conversation_changed.emit()
+
+    def set_thinking_expanded(self, row: int, expanded: bool) -> None:
+        """QML-facing slot: toggle the per-row `thinkingExpanded`
+        sticky flag. No signal is emitted explicitly — the underlying
+        `update_message` call emits `dataChanged` for the role, which
+        is what QML bindings observe.
+
+        Out-of-range rows and non-assistant roles are silently ignored
+        so QML doesn't have to guard the call site.
+        """
+        if row < 0 or row >= self._model.rowCount():
+            return
+        msg = self._model.message(row)
+        if msg is None or msg.get("role") != "assistant":
+            return
+        self._model.update_message(row, thinkingExpanded=bool(expanded))
 
     def on_log_message(self, text: str, level: str) -> None:
         """Append a `role='system'` operational notice (status / error
@@ -354,6 +442,43 @@ class ConversationTurnCoordinator(QObject):
             draft_index, bubbleState="sent", turnPending=True
         )
         self.conversation_changed.emit()
+
+    def _ensure_streaming_assistant_row(self) -> int:
+        """Return the row index of the in-flight draft assistant row,
+        creating one if none exists.
+
+        Reuses `self._streaming_assistant_index` when it still points
+        at a `role='assistant', bubbleState='draft'` row; otherwise
+        appends a fresh draft, captures `verbose_mode` ONCE at
+        insertion as the default `thinkingExpanded` value, and stores
+        the new index. The expanded flag is intentionally NOT
+        re-evaluated on every chunk so a user toggle (via
+        `set_thinking_expanded`) sticks for the rest of the stream.
+        """
+        if self._streaming_assistant_index >= 0:
+            existing = self._model.message(self._streaming_assistant_index)
+            if (
+                existing is not None
+                and existing.get("role") == "assistant"
+                and existing.get("bubbleState") == "draft"
+            ):
+                return self._streaming_assistant_index
+            # Pointer went stale — fall through to append a new draft.
+            self._streaming_assistant_index = -1
+        new_index = self._model.append_message(
+            {
+                "role": "assistant",
+                "text": "",
+                "thinkingText": "",
+                "thinkingExpanded": bool(self._verbose_provider()),
+                "replayable": False,
+                "bubbleState": "draft",
+                "turnPending": True,
+                "timestampLabel": "",
+            }
+        )
+        self._streaming_assistant_index = new_index
+        return new_index
 
     def _discard_draft_user_message(self) -> None:
         draft_index = self._model.find_message_index(
