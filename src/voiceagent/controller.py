@@ -407,6 +407,36 @@ class VoiceController(QObject):
             self._schedule_input_resume_after_cooldown("aux_playback_failed")
         self._resume_listening_if_possible()
 
+    def cancel_playbacks(self) -> None:
+        """User-driven stop. Stops the in-pipeline auto-play AND
+        manually resets `_playing_response` / `_aux_playback_active`
+        because the v0.11 teardown-error suppression in
+        `services/playback.py` deliberately swallows `playback_finished`
+        on stop_event-induced worker exits — without resetting these
+        flags here, both stay stuck `True` after the user presses
+        🤫, and `_resume_input_after_pipeline` then skips every
+        subsequent resume with "Skipping pipeline resume because
+        playback is active". The user reported this exact symptom:
+        mic stays in the "Listening" label state but isn't actually
+        hot. Schedules input resume so recording picks back up.
+
+        The aux player (`replay_player`) is owned by the window, so
+        the caller is responsible for `replay_player.stop()`. This
+        method only stops the controller-owned `self.player` and
+        clears the controller's state flags.
+        """
+        self._logger.info(
+            "User-driven playback cancel: clearing playing_response=%s aux_playback_active=%s",
+            self._playing_response,
+            self._aux_playback_active,
+        )
+        self.player.stop()
+        self._playing_response = False
+        self._aux_playback_active = False
+        if self._voice_connection_enabled:
+            self._schedule_input_resume_after_cooldown("user_stop_speaking")
+        self._resume_listening_if_possible()
+
     def _apply_pipeline_error(self, message: str) -> None:
         self._logger.error("Pipeline error message=%s", message)
         self._reset_partial_tracking()

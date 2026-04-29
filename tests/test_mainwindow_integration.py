@@ -1182,6 +1182,68 @@ def test_stop_speaking_stops_both_players_and_resets_row(main_window_factory):
     assert window.speakingRow == -1
 
 
+def test_stop_speaking_resets_controller_playback_flags(main_window_factory):
+    """v0.11 fix: when the user clicks 🤫 the playback worker's
+    teardown-error suppression means `playback_finished` is NOT
+    emitted, so `_playing_response` / `_aux_playback_active` would
+    otherwise stay stuck `True` and gate the mic-resume callback
+    forever ("Listening" label but mic not actually hot — exactly the
+    user report). `controller.cancel_playbacks()` resets both flags
+    explicitly."""
+    window = main_window_factory()
+    # Simulate the post-stuck state: mid-auto-play AND mid-replay.
+    window.controller._playing_response = True
+    window.controller._aux_playback_active = True
+
+    window.stopSpeaking()
+    _drain_events()
+
+    assert window.controller._playing_response is False
+    assert window.controller._aux_playback_active is False
+
+
+def test_stop_speaking_schedules_input_resume_when_voice_connected(
+    main_window_factory,
+):
+    """After the user stops speech, the mic must come back. The
+    controller schedules a cooldown-deferred resume when voice
+    connection is enabled — without it, the user has to manually
+    toggle the mic to record again."""
+    window = main_window_factory()
+    schedules: list[str] = []
+    window.controller._schedule_input_resume_after_cooldown = (
+        lambda reason: schedules.append(reason)
+    )
+    # Simulate mic-on + currently-playing-something.
+    window.controller._voice_connection_enabled = True
+    window.controller._playing_response = True
+
+    window.stopSpeaking()
+    _drain_events()
+
+    assert schedules == ["user_stop_speaking"]
+
+
+def test_stop_speaking_does_not_schedule_resume_when_voice_off(
+    main_window_factory,
+):
+    """When voice connection is OFF, no input-resume is scheduled —
+    the user explicitly turned off the mic, the resume would defy
+    that intent."""
+    window = main_window_factory()
+    schedules: list[str] = []
+    window.controller._schedule_input_resume_after_cooldown = (
+        lambda reason: schedules.append(reason)
+    )
+    window.controller._voice_connection_enabled = False
+    window.controller._playing_response = True
+
+    window.stopSpeaking()
+    _drain_events()
+
+    assert schedules == []
+
+
 def test_visible_transcript_trims_when_cap_hits(main_window_factory):
     """v0.11 invariant: the visible transcript matches what the LLM
     sees on the next call. When new pairs push past the cap, oldest

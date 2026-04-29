@@ -676,9 +676,18 @@ class MainWindow(QObject):
         user-triggered replay (`replay_player`). Does NOT touch the
         voice connection — the mic stays in whatever state it was in
         so the next user turn can begin immediately. The QML
-        per-bubble button calls this when the user taps 🤫."""
-        self.controller.player.stop()
+        per-bubble button calls this when the user taps 🤫.
+
+        `controller.cancel_playbacks()` does the actual main-player
+        stop AND resets `_playing_response` / `_aux_playback_active`,
+        which is required because the v0.11 teardown-error
+        suppression in `services/playback.py` swallows
+        `playback_finished` on stop-induced exits. Without that flag
+        reset, the mic-resume gate stayed stuck and "Listening" was
+        a lie (the user reported this exact symptom).
+        """
         self.replay_player.stop()
+        self.controller.cancel_playbacks()
         if self._speaking_row != -1:
             self._speaking_row = -1
             self.ui_changed.emit()
