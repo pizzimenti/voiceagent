@@ -254,3 +254,30 @@ def test_app_config_max_history_turns_clamps_negative_to_zero(monkeypatch):
     monkeypatch.setenv("VOICEAGENT_MAX_HISTORY_TURNS", "-5")
     config = AppConfig.from_env()
     assert config.max_history_turns == 0
+
+
+# --- AppConfig.lm_studio_load_timeout_seconds ---------------------------
+
+
+def test_app_config_lm_studio_load_timeout_default(monkeypatch):
+    from voiceagent.config import AppConfig
+
+    monkeypatch.delenv("LM_STUDIO_LOAD_TIMEOUT_SECONDS", raising=False)
+    config = AppConfig.from_env()
+    assert config.lm_studio_load_timeout_seconds == 300
+
+
+def test_app_config_lm_studio_load_timeout_env_override(monkeypatch):
+    from voiceagent.config import AppConfig
+
+    monkeypatch.setenv("LM_STUDIO_LOAD_TIMEOUT_SECONDS", "120")
+    config = AppConfig.from_env()
+    assert config.lm_studio_load_timeout_seconds == 120
+
+
+def test_app_config_lm_studio_load_timeout_invalid_falls_back(monkeypatch):
+    from voiceagent.config import AppConfig
+
+    monkeypatch.setenv("LM_STUDIO_LOAD_TIMEOUT_SECONDS", "not-a-number")
+    config = AppConfig.from_env()
+    assert config.lm_studio_load_timeout_seconds == 300

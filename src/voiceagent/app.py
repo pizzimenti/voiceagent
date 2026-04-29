@@ -76,6 +76,7 @@ def build_controller(
         model=config.lm_studio_model,
         system_prompt=config.lm_studio_system_prompt,
         timeout_seconds=config.lm_studio_timeout_seconds,
+        load_timeout_seconds=config.lm_studio_load_timeout_seconds,
     )
     player = AudioPlayer()
     controller = VoiceController(

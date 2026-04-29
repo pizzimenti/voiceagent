@@ -1405,3 +1405,94 @@ def test_fetch_loaded_context_length_returns_zero_when_endpoint_fails(monkeypatc
 def test_fetch_loaded_context_length_returns_zero_without_base_url():
     client = LmStudioClient(base_url="", model="m", system_prompt="p")
     assert client.fetch_loaded_context_length() == 0
+
+
+# --- load_timeout_seconds (separate timeout for /api/v1/models/load) -----
+
+
+def test_load_model_uses_load_timeout_for_load_post(monkeypatch):
+    """`/api/v1/models/load` must use `load_timeout_seconds`, not the
+    fast-path `timeout_seconds`. LM Studio model loads frequently take
+    much longer than the 10 s fast-path default; surfacing a spurious
+    timeout to the user is exactly the bug this guards against."""
+    client = LmStudioClient(
+        base_url="http://localhost:1234",
+        model="",
+        system_prompt="p",
+        timeout_seconds=10,
+        load_timeout_seconds=300,
+    )
+    seen_timeouts: list[tuple[str, str, int]] = []
+    load_fired = {"yes": False}
+    pre_load_payload = {"models": []}
+    post_load_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "alpha",
+                "loaded_instances": [{"id": "a1"}],
+            }
+        ]
+    }
+
+    def _handler(req, timeout):
+        seen_timeouts.append((req.full_url, req.get_method(), timeout))
+        if req.get_method() == "POST" and req.full_url.endswith("/models/load"):
+            load_fired["yes"] = True
+            return _FakeResponse({"status": "loaded"})
+        return _FakeResponse(post_load_payload if load_fired["yes"] else pre_load_payload)
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    assert client.load_model("alpha") == "alpha"
+    load_post = next(
+        (entry for entry in seen_timeouts if entry[1] == "POST" and entry[0].endswith("/models/load")),
+        None,
+    )
+    assert load_post is not None, "expected a /models/load POST"
+    assert load_post[2] == 300
+    # Other calls (list /api/v1/models pre/post-load snapshots) should
+    # keep the fast-path timeout, NOT inherit the long one.
+    other_calls = [
+        entry for entry in seen_timeouts
+        if not (entry[1] == "POST" and entry[0].endswith("/models/load"))
+    ]
+    assert other_calls, "expected at least one fast-path call"
+    assert all(entry[2] == 10 for entry in other_calls)
+
+
+def test_load_timeout_seconds_defaults_to_timeout_seconds_when_omitted():
+    """Backwards-compat: callers (and existing tests) that don't pass
+    `load_timeout_seconds` should see the same value used everywhere."""
+    client = LmStudioClient(
+        base_url="http://localhost:1234",
+        model="m",
+        system_prompt="p",
+        timeout_seconds=42,
+    )
+    assert client.load_timeout_seconds == 42
+
+
+def test_load_model_timeout_message_reports_load_timeout(monkeypatch):
+    """When `/models/load` itself times out, the error message must
+    quote the LOAD timeout, not the fast-path timeout — otherwise a
+    user reading "timed out after 10 seconds" sees a number that
+    doesn't match the actual budget the call had."""
+    client = LmStudioClient(
+        base_url="http://localhost:1234",
+        model="",
+        system_prompt="p",
+        timeout_seconds=10,
+        load_timeout_seconds=300,
+    )
+    pre_load_payload = {"models": []}
+
+    def _handler(req, timeout):
+        if req.get_method() == "POST" and req.full_url.endswith("/models/load"):
+            raise error.URLError(reason=socket.timeout("slow"))
+        return _FakeResponse(pre_load_payload)
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    with pytest.raises(RuntimeError, match="timed out after 300 seconds"):
+        client.load_model("alpha")
