@@ -543,3 +543,282 @@ def test_full_turn_pipeline_ordering(model_and_coordinator):
         ("status", "speaking"),
         ("assistant", None),
     ]
+
+
+# --- streaming chat chunks (v0.10.0) ------------------------------------
+
+
+def test_content_chunk_creates_draft_assistant_row(model_and_coordinator):
+    """First `on_chat_content_chunk` call creates a draft assistant
+    row that snapshots `verbose_mode` into `thinkingExpanded` at
+    insertion time.
+    """
+    model, coord = model_and_coordinator(verbose=True)
+
+    coord.on_chat_content_chunk("Hello")
+
+    rows = _all_rows(model)
+    assert len(rows) == 1
+    assert rows[0]["role"] == "assistant"
+    assert rows[0]["bubbleState"] == "draft"
+    assert rows[0]["text"] == "Hello"
+    assert rows[0]["thinkingText"] == ""
+    # verbose=True at insertion → thinkingExpanded captured as True.
+    assert rows[0]["thinkingExpanded"] is True
+    assert rows[0]["replayable"] is False
+    assert rows[0]["turnPending"] is True
+    assert rows[0]["timestampLabel"] == ""
+
+
+def test_content_chunk_thinking_expanded_default_simple_mode(
+    model_and_coordinator,
+):
+    """`thinkingExpanded` defaults to False when verbose is off at
+    the moment the draft row is inserted.
+    """
+    model, coord = model_and_coordinator(verbose=False)
+
+    coord.on_chat_content_chunk("hi")
+
+    rows = _all_rows(model)
+    assert rows[0]["thinkingExpanded"] is False
+
+
+def test_content_chunks_append_into_same_row(model_and_coordinator):
+    """Subsequent content chunks accumulate into the same row's
+    `text` rather than creating new rows.
+    """
+    model, coord = model_and_coordinator(verbose=False)
+
+    coord.on_chat_content_chunk("Hel")
+    coord.on_chat_content_chunk("lo, ")
+    coord.on_chat_content_chunk("world")
+
+    rows = _all_rows(model)
+    assert len(rows) == 1
+    assert rows[0]["text"] == "Hello, world"
+
+
+def test_thinking_chunks_accumulate_into_thinking_text(model_and_coordinator):
+    """Thinking chunks append into `thinkingText` and leave `text`
+    untouched.
+    """
+    model, coord = model_and_coordinator(verbose=True)
+
+    coord.on_chat_thinking_chunk("Let me ")
+    coord.on_chat_thinking_chunk("think...")
+
+    rows = _all_rows(model)
+    assert len(rows) == 1
+    assert rows[0]["thinkingText"] == "Let me think..."
+    assert rows[0]["text"] == ""
+
+
+def test_thinking_and_content_share_same_draft_row(model_and_coordinator):
+    """A turn that emits both thinking and content chunks builds a
+    single draft row carrying both fields.
+    """
+    model, coord = model_and_coordinator(verbose=True)
+
+    coord.on_chat_thinking_chunk("hmm... ")
+    coord.on_chat_content_chunk("Sure, ")
+    coord.on_chat_thinking_chunk("the user wants X. ")
+    coord.on_chat_content_chunk("here's the answer.")
+
+    rows = _all_rows(model)
+    assert len(rows) == 1
+    assert rows[0]["text"] == "Sure, here's the answer."
+    assert rows[0]["thinkingText"] == "hmm... the user wants X. "
+
+
+def test_thinking_expanded_not_overwritten_by_chunks(model_and_coordinator):
+    """A user-driven `set_thinking_expanded` toggle must persist
+    across subsequent chunk callbacks — chunks never re-read
+    `verbose_mode` for the row's `thinkingExpanded`.
+    """
+    flag = {"value": True}
+    model, coord = model_and_coordinator(verbose_provider=lambda: flag["value"])
+
+    coord.on_chat_content_chunk("first")
+    # User collapses it.
+    coord.set_thinking_expanded(0, False)
+    assert model.message(0)["thinkingExpanded"] is False
+
+    # More chunks land. The collapse must stick.
+    coord.on_chat_thinking_chunk("debug trace")
+    coord.on_chat_content_chunk(" more")
+    assert model.message(0)["thinkingExpanded"] is False
+
+    # And a verbose-mode flip mid-stream must not retroactively
+    # uncollapse it either.
+    flag["value"] = True
+    coord.on_chat_content_chunk(" still more")
+    assert model.message(0)["thinkingExpanded"] is False
+
+
+def test_turn_boundary_resets_streaming_pointer(model_and_coordinator):
+    """After a RECORDING or IDLE state, the next chunk must create
+    a fresh row rather than appending into the prior turn's bubble.
+    """
+    model, coord = model_and_coordinator(verbose=False)
+
+    coord.on_chat_content_chunk("turn 1 reply")
+    coord.on_state_changed(AppState.IDLE.value)
+
+    coord.on_chat_content_chunk("turn 2 reply")
+    rows = _all_rows(model)
+    assert len(rows) == 2
+    assert rows[0]["text"] == "turn 1 reply"
+    assert rows[1]["text"] == "turn 2 reply"
+
+    coord.on_state_changed(AppState.RECORDING.value)
+    coord.on_chat_content_chunk("turn 3 reply")
+    rows = _all_rows(model)
+    assert len(rows) == 3
+    assert rows[2]["text"] == "turn 3 reply"
+
+
+def test_assistant_response_promotes_streaming_draft(model_and_coordinator):
+    """When `on_assistant_response` fires after a streaming session,
+    the existing draft row flips to `bubbleState='sent'` with
+    `replayable=True` and the canonical final text — no new row is
+    created.
+    """
+    model, coord = model_and_coordinator(verbose=True)
+
+    coord.on_chat_thinking_chunk("reasoning...")
+    coord.on_chat_content_chunk("partial ans")
+    assert len(_all_rows(model)) == 1
+
+    coord.on_assistant_response("final canonical answer")
+
+    rows = _all_rows(model)
+    assert len(rows) == 1
+    assert rows[0]["role"] == "assistant"
+    assert rows[0]["bubbleState"] == "sent"
+    assert rows[0]["text"] == "final canonical answer"
+    # thinkingText preserved from streaming.
+    assert rows[0]["thinkingText"] == "reasoning..."
+    assert rows[0]["replayable"] is True
+    assert rows[0]["turnPending"] is False
+    assert rows[0]["timestampLabel"] == "Received 00:00:00"
+    # Pointer reset so the next turn doesn't recycle this row.
+    assert coord._streaming_assistant_index == -1
+
+
+def test_assistant_response_appends_when_no_streaming_draft(
+    model_and_coordinator,
+):
+    """Legacy non-streaming path: with no draft from chunk callbacks,
+    `on_assistant_response` falls back to appending a fresh sent row.
+    Preserves the pre-v0.10 behavior end-to-end test relies on.
+    """
+    model, coord = model_and_coordinator(verbose=False)
+
+    coord.on_user_transcript("question")
+    coord.on_assistant_response("answer")
+
+    rows = _all_rows(model)
+    assert _roles(model) == ["user", "assistant"]
+    assert rows[1]["bubbleState"] == "sent"
+    assert rows[1]["replayable"] is True
+
+
+def test_streaming_then_next_turn_creates_new_draft(model_and_coordinator):
+    """End-to-end: stream → promote → state-boundary → next stream
+    creates a NEW draft (i.e., promotion clears the pointer).
+    """
+    model, coord = model_and_coordinator(verbose=False)
+
+    coord.on_chat_content_chunk("turn 1")
+    coord.on_assistant_response("turn 1 final")
+    coord.on_state_changed(AppState.RECORDING.value)
+    coord.on_chat_content_chunk("turn 2")
+
+    rows = _all_rows(model)
+    assert len(rows) == 2
+    assert rows[0]["bubbleState"] == "sent"
+    assert rows[0]["text"] == "turn 1 final"
+    assert rows[1]["bubbleState"] == "draft"
+    assert rows[1]["text"] == "turn 2"
+
+
+def test_empty_chunk_does_not_create_row(model_and_coordinator):
+    """A bare empty-string chunk is a no-op — it must not create a
+    draft row out of thin air.
+    """
+    model, coord = model_and_coordinator(verbose=False)
+
+    coord.on_chat_content_chunk("")
+    coord.on_chat_thinking_chunk("")
+
+    assert _all_rows(model) == []
+
+
+def test_set_thinking_expanded_updates_row(model_and_coordinator):
+    """`set_thinking_expanded(row, expanded)` writes the bool through
+    to the model row.
+    """
+    model, coord = model_and_coordinator(verbose=False)
+
+    coord.on_chat_content_chunk("text")
+    assert model.message(0)["thinkingExpanded"] is False
+
+    coord.set_thinking_expanded(0, True)
+    assert model.message(0)["thinkingExpanded"] is True
+
+    coord.set_thinking_expanded(0, False)
+    assert model.message(0)["thinkingExpanded"] is False
+
+
+def test_set_thinking_expanded_invalid_row_is_noop(model_and_coordinator):
+    """Out-of-range row indices must not raise."""
+    model, coord = model_and_coordinator(verbose=False)
+
+    coord.on_chat_content_chunk("text")
+
+    # Negative.
+    coord.set_thinking_expanded(-1, True)
+    # Beyond rowCount.
+    coord.set_thinking_expanded(99, True)
+
+    # Existing row untouched.
+    assert model.message(0)["thinkingExpanded"] is False
+
+
+def test_set_thinking_expanded_non_assistant_row_is_noop(
+    model_and_coordinator,
+):
+    """Calling on a non-assistant row (e.g., a user bubble) must not
+    inject a `thinkingExpanded` field that QML can't make sense of.
+    """
+    model, coord = model_and_coordinator(verbose=False)
+
+    coord.on_user_transcript("hi")
+    assert _roles(model) == ["user"]
+
+    coord.set_thinking_expanded(0, True)
+
+    msg = model.message(0)
+    # Either the field is absent, or — if any defensive code
+    # initialized one — it stays at its pre-call value. The contract
+    # is that the call is a no-op for non-assistant rows.
+    assert "thinkingExpanded" not in msg or msg.get("thinkingExpanded") is None
+
+
+def test_streaming_chunks_emit_conversation_changed(model_and_coordinator):
+    """Each accepted chunk emits the single coordinator notify
+    signal so QML can debounce on a stable counter.
+    """
+    model, coord = model_and_coordinator(verbose=False)
+    spy = QSignalSpy(coord.conversation_changed)
+
+    coord.on_chat_content_chunk("a")
+    coord.on_chat_content_chunk("b")
+    coord.on_chat_thinking_chunk("c")
+    # 3 emits — one per accepted chunk.
+    assert spy.count() == 3
+
+    # Empty chunks are silent.
+    coord.on_chat_content_chunk("")
+    assert spy.count() == 3
