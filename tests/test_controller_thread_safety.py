@@ -444,13 +444,14 @@ def test_llm_controller_submit_after_shutdown_is_dropped(qtbot, tmp_path):
     from voiceagent.services.llm_controller import LlmController
     from tests.fakes import FakeChatClient
 
-    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-    QSettings.setPath(
+    # File-backed QSettings keeps the test isolated to tmp_path. The
+    # alternative `setDefaultFormat()` + `setPath()` API mutates Qt's
+    # process-global state, which a later test would silently inherit
+    # — execution-order-dependent failures down the line.
+    settings = QSettings(
+        str(tmp_path / f"voiceagent-test-{uuid.uuid4().hex[:8]}.ini"),
         QSettings.Format.IniFormat,
-        QSettings.Scope.UserScope,
-        str(tmp_path),
     )
-    settings = QSettings(f"voiceagent-test-{uuid.uuid4().hex[:8]}", "shutdown-guard")
     chat_client = FakeChatClient()
     ctrl = LlmController(chat_client, settings)
 

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import socket
 from urllib import error, request
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class LmStudioClient:
@@ -203,14 +207,45 @@ class LmStudioClient:
         new_instances = [pair for pair in post_load if pair not in pre_load]
         if new_instances:
             keep_key = new_instances[0][0]
+        elif post_load:
+            # Empty diff but something is loaded — `/models/load` reported
+            # "loaded" without adding a fresh instance. Most likely the
+            # alias resolved to a model that was already loaded under its
+            # canonical key. Pick a sensible keep key:
+            #   * If the requested name happens to match a loaded key
+            #     exactly, keep that one.
+            #   * Otherwise, since we cannot disambiguate which existing
+            #     instance the server "loaded", promote the first loaded
+            #     LLM as current and SKIP the unload step entirely. The
+            #     user's existing models stay loaded — better that than
+            #     unloading the very instance the alias resolved to.
+            loaded_keys = [k for k, _ in post_load]
+            if model_name in loaded_keys:
+                keep_key = model_name
+            else:
+                self.model = loaded_keys[0]
+                return self.model
         else:
-            # No new instance appeared — load reported success but the
-            # diff is empty. Fall back to the requested name and accept
-            # the original eager-keep semantics.
-            keep_key = model_name
+            # Server confirmed the load but nothing is loaded. Defensive
+            # — treat as failure so the caller doesn't think we have a
+            # working LLM.
+            raise RuntimeError(
+                f"LM Studio confirmed load for '{model_name}' but no model is loaded."
+            )
 
-        self.unload_other_models(keep_model=keep_key)
+        # Promote the new model FIRST, then attempt the cleanup unload.
+        # If the cleanup fails, the load itself still stands — losing
+        # the new selection because of an unload error would be the
+        # very regression P2 #3 was meant to prevent.
         self.model = keep_key
+        try:
+            self.unload_other_models(keep_model=keep_key)
+        except Exception:
+            _LOGGER.exception(
+                "unload_other_models failed after successful load (model=%s); "
+                "new model is current but stale instances may still be loaded",
+                keep_key,
+            )
         return keep_key
 
     def unload_model_instance(self, instance_id: str) -> None:

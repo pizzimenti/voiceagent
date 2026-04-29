@@ -121,7 +121,7 @@ when the user swaps to a smaller model mid-session.
 
 **Status:** scheduled after v0.11.
 
-**Detailed plan:** kept out of repo until the work is picked up; populate when it lands.
+**Detailed plan:** working draft below; refined when implementation starts.
 
 ### Why
 

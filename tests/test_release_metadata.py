@@ -10,6 +10,7 @@ it after a release.
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -35,10 +36,13 @@ def runtime_version() -> str:
 
 
 def test_pyproject_version_matches_runtime(runtime_version):
-    text = _read("pyproject.toml")
-    match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
-    assert match, "pyproject.toml must define a version"
-    assert match.group(1) == runtime_version
+    # Parse the TOML so we read [project].version specifically, not
+    # whatever first `version =` happens to appear (a future tool
+    # table with its own `version` key would otherwise mask drift).
+    data = tomllib.loads(_read("pyproject.toml"))
+    project_version = data.get("project", {}).get("version")
+    assert project_version, "pyproject.toml [project].version must be set"
+    assert project_version == runtime_version
 
 
 def test_local_pkgbuild_matches_runtime(runtime_version):

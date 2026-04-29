@@ -12,7 +12,7 @@ findings: 1 P1, 5 P2, 4 P3. All ten addressed.
 ### Fixed (P1)
 
 - **Opacity-fade policy violation** — v0.9.0's page-mic refactor
-  added `Behavior on opacity` Behaviors to the dashboardModes
+  added `Behavior on opacity` blocks to the dashboardModes
   ColumnLayout and the compactLoader, against AGENTS.md "Mode
   transition animation" → "No opacity fades anywhere". Removed;
   `visible: root.{medium,compact}Mode` drives the panes directly.
@@ -91,8 +91,8 @@ v0.9.12).
 ### Tests
 
 Net pytest delta: 363 → 374 (+11). qmltestrunner: 9 → 16
-(+1 layout-policy passing, +6 SessionSetupPane / MainWindow /
-ScrollMode unchanged).
+(+1 layout-policy passing; SessionSetupPane / MainWindow /
+ScrollMode totals unchanged from prior release).
 
 ## 0.10.1 — 2026-04-29
 

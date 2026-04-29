@@ -671,14 +671,26 @@ def test_load_model_posts_when_not_loaded(monkeypatch):
     )
 
     posts: list[dict] = []
-    serve_payload: dict = {"models": []}
+    pre_load_payload = {"models": []}
+    post_load_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "alpha",
+                "loaded_instances": [{"id": "a1"}],
+            }
+        ]
+    }
+    load_fired = {"yes": False}
 
     def _handler(req, timeout):
         if req.get_method() == "POST":
             body = json.loads(req.data.decode("utf-8"))
             posts.append({"url": req.full_url, "body": body})
+            if req.full_url.endswith("/api/v1/models/load"):
+                load_fired["yes"] = True
             return _FakeResponse({"status": "loaded"})
-        return _FakeResponse(serve_payload)
+        return _FakeResponse(post_load_payload if load_fired["yes"] else pre_load_payload)
 
     _install_fake_urlopen(monkeypatch, _handler)
 
@@ -764,10 +776,11 @@ def test_load_model_unloads_previous_only_after_load_confirmed(monkeypatch):
         base_url="http://localhost:1234", model="previous", system_prompt="p"
     )
 
-    # Server reports `previous` currently loaded; after the load POST
-    # the test still serves the same listing (the unload step works
-    # off whatever the GET returns).
-    serve_payload = {
+    # Pre-load: only `previous` is loaded. Post-load: `alpha` joins
+    # `previous` with a fresh instance id `a1`. The set-diff identifies
+    # `a1` as the new instance; the unload step then evicts `p1` while
+    # keeping `alpha`.
+    pre_load_payload = {
         "models": [
             {
                 "type": "llm",
@@ -776,8 +789,23 @@ def test_load_model_unloads_previous_only_after_load_confirmed(monkeypatch):
             }
         ]
     }
+    post_load_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "previous",
+                "loaded_instances": [{"id": "p1"}],
+            },
+            {
+                "type": "llm",
+                "key": "alpha",
+                "loaded_instances": [{"id": "a1"}],
+            },
+        ]
+    }
     call_log: list[str] = []
     unloaded_instances: list[str] = []
+    load_fired = {"yes": False}
 
     def _handler(req, timeout):
         if req.get_method() == "POST":
@@ -785,6 +813,7 @@ def test_load_model_unloads_previous_only_after_load_confirmed(monkeypatch):
             body = json.loads(req.data.decode("utf-8"))
             if url.endswith("/api/v1/models/load"):
                 call_log.append("load")
+                load_fired["yes"] = True
                 return _FakeResponse({"status": "loaded"})
             if url.endswith("/api/v1/models/unload"):
                 call_log.append("unload")
@@ -792,7 +821,9 @@ def test_load_model_unloads_previous_only_after_load_confirmed(monkeypatch):
                 return _FakeResponse({"status": "ok"})
             return _FakeResponse({"status": "ok"})
         call_log.append("list")
-        return _FakeResponse(serve_payload)
+        return _FakeResponse(
+            post_load_payload if load_fired["yes"] else pre_load_payload
+        )
 
     _install_fake_urlopen(monkeypatch, _handler)
 
@@ -890,6 +921,116 @@ def test_load_model_keeps_canonical_key_when_alias_resolves(monkeypatch):
     # subsequent `complete()` requests must use what the server
     # actually has.
     assert client.model == "org/nemotron-3-nano-4b"
+
+
+def test_load_model_alias_to_already_loaded_skips_unload(monkeypatch):
+    """When `/models/load` reports success but no new instance appears
+    in `/api/v1/models` (alias resolves to a model that was already
+    loaded under its canonical key), skip the unload step entirely —
+    a key-mismatch unload would otherwise evict the very instance the
+    alias points at, leaving no LLM loaded after a "successful" load.
+    """
+    client = LmStudioClient(
+        base_url="http://localhost:1234",
+        model="org/canonical-model",
+        system_prompt="p",
+    )
+
+    same_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "org/canonical-model",
+                "loaded_instances": [{"id": "c1"}],
+            }
+        ]
+    }
+    unloaded: list[str] = []
+
+    def _handler(req, timeout):
+        if req.get_method() == "POST":
+            url = req.full_url
+            body = json.loads(req.data.decode("utf-8"))
+            if url.endswith("/api/v1/models/load"):
+                return _FakeResponse({"status": "loaded"})
+            if url.endswith("/api/v1/models/unload"):
+                unloaded.append(body["instance_id"])
+                return _FakeResponse({"status": "ok"})
+            return _FakeResponse({"status": "ok"})
+        # Same payload pre and post — load was a no-op because the
+        # alias resolved to an already-loaded canonical key.
+        return _FakeResponse(same_payload)
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    # User asks for the alias `canonical`; server resolves to existing
+    # `org/canonical-model` without spawning a new instance.
+    result = client.load_model("canonical")
+
+    # Skip-unload-when-empty-diff invariant: the canonical instance
+    # must NOT be unloaded, and the model is now whatever was already
+    # loaded.
+    assert "c1" not in unloaded
+    assert unloaded == []
+    assert result == "org/canonical-model"
+    assert client.model == "org/canonical-model"
+
+
+def test_load_model_promotes_before_unload_so_cleanup_error_does_not_rollback(monkeypatch):
+    """If `/models/load` succeeds but the subsequent `unload_other_models`
+    cleanup raises (network blip, server bug, anything), the load itself
+    still stands — `self.model` is the new key and `load_model()` returns
+    success rather than propagating the cleanup failure as a load failure.
+    """
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="previous", system_prompt="p"
+    )
+
+    pre_load_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "previous",
+                "loaded_instances": [{"id": "p1"}],
+            }
+        ]
+    }
+    post_load_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "previous",
+                "loaded_instances": [{"id": "p1"}],
+            },
+            {
+                "type": "llm",
+                "key": "alpha",
+                "loaded_instances": [{"id": "a1"}],
+            },
+        ]
+    }
+    load_fired = {"yes": False}
+
+    def _handler(req, timeout):
+        if req.get_method() == "POST":
+            url = req.full_url
+            if url.endswith("/api/v1/models/load"):
+                load_fired["yes"] = True
+                return _FakeResponse({"status": "loaded"})
+            if url.endswith("/api/v1/models/unload"):
+                # Simulate a cleanup-side server error.
+                raise error.URLError(reason=ConnectionResetError("transient"))
+            return _FakeResponse({"status": "ok"})
+        return _FakeResponse(
+            post_load_payload if load_fired["yes"] else pre_load_payload
+        )
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    # Load itself returns success; the unload-cleanup error is logged,
+    # not raised.
+    assert client.load_model("alpha") == "alpha"
+    assert client.model == "alpha"
 
 
 def test_load_model_raises_without_url():
