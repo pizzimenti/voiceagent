@@ -75,13 +75,18 @@ Kirigami.ApplicationWindow {
     //     lands at-or-near bottom (bottomEpsilon = 3 px), so
     //     auto-restore falls out of the existing state machine.
     //
-    // Velocity scale: doubled from the v0.8.0 PR #23 settings after
-    // user-reported regression in scroll responsiveness on Plasma 6 /
-    // Wayland — the pixelDelta path now scales 16x per wheel pixel
-    // (was 8x) and the angleDelta path scales gridUnit*24 per 120-unit
-    // notch (was gridUnit*12). Inertial-mode velocities scale the same
-    // 2x. Sign: Qt's positive yVelocity moves content toward the start
-    // (scrolls view up), matching the direct path's `contentY -= delta`.
+    // Velocity scale, v0.9.11 retune: the v0.9.9 2x multiplier bump
+    // didn't close the gap because the inertial path's glide distance
+    // is `velocity² / (2 × flickDeceleration)` — quadratic in
+    // velocity. v0.9.11 bumps inertial velocities another 2x AND
+    // lowers ListView.flickDeceleration from 1800 → 900 (see
+    // ConversationPane.qml), so the combined glide distance per
+    // wheel notch is ~8x v0.9.9. Direct path multipliers stay at
+    // v0.9.9 levels (pdy*16, gridUnit*24) — they were already in a
+    // reasonable range, only the post-detach inertial branch felt
+    // sluggish. Sign: Qt's positive yVelocity moves content toward
+    // the start (scrolls view up), matching the direct path's
+    // `contentY -= delta`.
     function scrollList(listView, wheel) {
         if (!listView) {
             return;
@@ -96,8 +101,8 @@ Kirigami.ApplicationWindow {
             : !listView.atYEnd;
         if (useInertial && delta !== 0) {
             const velocity = pdy !== 0
-                ? pdy * 80
-                : (ady / 120) * Kirigami.Units.gridUnit * 120;
+                ? pdy * 160
+                : (ady / 120) * Kirigami.Units.gridUnit * 240;
             listView.flick(0, velocity);
             wheel.accepted = true;
             return;
