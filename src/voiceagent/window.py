@@ -104,6 +104,16 @@ class MainWindow(QObject):
     # late-arriving results for a stale selection can be ignored.
     _context_length_fetched = Signal(int, str)
 
+    # Internal worker-thread → main-thread bridge for replay TTS
+    # synthesis. Piper synth is a 5-7 s blocking call; running it on
+    # the GUI thread froze the click handler, leaving the ▶/🤫
+    # toggle unresponsive and queueing additional click events that
+    # cascaded into stacked PortAudio workers and an eventual crash.
+    # The first arg is the row index the synth was issued for; the
+    # second is `(audio_path, error_message)` packed in a tuple so
+    # both success and failure paths fit one signal shape.
+    _replay_synth_completed = Signal(int, object)
+
     def __init__(
         self,
         controller: VoiceController,
@@ -163,6 +173,17 @@ class MainWindow(QObject):
         self._turn_coordinator.set_max_history_turns(
             self.controller.max_history_turns
         )
+        # Dedicated single-worker executor for replay TTS synthesis.
+        # Sized 1 — a second concurrent synth would race the same
+        # Piper invocation and produce stacked WAV temp files. The
+        # `replayMessage` slot submits a job here, and the future's
+        # done-callback bridges back to the GUI thread via
+        # `_replay_synth_completed`.
+        self._replay_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="voiceagent-replay-synth"
+        )
+        self._replay_executor_shutdown = False
+        self._replay_synth_completed.connect(self._on_replay_synth_completed)
         # Row index of the assistant bubble whose TTS audio is currently
         # being read aloud. -1 when nothing is playing. Drives the
         # per-bubble ▶/🤫 toggle in the conversation pane: only the
@@ -171,12 +192,6 @@ class MainWindow(QObject):
         # Set when playback_started fires on either player; reset on
         # finished / failed / explicit stop.
         self._speaking_row: int = -1
-        # The row a user-triggered replay was issued for. Stashed in
-        # `replayMessage` and consumed when the replay player's
-        # `playback_started` signal arrives, since the signal itself
-        # only carries the audio path (which doesn't tell us which
-        # transcript row owns it).
-        self._pending_replay_row: int = -1
         # Wire the controller's history snapshot provider so each
         # voice turn captures the visible transcript on the GUI thread
         # before the executor takes over. The closure reads
@@ -253,9 +268,12 @@ class MainWindow(QObject):
         self.controller.player.playback_failed.connect(
             self._on_any_playback_ended_with_message
         )
-        self.replay_player.playback_started.connect(
-            self._on_replay_playback_started
-        )
+        # Replay-side speakingRow: replayMessage sets _speaking_row
+        # synchronously the moment the user clicks ▶ (so the toggle
+        # responds immediately), then dispatches synth on the
+        # _replay_executor. Playback_started carries no extra info
+        # we need — the row is already correct. Only the end-of-
+        # playback resets matter on this signal.
         self.replay_player.playback_finished.connect(
             self._on_any_playback_ended
         )
@@ -383,6 +401,14 @@ class MainWindow(QObject):
         # llm_controller shutdown pattern: drop pending fetches rather
         # than block app exit on a slow HTTP probe.
         self._context_length_executor.shutdown(
+            wait=False, cancel_futures=True
+        )
+        # Same pattern for replay synthesis. A pending Piper synth
+        # would otherwise block exit for several seconds; cancel
+        # rather than wait. Set the flag BEFORE shutdown so a
+        # late-arriving replay click hits the early-return guard.
+        self._replay_executor_shutdown = True
+        self._replay_executor.shutdown(
             wait=False, cancel_futures=True
         )
         app = QApplication.instance()
@@ -707,27 +733,90 @@ class MainWindow(QObject):
             self._logger.info("Replay skipped: TTS not available")
             self.replay_failed.emit(reason)
             return
+        # Toggle the row's button to 🤫 IMMEDIATELY so the click is
+        # responsive. Synth itself runs on the background executor —
+        # Piper takes 5-7 s for a typical reply, and running it on the
+        # GUI thread froze the click handler, queueing additional
+        # clicks that cascaded into stacked PortAudio workers and an
+        # eventual crash. If the user taps the same button while
+        # synth is still running, `stopSpeaking` will reset
+        # `_speaking_row`; the synth-completion handler sees the
+        # mismatch and discards the audio without starting playback.
+        self._speaking_row = index
+        self.ui_changed.emit()
+        if self._replay_executor_shutdown:
+            return
+        try:
+            future = self._replay_executor.submit(
+                self._run_replay_synth, index, text
+            )
+        except RuntimeError:
+            # Executor was shut down between the flag check above
+            # and the submit. Roll back the optimistic toggle.
+            if self._speaking_row == index:
+                self._speaking_row = -1
+                self.ui_changed.emit()
+            return
+        future.add_done_callback(self._handle_replay_synth_done)
+
+    def _run_replay_synth(self, index: int, text: str) -> tuple[int, object, object]:
+        """Run TTS synthesis on the executor thread. Returns a
+        (index, audio_path | None, error_message | None) triple. The
+        try/except keeps the worker thread itself from raising — the
+        future's done-callback fires regardless and bridges the
+        result back to the GUI thread via `_replay_synth_completed`.
+        """
         try:
             audio_path = self.tts_loader.tts_service.synthesize(text)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surfaced to the GUI
             self._logger.exception("Replay synthesis failed")
-            # Replay failures are unrelated to any active draft turn;
-            # don't let the error surface tear down a user bubble the
-            # user is currently dictating.
-            message = f"Replay failed: {exc}"
-            self._set_error_message(message, discard_draft=False)
-            # Also surface the failure as a transient toast. The error
-            # banner persists; the toast catches the user's attention
-            # at the moment of the click without occupying chrome.
-            self.replay_failed.emit(message)
+            return index, None, str(exc)
+        return index, audio_path, None
+
+    def _handle_replay_synth_done(self, future: Future) -> None:
+        # Runs on the executor thread (or sync on the owner thread
+        # when add_done_callback registers against an already-done
+        # future). Bridge across `_replay_synth_completed` so the
+        # GUI thread is the sole writer to `_speaking_row`.
+        try:
+            index, audio_path, error_message = future.result()
+        except Exception as exc:  # pragma: no cover - defensive
+            self._replay_synth_completed.emit(-1, (None, str(exc)))
             return
-        if audio_path is not None:
-            # Stash the row so `_on_replay_playback_started` can drive
-            # the speakingRow Q_PROPERTY when the worker actually
-            # starts producing frames. Set BEFORE `play_file` so the
-            # signal can't outrun the assignment.
-            self._pending_replay_row = index
-            self.replay_player.play_file(audio_path)
+        self._replay_synth_completed.emit(index, (audio_path, error_message))
+
+    @Slot(int, object)
+    def _on_replay_synth_completed(self, index: int, payload: object) -> None:
+        # Runs on the GUI thread (queued from the worker via
+        # `_replay_synth_completed`).
+        audio_path, error_message = payload  # type: ignore[misc]
+        if error_message is not None:
+            wrapped = f"Replay failed: {error_message}"
+            self._set_error_message(wrapped, discard_draft=False)
+            self.replay_failed.emit(wrapped)
+            if self._speaking_row == index:
+                self._speaking_row = -1
+                self.ui_changed.emit()
+            return
+        if audio_path is None:
+            if self._speaking_row == index:
+                self._speaking_row = -1
+                self.ui_changed.emit()
+            return
+        # Cancellation check. If the user clicked 🤫 (stopSpeaking)
+        # OR started a different replay while synth was running,
+        # `_speaking_row` no longer points at this index. Discard
+        # the audio without dispatching it to the player.
+        if self._speaking_row != index:
+            try:
+                Path(str(audio_path)).unlink(missing_ok=True)
+            except OSError:
+                self._logger.exception(
+                    "Discarded replay audio cleanup failed path=%s",
+                    audio_path,
+                )
+            return
+        self.replay_player.play_file(audio_path)
 
     def _handle_inventory_change(self) -> None:
         self._refresh_stt_catalog_if_changed()
@@ -808,14 +897,6 @@ class MainWindow(QObject):
             "assistant", bubble_state="sent", turn_pending=False
         )
         self.ui_changed.emit()
-
-    def _on_replay_playback_started(self, _path: str) -> None:
-        # User-triggered replay: speaking row was stashed by
-        # `replayMessage()` before play_file was invoked.
-        if self._pending_replay_row >= 0:
-            self._speaking_row = self._pending_replay_row
-            self._pending_replay_row = -1
-            self.ui_changed.emit()
 
     def _on_any_playback_ended(self, _path: str) -> None:
         if self._speaking_row != -1:

@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -195,6 +196,22 @@ def _drain_events(times: int = 5) -> None:
     assert app is not None
     for _ in range(times):
         app.processEvents()
+
+
+def _wait_until(predicate, *, timeout: float = 2.0, interval: float = 0.02) -> None:
+    """Pump Qt events in a loop until `predicate()` is truthy or the
+    timeout fires. Lets tests wait deterministically on signal-driven
+    state writes that hop through a worker thread (e.g. the v0.11
+    replay-synth executor → `_replay_synth_completed` bridge)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        _drain_events(times=2)
+        time.sleep(interval)
+    raise AssertionError(
+        f"_wait_until: predicate never became true within {timeout}s"
+    )
 
 
 def _user_messages(window) -> list[dict]:
@@ -454,7 +471,7 @@ def test_replay_message_synthesizes_and_forwards_to_player(main_window_factory):
 
     window._append_assistant_message("hello user")
     window.replayMessage(0)
-    _drain_events()
+    _wait_until(lambda: len(play_calls) == 1)
 
     assert tts.synthesize_calls == ["hello user"]
     assert len(play_calls) == 1
@@ -514,7 +531,7 @@ def test_replay_message_synthesis_failure_preserves_draft(main_window_factory):
 
     # Replay the assistant message → synthesize raises.
     window.replayMessage(1)
-    _drain_events()
+    _wait_until(lambda: tts.synthesize_calls == ["reply that will fail to replay"])
 
     # Synthesis WAS attempted.
     assert tts.synthesize_calls == ["reply that will fail to replay"]
@@ -567,7 +584,7 @@ def test_replay_message_emits_failure_signal_on_synthesis_exception(
 
     window._append_assistant_message("reply that will fail to replay")
     window.replayMessage(0)
-    _drain_events()
+    _wait_until(lambda: len(reasons) == 1)
 
     assert tts.synthesize_calls == ["reply that will fail to replay"]
     assert len(reasons) == 1
@@ -1042,10 +1059,14 @@ def test_speaking_row_tracks_in_pipeline_playback(main_window_factory):
     assert window.speakingRow == -1
 
 
-def test_speaking_row_tracks_replay_player(main_window_factory):
-    """When the user clicks ▶ on a specific row, the replay path
-    stashes the row index and surfaces it as `speakingRow` on the
-    replay player's playback_started signal."""
+def test_speaking_row_set_immediately_on_replay_click(main_window_factory):
+    """v0.11 fix: `replayMessage` sets `speakingRow` synchronously the
+    moment the user clicks ▶ — NOT when `playback_started` later fires.
+    The synth call now runs on a background executor (Piper takes 5-7 s
+    for a typical reply); waiting for playback_started would leave the
+    button reading ▶ during synth, queueing additional clicks while
+    the GUI is otherwise responsive. The synchronous set lets the
+    button toggle to 🤫 the same frame as the click."""
     window = main_window_factory()
     tts = window.tts_loader.tts_service
     tts.set_available(True)
@@ -1056,13 +1077,68 @@ def test_speaking_row_tracks_replay_player(main_window_factory):
     _drain_events()
 
     window.replayMessage(1)
-    # play_file was monkeypatched, so we manually fire the signal.
-    window.replay_player.playback_started.emit("/tmp/replay.wav")
-    _drain_events()
+    # No _drain_events / _wait_until — speakingRow must be set
+    # synchronously during the call, before the worker even starts.
+    assert window.speakingRow == 1
+
+    # The worker eventually completes synth + dispatches play_file.
+    _wait_until(lambda: bool(tts.synthesize_calls))
     assert window.speakingRow == 1
 
     window.replay_player.playback_finished.emit("/tmp/replay.wav")
     _drain_events()
+    assert window.speakingRow == -1
+
+
+def test_replay_cancellation_during_synth_discards_audio(
+    main_window_factory, tmp_path
+):
+    """If the user clicks 🤫 (stopSpeaking) while synth is still
+    running on the executor, the synth-completion handler must see
+    `speakingRow == -1` and discard the audio without dispatching it
+    to the player. The audio file is unlinked. Without this guard,
+    a click cascade would queue additional play_file calls that pile
+    up as abandoned PortAudio workers and eventually crash the app
+    (the bug the user reported)."""
+    window = main_window_factory()
+    tts = window.tts_loader.tts_service
+    tts.set_available(True)
+
+    # Use a synth that blocks until the test releases it, so we can
+    # interleave a stopSpeaking() in between.
+    synth_can_complete = threading.Event()
+    real_synthesize = tts.synthesize
+
+    def _slow_synthesize(text: str):
+        synth_can_complete.wait(timeout=2.0)
+        return real_synthesize(text)
+
+    tts.synthesize = _slow_synthesize  # type: ignore[method-assign]
+
+    play_calls: list = []
+    window.replay_player.play_file = lambda path: (
+        play_calls.append(path) or True
+    )
+
+    window._append_assistant_message("a long reply")
+    window.replayMessage(0)
+    # Synth is blocked; speakingRow already set.
+    assert window.speakingRow == 0
+
+    # User clicks 🤫 mid-synth.
+    window.stopSpeaking()
+    assert window.speakingRow == -1
+
+    # Release synth. The completion handler should see the mismatch
+    # and skip play_file.
+    synth_can_complete.set()
+    _wait_until(lambda: bool(tts.synthesize_calls))
+    _drain_events()  # let the queued completion slot run.
+
+    assert play_calls == [], (
+        "play_file must NOT fire when speakingRow no longer points at "
+        "this index — the synth result is stale and should be discarded"
+    )
     assert window.speakingRow == -1
 
 
