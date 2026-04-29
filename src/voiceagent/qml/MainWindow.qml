@@ -116,6 +116,12 @@ Kirigami.ApplicationWindow {
         id: modelManagerAction
         text: i18nCtx.i18n("Voice Models")
         icon.name: "folder-cloud-symbolic"
+        // Plasma's auto-tint of symbolic icons in IconOnly toolbar
+        // slots intermittently drops out and the icon renders against
+        // the un-tinted source SVG (very low contrast on Breeze Dark).
+        // Forcing icon.color to the resolved textColor closes that
+        // gap. Same pattern on the other three header actions below.
+        icon.color: Kirigami.Theme.textColor
         visible: !root.compactMode
         onTriggered: {
             // Guard against double-push if the manager is already on top.
@@ -136,6 +142,7 @@ Kirigami.ApplicationWindow {
         id: themeAction
         text: i18nCtx.i18n("Theme")
         icon.name: "preferences-desktop-theme-symbolic"
+        icon.color: Kirigami.Theme.textColor
         displayHint: Kirigami.DisplayHint.IconOnly
         visible: !root.compactMode
 
@@ -168,6 +175,7 @@ Kirigami.ApplicationWindow {
         id: muteAction
         text: voiceAgent.audioMuted ? i18nCtx.i18n("Unmute") : i18nCtx.i18n("Mute")
         icon.name: voiceAgent.audioMuted ? "audio-volume-muted-symbolic" : "audio-volume-high-symbolic"
+        icon.color: Kirigami.Theme.textColor
         enabled: voiceAgent.talkReady
         onTriggered: voiceAgent.setAudioMuted(!voiceAgent.audioMuted)
     }
@@ -182,6 +190,7 @@ Kirigami.ApplicationWindow {
             ? i18nCtx.i18n("Hide pipeline activity in log")
             : i18nCtx.i18n("Show pipeline activity in log (new entries only)")
         icon.name: voiceAgent.logVerboseMode ? "view-visible-symbolic" : "view-hidden-symbolic"
+        icon.color: Kirigami.Theme.textColor
         displayHint: Kirigami.DisplayHint.IconOnly
         visible: !root.compactMode
         onTriggered: voiceAgent.setLogVerboseMode(!voiceAgent.logVerboseMode)

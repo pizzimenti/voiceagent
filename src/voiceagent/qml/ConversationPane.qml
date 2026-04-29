@@ -184,25 +184,6 @@ Pane {
                 property bool assistant: model.messageRole === "assistant"
                 readonly property string bubbleState: model.bubbleState || "sent"
                 readonly property bool draft: bubbleState === "draft"
-                // Bubble palette uses Kirigami theme roles so the
-                // contrast tracks Breeze Light / Dark / user accent
-                // automatically, instead of hardcoded green/gray that
-                // shipped with poor white-on-green legibility.
-                //   - assistant (the AI's reply) → quiet
-                //     `alternateBackgroundColor`, like a system message
-                //     panel; reads with `textColor`.
-                //   - user sent → `highlightColor` accent (Plasma blue
-                //     by default) with `highlightedTextColor`, which
-                //     Kirigami already pairs as the "selection" pair.
-                //   - user draft (transcribing) → pink hold-over kept
-                //     deliberately as a transient state marker; flips
-                //     to the highlight pair on finalize.
-                readonly property color bubbleColor: draft
-                    ? "#ff5c8a"
-                    : (assistant ? Kirigami.Theme.alternateBackgroundColor : Kirigami.Theme.highlightColor)
-                readonly property color bubbleTextColor: draft
-                    ? "#ffffff"
-                    : (assistant ? Kirigami.Theme.textColor : Kirigami.Theme.highlightedTextColor)
                 readonly property color systemTextColor: (model.level || "status") === "error"
                     ? Kirigami.Theme.negativeTextColor
                     : Kirigami.Theme.disabledTextColor
@@ -250,12 +231,37 @@ Pane {
                     layoutDirection: assistant ? Qt.LeftToRight : Qt.RightToLeft
 
                     Frame {
+                        id: bubbleFrame
                         Layout.fillWidth: true
                         Layout.maximumWidth: maxBubbleWidth
 
+                        // Scope the bubble to a Kirigami color set so
+                        // the bg/text pair resolves correctly against
+                        // Breeze Light / Dark and the user's accent:
+                        //   - assistant → `View` (the canonical
+                        //     "elevated panel" set; carved-out look on
+                        //     dark, raised on light, distinct from
+                        //     Window in both — what NeoChat / Tokodon
+                        //     use for incoming bubbles).
+                        //   - user sent → `Selection` (Plasma's
+                        //     "this-is-yours" highlight pair).
+                        //   - draft → kept on Window so the explicit
+                        //     pink override doesn't fight a colorSet
+                        //     it doesn't match.
+                        Kirigami.Theme.colorSet: draft
+                            ? Kirigami.Theme.Window
+                            : (assistant ? Kirigami.Theme.View : Kirigami.Theme.Selection)
+                        Kirigami.Theme.inherit: false
+
                         background: Rectangle {
                             radius: root.compactMode ? Kirigami.Units.mediumSpacing : Kirigami.Units.largeSpacing
-                            color: bubbleColor
+                            color: draft ? "#ff5c8a" : Kirigami.Theme.backgroundColor
+                            // Subtle border so the bubble has edge
+                            // definition even when its bg is close to
+                            // the page bg (e.g. Breeze Light's View
+                            // bg only ~5% brighter than Window).
+                            border.color: Kirigami.Theme.separatorColor
+                            border.width: draft ? 0 : 1
                         }
 
                         contentItem: ColumnLayout {
@@ -264,7 +270,7 @@ Pane {
                             Label {
                                 visible: !root.compactMode
                                 text: assistant ? i18nCtx.i18n("Assistant") : i18nCtx.i18n("You")
-                                color: bubbleTextColor
+                                color: draft ? "#ffffff" : Kirigami.Theme.textColor
                                 opacity: 0.8
                                 font.pixelSize: 12
                                 font.weight: Font.DemiBold
@@ -274,7 +280,7 @@ Pane {
                                 Layout.fillWidth: true
                                 text: root.bubbleText(model.text)
                                 wrapMode: Text.WordWrap
-                                color: bubbleTextColor
+                                color: draft ? "#ffffff" : Kirigami.Theme.textColor
                                 textFormat: Text.PlainText
                             }
 
@@ -282,11 +288,15 @@ Pane {
                                 visible: !!(model.timestampLabel || "")
                                 Layout.fillWidth: true
                                 text: model.timestampLabel || ""
-                                // Track bubbleTextColor at reduced
+                                // Track the resolved textColor at 0.72
                                 // opacity so the timestamp reads on
-                                // both the assistant (theme bg) and
-                                // user (highlight bg) bubbles.
-                                color: Qt.rgba(bubbleTextColor.r, bubbleTextColor.g, bubbleTextColor.b, 0.72)
+                                // every bubble variant.
+                                color: draft
+                                    ? Qt.rgba(1, 1, 1, 0.72)
+                                    : Qt.rgba(Kirigami.Theme.textColor.r,
+                                              Kirigami.Theme.textColor.g,
+                                              Kirigami.Theme.textColor.b,
+                                              0.72)
                                 font.pixelSize: 10
                                 horizontalAlignment: Text.AlignLeft
                             }
