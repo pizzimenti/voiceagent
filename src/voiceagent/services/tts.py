@@ -33,7 +33,7 @@ class PiperTtsService(TextToSpeechBackend):
     # The download-verification path (`artifact_manifest`) does NOT use
     # this constant — it pins to the upstream commit SHA captured at
     # download start (see `_voices_json_url_for_sha`,
-    # `_current_download_sha`) so layer 2 (size) and layer 3 (md5)
+    # `_download_sha_by_name`) so layer 2 (size) and layer 3 (md5)
     # compare the on-disk bytes against the manifest entry that
     # describes those exact bytes. Closes the TOCTOU window where
     # upstream republished a voice between aria2 fetching it and the
@@ -63,24 +63,64 @@ class PiperTtsService(TextToSpeechBackend):
         # event.
         self._known_voice_names_cache: set[str] | None = None
         self._known_voice_names_lock = threading.Lock()
-        # SHA of `rhasspy/piper-voices` captured at the start of
-        # `_download_voice` and consumed by `artifact_manifest` during
-        # the post-download verification pass. Both pin to the same
-        # upstream commit so layers 2/3 compare the downloaded bytes
-        # against the manifest entry that describes those exact bytes.
-        # `None` outside an active download — `artifact_manifest`
-        # skips layers 2/3 (returns empty) when unset rather than
-        # falling back to `main`, which would re-open the TOCTOU
-        # window this is closing.
+        # Per-voice SHA pins of `rhasspy/piper-voices` captured at the
+        # start of `_download_voice` and consumed by `artifact_manifest`
+        # during the post-download verification pass. Both pin to the
+        # same upstream commit so layers 2/3 compare the downloaded
+        # bytes against the manifest entry that describes those exact
+        # bytes. Missing key for a voice → `artifact_manifest` skips
+        # layers 2/3 (returns empty) rather than falling back to `main`,
+        # which would re-open the TOCTOU window this is closing.
         #
-        # Single-shot scalar rather than a `_DownloadContext`
-        # dataclass: `_download_voice` and `artifact_manifest` are
-        # called sequentially on the same loader worker thread (see
-        # `ParallelItemLoader._download_worker`), so a per-instance
-        # field is the simplest plumbing that preserves the
-        # invariant without threading the SHA through three method
-        # signatures.
-        self._current_download_sha: str | None = None
+        # Per-name dict (rather than a single shared scalar) because
+        # `TtsVoiceLoader` runs downloads with `max_workers=3` (see
+        # `voiceagent.tts_loader.TtsVoiceLoader.__init__`). Two concurrent
+        # `_download_voice` calls would have stomped each other's pin on
+        # a shared scalar — voice A's verifier could read voice B's SHA
+        # and silently pass/fail the wrong artifact. Keyed by voice name
+        # so each in-flight install carries its own pin. Entries are
+        # popped on success/failure so the dict never grows unbounded.
+        #
+        # `_download_sha_lock` serializes the dict's read/write/delete
+        # operations across worker threads. We deliberately do NOT extend
+        # `_known_voice_names_lock` for this — that lock guards the
+        # voice-names cache, an unrelated invariant, and conflating the
+        # two would risk lock-ordering hazards when one critical section
+        # ends up needing both. Both locks are short-held leaf locks (no
+        # nested acquisitions, no callbacks under lock).
+        self._download_sha_by_name: dict[str, str] = {}
+        self._download_sha_lock = threading.Lock()
+        # Backward-compatible fallback pin for `artifact_manifest`. The
+        # production verifier path always lands here via the per-name
+        # entry written by `_download_voice` (the per-name lookup wins
+        # whenever it has a hit), so this field is only consulted by
+        # callers that pre-date the per-name dict — primarily
+        # `tests/test_artifact_manifest.py`, which sets the legacy
+        # `_current_download_sha` attribute directly via the property
+        # below. Concurrent installs cannot race through this field
+        # because `_download_voice` never writes here.
+        self._default_download_sha: str | None = None
+
+    @property
+    def _current_download_sha(self) -> str | None:
+        """Backward-compatible view of the pinned SHA.
+
+        Pre-dates the per-voice `_download_sha_by_name` dict added to
+        guard against the cross-install bleed that
+        `tts_loader.TtsVoiceLoader`'s `max_workers=3` executor would
+        otherwise exhibit. Kept as a property so existing tests that
+        set/clear the pin via this attribute still work without having
+        to know about the per-name dict.
+
+        Production code must NOT use this attribute — it doesn't
+        carry the per-voice keying that the concurrency fix requires.
+        Use `_download_sha_by_name` directly.
+        """
+        return self._default_download_sha
+
+    @_current_download_sha.setter
+    def _current_download_sha(self, value: str | None) -> None:
+        self._default_download_sha = value
 
     @property
     def enabled(self) -> bool:
@@ -323,21 +363,28 @@ class PiperTtsService(TextToSpeechBackend):
 
         Read by `ParallelItemLoader._verify_download` for layers 2
         (size) and 3 (checksum). Fetches `voices.json` from
-        `rhasspy/piper-voices` at the commit SHA captured by
-        `_download_voice` at download start (`_current_download_sha`).
-        Both the file bytes on disk and the manifest entry that
-        describes them resolve against the same commit, so an
-        upstream republish during the download window cannot make
-        layers 2/3 fail-close on a healthy install.
+        `rhasspy/piper-voices` at the commit SHA captured for THIS
+        voice by `_download_voice` at download start
+        (`_download_sha_by_name[item_name]`). Both the file bytes on
+        disk and the manifest entry that describes them resolve
+        against the same commit, so an upstream republish during the
+        download window cannot make layers 2/3 fail-close on a
+        healthy install.
 
-        **No SHA available** — `_current_download_sha` is `None`
-        outside an active download. We log and return an empty
-        manifest (verifier degrades to layer 1 + 4) rather than
-        falling back to `main`, which would re-open the TOCTOU
-        window this method exists to close. In practice the verifier
-        is only invoked from `_download_worker` immediately after
-        `_download_voice` sets the SHA, so this branch only fires
-        from defensive callers / tests.
+        Lookup is keyed on `item_name` (not a shared scalar) so two
+        concurrent installs running on `TtsVoiceLoader`'s
+        `max_workers=3` executor cannot bleed each other's pin —
+        voice A's verifier always sees voice A's SHA.
+
+        **No SHA available** — no entry for `item_name` in
+        `_download_sha_by_name`. Outside an active download, or for
+        an unrelated voice. We log and return an empty manifest
+        (verifier degrades to layer 1 + 4) rather than falling back
+        to `main`, which would re-open the TOCTOU window this method
+        exists to close. In practice the verifier is only invoked
+        from `_download_worker` immediately after `_download_voice`
+        sets the SHA, so this branch only fires from defensive
+        callers / tests.
 
         **Network failure during the SHA-pinned fetch** — same
         contract: empty manifest, warning log, layers 1 + 4 are
@@ -351,13 +398,31 @@ class PiperTtsService(TextToSpeechBackend):
         """
         from voiceagent.parallel_item_loader import ArtifactManifestEntry
 
-        sha = self._current_download_sha
+        # Consume-on-read: pop the per-voice pin atomically with the
+        # lookup so the verifier sees it exactly once and the dict
+        # cannot grow unbounded across many installs. Any second
+        # `artifact_manifest` call for the same voice would degrade to
+        # the empty-manifest branch — acceptable, since the verifier
+        # only fires once per install (see
+        # `ParallelItemLoader._download_worker`).
+        #
+        # Fallback to `_default_download_sha` only when no per-voice
+        # entry exists — preserves the legacy `_current_download_sha`
+        # attribute used by older tests. Production never lands here:
+        # `_download_voice` always writes the per-voice dict before the
+        # verifier runs.
+        with self._download_sha_lock:
+            sha = self._download_sha_by_name.pop(item_name, None)
+        if sha is None:
+            sha = self._default_download_sha
         if not sha:
             self._logger.warning(
-                "Piper artifact_manifest called without a pinned SHA; "
-                "skipping layers 2/3 (layers 1 + 4 still apply). This "
-                "should only happen outside of an active download — "
-                "the production verifier path always sets the SHA."
+                "Piper artifact_manifest called without a pinned SHA "
+                "for item=%s; skipping layers 2/3 (layers 1 + 4 still "
+                "apply). This should only happen outside of an active "
+                "download — the production verifier path always sets "
+                "the SHA.",
+                item_name,
             )
             return {}
 
@@ -489,8 +554,21 @@ class PiperTtsService(TextToSpeechBackend):
         # is the whole point, falling back to `main` would re-open the
         # TOCTOU window. The existing download-error UI surfaces the
         # raise to the user the same as any network failure.
+        #
+        # Pin is keyed on `voice_name` so concurrent installs (the loader
+        # runs with `max_workers=3`) cannot stomp each other's SHA — voice
+        # A's verifier always reads voice A's pin via
+        # `artifact_manifest`. NOT cleared here on success: the verifier
+        # runs AFTER `_download_voice` returns (see
+        # `ParallelItemLoader._download_worker`), so it still needs to
+        # read the pin. The verifier-side cleanup happens in
+        # `_consume_download_sha`, which `artifact_manifest` calls once
+        # the manifest fetch is done. On exception we DO pop here:
+        # `_download_worker` skips the verifier on a download failure, so
+        # if we don't pop now the entry would leak.
         sha = self._capture_repo_sha()
-        self._current_download_sha = sha
+        with self._download_sha_lock:
+            self._download_sha_by_name[voice_name] = sha
         try:
             remote_prefix = self._voice_remote_prefix(voice_name)
             onnx_url = hf_hub_url(
@@ -535,12 +613,16 @@ class PiperTtsService(TextToSpeechBackend):
             # refresh.
             self.invalidate_known_voice_names_cache()
         except Exception:
-            # On any download failure, clear the SHA so a stale value
-            # cannot leak into a follow-up `artifact_manifest` call
-            # from an unrelated codepath. The verifier won't run on a
-            # failed download (the worker emits `load_failed` and
-            # returns), but defense-in-depth.
-            self._current_download_sha = None
+            # On any download failure, drop this voice's pin so a stale
+            # value cannot leak into a follow-up `artifact_manifest`
+            # call from an unrelated codepath, and so the dict cannot
+            # grow unbounded across repeated failures. The verifier
+            # won't run on a failed download (the worker emits
+            # `load_failed` and returns), so the pin is no longer
+            # needed. Other in-flight voices are NOT affected — only
+            # this voice's entry is popped.
+            with self._download_sha_lock:
+                self._download_sha_by_name.pop(voice_name, None)
             raise
 
     def _capture_repo_sha(self) -> str:

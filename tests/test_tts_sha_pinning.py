@@ -13,11 +13,14 @@ Tests in this module exercise:
 1. `_capture_repo_sha()` returns the SHA from `HfApi.repo_info` and
    fails closed on missing/empty SHA.
 2. `_voices_json_url_for_sha()` constructs the SHA-pinned manifest URL.
-3. `_download_voice` sets `_current_download_sha`, threads the SHA
-   through `hf_hub_url(..., revision=sha)`, and clears the SHA on
-   download failure.
+3. `_download_voice` writes its SHA to `_download_sha_by_name[name]`,
+   threads the SHA through `hf_hub_url(..., revision=sha)`, and pops
+   the entry on download failure.
 4. `_download_voice` and `artifact_manifest` agree on the same SHA
    when invoked back-to-back as part of one install.
+5. Concurrent `_download_voice` calls (the loader runs with
+   `max_workers=3`) keep their per-voice pins isolated — voice A's
+   verifier always reads voice A's SHA, never voice B's.
 """
 
 from __future__ import annotations
@@ -200,6 +203,8 @@ def test_download_voice_sets_current_download_sha(piper_service, monkeypatch):
     _patch_repo_info(monkeypatch, _FAKE_SHA)
     captured_sha_during_download: list[str | None] = []
 
+    name = "en_US-ryan-high"
+
     class _Downloader:
         def get_remote_size(self, url, headers=None):
             return 0
@@ -207,23 +212,25 @@ def test_download_voice_sets_current_download_sha(piper_service, monkeypatch):
         def download(self, files, progress_callback=None, headers=None):
             # Verifier is called on this thread immediately after,
             # via `_verify_download` → `artifact_manifest` — so the
-            # SHA must be set NOW, not just before/after.
+            # SHA must be in the per-voice dict NOW, not just
+            # before/after.
             captured_sha_during_download.append(
-                piper_service._current_download_sha
+                piper_service._download_sha_by_name.get(name)
             )
             for f in files:
                 f.destination.parent.mkdir(parents=True, exist_ok=True)
                 f.destination.write_bytes(b"")
 
     piper_service.downloader = _Downloader()
-    piper_service._download_voice("en_US-ryan-high")
+    piper_service._download_voice(name)
 
     assert captured_sha_during_download == [_FAKE_SHA]
 
 
 def test_download_voice_clears_sha_on_failure(piper_service, monkeypatch):
-    """If any step inside `_download_voice` raises, the SHA must be
-    cleared so a stale value cannot leak into a follow-up call.
+    """If any step inside `_download_voice` raises, this voice's pin
+    must be popped so a stale value cannot leak into a follow-up call.
+    Other voices' pins (concurrent installs) are untouched.
     """
     _patch_repo_info(monkeypatch, _FAKE_SHA)
 
@@ -236,10 +243,16 @@ def test_download_voice_clears_sha_on_failure(piper_service, monkeypatch):
 
     piper_service.downloader = _BoomDownloader()
 
-    with pytest.raises(RuntimeError, match="aria2 failed"):
-        piper_service._download_voice("en_US-ryan-high")
+    # Pre-populate an unrelated voice's pin to prove we only pop the
+    # failing entry, not the whole dict.
+    piper_service._download_sha_by_name["en_US-amy-low"] = "other-sha"
 
-    assert piper_service._current_download_sha is None
+    name = "en_US-ryan-high"
+    with pytest.raises(RuntimeError, match="aria2 failed"):
+        piper_service._download_voice(name)
+
+    assert name not in piper_service._download_sha_by_name
+    assert piper_service._download_sha_by_name == {"en_US-amy-low": "other-sha"}
 
 
 def test_download_voice_skips_when_files_already_present(
@@ -307,3 +320,251 @@ def test_download_and_manifest_agree_on_sha(piper_service, monkeypatch):
     # Manifest is non-empty + maps to the local artifact path.
     assert manifest != {}
     assert (piper_service.model_root / f"{name}.onnx") in manifest
+
+
+# --- concurrent installs: per-voice pin isolation ------------------------
+
+
+def test_concurrent_downloads_keep_per_voice_sha_isolated(
+    piper_service, monkeypatch
+):
+    """Two concurrent `_download_voice` calls (the loader runs with
+    `max_workers=3`) must not bleed each other's pinned SHA.
+
+    Pre-fix, both calls wrote the same instance attribute
+    `_current_download_sha`, so whichever finished `_capture_repo_sha`
+    last won — voice A's verifier could end up reading voice B's SHA
+    and silently passing/failing the wrong artifact. Post-fix, each
+    install carries its own per-voice entry in
+    `_download_sha_by_name` and the verifier reads its own pin.
+
+    We simulate the race deterministically:
+    - Voice A and voice B have DIFFERENT SHAs.
+    - The fake downloader for each voice blocks on a barrier so we
+      know both `_download_voice` calls are mid-flight at the same
+      time.
+    - While both pins are simultaneously live in the dict, each call
+      records what `artifact_manifest` returns for its own voice —
+      i.e., what SHA the verifier *would* see.
+    - Each voice's recorded SHA must equal its OWN pin, not the
+      other's.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    sha_a = "a" * 40
+    sha_b = "b" * 40
+
+    name_a = "en_US-ryan-high"
+    name_b = "en_GB-alan-low"
+
+    # Different SHAs returned per voice. `_capture_repo_sha` calls
+    # `HfApi.repo_info` — we patch it to dispatch on which voice's
+    # download is currently running by inspecting the per-name dict
+    # that's already been populated by us upstream. To keep that
+    # ordering tractable, we instead pre-seed the dict ourselves and
+    # bypass `_capture_repo_sha` entirely via the per-voice fake
+    # downloader below. But `_download_voice` calls
+    # `_capture_repo_sha` BEFORE writing the pin, so we have to feed
+    # it the right SHA per call. Use a small lookup keyed on the
+    # *next* voice scheduled.
+    pending_shas: dict[str, str] = {}
+
+    def _fake_repo_info(self, repo_id, *args, **kwargs):
+        # Threads call this serialized via the lock below — first
+        # caller wins the next pending SHA. We can't see voice_name
+        # from here, so the test driver pushes the SHA each thread
+        # needs onto a queue keyed by thread id.
+        return SimpleNamespace(sha=pending_shas[threading.get_ident()])
+
+    from voiceagent.services.tts import HfApi
+    monkeypatch.setattr(HfApi, "repo_info", _fake_repo_info)
+
+    # Both threads must reach mid-download together so each writes
+    # its pin BEFORE the other reads.
+    barrier = threading.Barrier(2)
+
+    # Per-voice manifest payloads keyed by voice name.
+    payloads = {
+        name_a: {
+            name_a: {
+                "files": {
+                    f"en/en_US/ryan/high/{name_a}.onnx": {
+                        "size_bytes": 1,
+                        "md5_digest": "aaa",
+                    },
+                }
+            }
+        },
+        name_b: {
+            name_b: {
+                "files": {
+                    f"en/en_GB/alan/low/{name_b}.onnx": {
+                        "size_bytes": 2,
+                        "md5_digest": "bbb",
+                    },
+                }
+            }
+        },
+    }
+
+    # Fetch returns the manifest entry for whichever voice's SHA was
+    # passed in. Lets the verifier-side assertion confirm the
+    # per-voice SHA actually flowed through.
+    sha_to_payload = {sha_a: payloads[name_a], sha_b: payloads[name_b]}
+
+    def _fake_voices_at_sha(cls, sha):
+        return sha_to_payload[sha]
+
+    monkeypatch.setattr(
+        PiperTtsService,
+        "_fetch_voices_json_at_sha",
+        classmethod(_fake_voices_at_sha),
+    )
+
+    seen_shas: dict[str, str | None] = {}
+
+    class _BarrierDownloader:
+        """Records the per-voice SHA the verifier would see while BOTH
+        downloads are mid-flight (i.e., both pins live in the dict at
+        the same time).
+        """
+
+        def get_remote_size(self, url, headers=None):
+            return 0
+
+        def download(self, files, progress_callback=None, headers=None):
+            # Identify which voice this call is for via the
+            # destination filename.
+            onnx_dest = next(f.destination for f in files if f.destination.suffix == ".onnx")
+            voice_name = onnx_dest.stem
+            # Wait until BOTH _download_voice calls have written their
+            # pins, then read this voice's pin (without consuming it,
+            # since the read in production happens via
+            # `artifact_manifest`).
+            barrier.wait(timeout=5)
+            seen_shas[voice_name] = piper_service._download_sha_by_name.get(
+                voice_name
+            )
+            for f in files:
+                f.destination.parent.mkdir(parents=True, exist_ok=True)
+                f.destination.write_bytes(b"")
+
+    piper_service.downloader = _BarrierDownloader()
+
+    def _drive_install(name: str, sha: str) -> dict:
+        """Run one install and capture what the verifier sees."""
+        pending_shas[threading.get_ident()] = sha
+        piper_service._download_voice(name)
+        manifest = piper_service.artifact_manifest(name)
+        return {"manifest": manifest}
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_a = ex.submit(_drive_install, name_a, sha_a)
+        fut_b = ex.submit(_drive_install, name_b, sha_b)
+        result_a = fut_a.result(timeout=10)
+        result_b = fut_b.result(timeout=10)
+
+    # Mid-flight observation: each voice saw its own SHA, not the
+    # other's. THIS is the concurrency invariant the per-name dict
+    # exists to preserve.
+    assert seen_shas[name_a] == sha_a
+    assert seen_shas[name_b] == sha_b
+
+    # End-to-end check: each voice's manifest carries the entry from
+    # ITS OWN payload (which is keyed on the SHA, so the wrong SHA
+    # would either KeyError or pull the wrong voice's entry).
+    onnx_a = piper_service.model_root / f"{name_a}.onnx"
+    onnx_b = piper_service.model_root / f"{name_b}.onnx"
+    assert result_a["manifest"][onnx_a].expected_size == 1
+    assert result_a["manifest"][onnx_a].expected_checksum_hex == "aaa"
+    assert result_b["manifest"][onnx_b].expected_size == 2
+    assert result_b["manifest"][onnx_b].expected_checksum_hex == "bbb"
+
+    # Post-verify: both pins were popped (consume-on-read in
+    # `artifact_manifest`). The dict is empty — no unbounded growth.
+    assert piper_service._download_sha_by_name == {}
+
+
+def test_interleaved_writes_dont_overwrite_each_other(
+    piper_service, monkeypatch
+):
+    """Deterministic alternative to the threaded race: drive the
+    writer/verifier flow by hand to prove the per-name dict isolates
+    pins even when interleaved.
+
+    Order:
+        write voice A pin → write voice B pin → verify voice A
+        → assert A reads A → verify voice B → assert B reads B
+
+    On the pre-fix shared-scalar implementation, voice A's verifier
+    would read voice B's SHA at step 3 because step 2 stomped the
+    scalar.
+    """
+    sha_a = "a" * 40
+    sha_b = "b" * 40
+    name_a = "en_US-ryan-high"
+    name_b = "en_GB-alan-low"
+
+    payload = {
+        name_a: {
+            "files": {
+                f"en/en_US/ryan/high/{name_a}.onnx": {
+                    "size_bytes": 1,
+                    "md5_digest": "aaa",
+                }
+            }
+        },
+        name_b: {
+            "files": {
+                f"en/en_GB/alan/low/{name_b}.onnx": {
+                    "size_bytes": 2,
+                    "md5_digest": "bbb",
+                }
+            }
+        },
+    }
+
+    fetched_shas: list[str] = []
+
+    def _fake_fetch(cls, sha):
+        fetched_shas.append(sha)
+        return payload
+
+    # Same payload for any SHA — the *check* is which SHA the
+    # verifier passes to the fetcher.
+    monkeypatch.setattr(
+        PiperTtsService,
+        "_fetch_voices_json_at_sha",
+        classmethod(_fake_fetch),
+    )
+
+    # Step 1: voice A writes its pin (simulating `_download_voice`).
+    with piper_service._download_sha_lock:
+        piper_service._download_sha_by_name[name_a] = sha_a
+    # Step 2: voice B writes its pin BEFORE A's verifier runs —
+    # this is the race window pre-fix.
+    with piper_service._download_sha_lock:
+        piper_service._download_sha_by_name[name_b] = sha_b
+    # Step 3: A's verifier reads — must see A's SHA.
+    manifest_a = piper_service.artifact_manifest(name_a)
+    assert fetched_shas[-1] == sha_a, (
+        f"voice A verifier saw SHA {fetched_shas[-1]!r}, "
+        f"expected {sha_a!r}"
+    )
+    # Step 4: B's verifier reads — must still see B's SHA
+    # (A's verifier popped only A's entry).
+    manifest_b = piper_service.artifact_manifest(name_b)
+    assert fetched_shas[-1] == sha_b, (
+        f"voice B verifier saw SHA {fetched_shas[-1]!r}, "
+        f"expected {sha_b!r}"
+    )
+
+    # And the manifests carry the right voice's data.
+    onnx_a = piper_service.model_root / f"{name_a}.onnx"
+    onnx_b = piper_service.model_root / f"{name_b}.onnx"
+    assert manifest_a[onnx_a].expected_checksum_hex == "aaa"
+    assert manifest_b[onnx_b].expected_checksum_hex == "bbb"
+
+    # Both consumed — dict empty.
+    assert piper_service._download_sha_by_name == {}
