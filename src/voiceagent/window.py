@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 import logging
 from pathlib import Path
@@ -81,6 +82,15 @@ class MainWindow(QObject):
     # real `KLocalizedContext` later.
     replay_failed = Signal(str)
 
+    # Internal worker-thread → main-thread bridge for the LM Studio
+    # context-length fetch. Layer 5 / 6 design: when the selected LLM
+    # model changes, hop a `fetch_loaded_context_length()` HTTP call off
+    # to a background executor and post the integer result back here so
+    # `_context_tokens_ceiling` is mutated only from the GUI thread. The
+    # second arg carries the model name the fetch was issued for, so
+    # late-arriving results for a stale selection can be ignored.
+    _context_length_fetched = Signal(int, str)
+
     def __init__(
         self,
         controller: VoiceController,
@@ -121,6 +131,20 @@ class MainWindow(QObject):
         self._llm = LlmController(self.controller.chat_client, self.settings, parent=self)
         self._shutting_down = False
         self._state = "idle"
+        # Token-usage state for the QML context-window readout. `used`
+        # is the running prompt + completion tokens reported on the
+        # latest LM Studio chunk-with-usage; `ceiling` is the loaded
+        # model's context length (0 = unknown / no model loaded).
+        self._context_tokens_used: int = 0
+        self._context_tokens_ceiling: int = 0
+        # Dedicated single-worker executor for `fetch_loaded_context_length()`
+        # so the call cannot block the GUI thread and cannot wedge the
+        # `LlmController` executor that drives connect/select. Sized 1 —
+        # multiple in-flight fetches would race the same HTTP endpoint
+        # for no benefit.
+        self._context_length_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="voiceagent-ctxlen"
+        )
         self._model_progress_value = 0.0
         self._model_progress_indeterminate = False
         self._model_progress_text = ""
@@ -151,6 +175,13 @@ class MainWindow(QObject):
         self.controller.response_changed.connect(self._append_assistant_message)
         self.controller.error_changed.connect(self._set_error_message)
         self.controller.state_changed.connect(self._apply_state)
+        # v0.10 streaming: chunk-level chat signals from VoiceController
+        # forward to the turn coordinator (which threads them into the
+        # active assistant draft bubble) and the per-turn token count
+        # surfaces via `contextTokensUsed`.
+        self.controller.chat_thinking_chunk.connect(self._on_chat_thinking_chunk)
+        self.controller.chat_content_chunk.connect(self._on_chat_content_chunk)
+        self.controller.chat_usage_changed.connect(self._on_chat_usage_changed)
         self.replay_player.playback_started.connect(self.controller.handle_aux_playback_started)
         self.replay_player.playback_finished.connect(self.controller.handle_aux_playback_finished)
         self.replay_player.playback_failed.connect(self.controller.handle_aux_playback_failed)
@@ -189,6 +220,12 @@ class MainWindow(QObject):
         self._llm.selected_model_changed.connect(self._on_llm_selected_model_changed)
         self._llm.status_message.connect(self._on_llm_status_message)
         self._llm.error.connect(self._on_llm_error)
+        # Worker → GUI bridge for the context-length fetch. The slot
+        # validates the result is for the *current* selection before
+        # writing through to `_context_tokens_ceiling`, which guards
+        # against late results from a previous model after a fast
+        # load-then-switch.
+        self._context_length_fetched.connect(self._on_context_length_fetched)
 
         self._restore_initial_selections()
         self._apply_audio_mute_state(self.settings.value("audio_output_muted", False, bool))
@@ -266,6 +303,12 @@ class MainWindow(QObject):
         self.tts_loader.shutdown()
         self.replay_player.stop()
         self._llm.shutdown()
+        # Tear down the context-length probe executor. Mirrors the
+        # llm_controller shutdown pattern: drop pending fetches rather
+        # than block app exit on a slow HTTP probe.
+        self._context_length_executor.shutdown(
+            wait=False, cancel_futures=True
+        )
         app = QApplication.instance()
         if app is not None:
             app.sendPostedEvents()
@@ -386,6 +429,14 @@ class MainWindow(QObject):
     @Property(bool, notify=ui_changed)
     def llmModelBusy(self) -> bool:  # noqa: N802
         return self._llm.model_busy
+
+    @Property(int, notify=ui_changed)
+    def contextTokensUsed(self) -> int:  # noqa: N802
+        return self._context_tokens_used
+
+    @Property(int, notify=ui_changed)
+    def contextTokensCeiling(self) -> int:  # noqa: N802
+        return self._context_tokens_ceiling
 
     @Property(bool, notify=ui_changed)
     def talkReady(self) -> bool:  # noqa: N802
@@ -583,6 +634,12 @@ class MainWindow(QObject):
         self.settings.setValue("theme_mode", normalized)
         self._apply_theme_mode(normalized)
         self.ui_changed.emit()
+
+    @Slot(int, bool)
+    def setThinkingExpanded(self, row: int, expanded: bool) -> None:  # noqa: N802
+        # Thin forwarder — the coordinator owns the row-level mutation
+        # so the conversation model is the only writer of bubble state.
+        self._turn_coordinator.set_thinking_expanded(row, expanded)
 
     @Slot(int)
     def replayMessage(self, index: int) -> None:  # noqa: N802
@@ -821,7 +878,73 @@ class MainWindow(QObject):
     def _on_llm_models_changed(self, _models: list[str], _loaded_model: str) -> None:
         self.ui_changed.emit()
 
-    def _on_llm_selected_model_changed(self, _model: str) -> None:
+    def _on_llm_selected_model_changed(self, model: str) -> None:
+        # When the loaded model changes, the previous ceiling no longer
+        # applies. Reset immediately on the GUI thread; if a new model
+        # is loaded, hop the (blocking) context-length probe to the
+        # background executor so the GUI thread never waits on HTTP.
+        self._context_tokens_ceiling = 0
+        # Token usage from the previous model's last turn is meaningless
+        # against the new (or absent) model; clear it too.
+        self._context_tokens_used = 0
+        if model:
+            self._submit_context_length_fetch(model)
+        self.ui_changed.emit()
+
+    def _submit_context_length_fetch(self, model: str) -> None:
+        chat_client = self.controller.chat_client
+        future = self._context_length_executor.submit(
+            chat_client.fetch_loaded_context_length
+        )
+        future.add_done_callback(
+            lambda completed, name=model: self._handle_context_length_future(
+                completed, name
+            )
+        )
+
+    def _handle_context_length_future(
+        self, future: Future[int], model: str
+    ) -> None:
+        # Runs on the worker thread. Coerce + bridge across the
+        # `_context_length_fetched` signal so the GUI thread is the
+        # only writer to `_context_tokens_ceiling`.
+        try:
+            value = int(future.result() or 0)
+        except Exception:  # pragma: no cover - defensive bridge
+            value = 0
+        self._context_length_fetched.emit(value, model)
+
+    @Slot(int, str)
+    def _on_context_length_fetched(self, value: int, model: str) -> None:
+        # Drop late results that arrive after the user has already
+        # switched away from the model whose ceiling was being probed.
+        # The current selection is on the chat client (not _llm.models)
+        # because LlmController writes through `set_model` immediately
+        # on each transition.
+        if model != self.controller.chat_client.model:
+            return
+        if value < 0:
+            value = 0
+        if value == self._context_tokens_ceiling:
+            return
+        self._context_tokens_ceiling = value
+        self.ui_changed.emit()
+
+    def _on_chat_thinking_chunk(self, text: str) -> None:
+        # Thin forwarder — coordinator owns the streaming-thinking
+        # bubble policy. `conversation_changed` propagates through the
+        # coordinator's own signal, but emitting here keeps the QML
+        # `conversationMessageCount` binding in lockstep with the chunk
+        # arrival even on the first chunk that promotes a draft row.
+        self._turn_coordinator.on_chat_thinking_chunk(text)
+        self.conversation_changed.emit()
+
+    def _on_chat_content_chunk(self, text: str) -> None:
+        self._turn_coordinator.on_chat_content_chunk(text)
+        self.conversation_changed.emit()
+
+    def _on_chat_usage_changed(self, prompt: int, completion: int) -> None:
+        self._context_tokens_used = int(prompt) + int(completion)
         self.ui_changed.emit()
 
     def _on_llm_status_message(self, message: str) -> None:
