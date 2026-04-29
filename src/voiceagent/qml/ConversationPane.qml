@@ -4,13 +4,15 @@ import QtQuick.Layouts
 import org.kde.kirigami 2.20 as Kirigami
 
 // Conversation pane shown by every responsive layout (medium/compact).
-// Hosts the rolling transcript ListView, scroll-to-bottom button, and the
-// compact-mode mic button. Loaded via Loader from MainWindow.qml.
+// Hosts the rolling transcript ListView and scroll-to-bottom button. The
+// compact-mode mic button is rendered at page level by MainWindow.qml;
+// `micAnchor` here reserves the layout slot the mic occupies in this
+// pane.
 //
 // `root` here is aliased to the containing ApplicationWindow so the existing
-// bindings (root.compactMode, root.bubbleText(...), root.scrollList(...),
-// root.micButtonColor, root.micPulseColor) keep resolving against the
-// MainWindow scope after the move out of the inline Component definition.
+// bindings (root.compactMode, root.bubbleText(...), root.scrollList(...))
+// keep resolving against the MainWindow scope after the move out of the
+// inline Component definition.
 Pane {
     id: conversationPane
 
@@ -22,6 +24,10 @@ Pane {
     // binding lands — without the lazy guard, first-paint TypeErrors
     // fire (PR #5 was reverted for exactly this reason).
     required property var voiceAgent
+
+    // Exposed so MainWindow.qml's page-level mic can bind its geometry
+    // to this pane's reserved mic slot via Loader.item.micAnchor.
+    property alias micAnchor: micAnchorItem
 
     readonly property var root: ApplicationWindow.window
 
@@ -326,7 +332,9 @@ Pane {
             }
         }
 
-        MicButtonFrame {
+        Item {
+            id: micAnchorItem
+            objectName: "micAnchor"
             visible: root.compactMode
             Layout.fillWidth: true
             // ultraCompact: claim all freed vertical space (the conversation
@@ -336,21 +344,6 @@ Pane {
             Layout.fillHeight: root.ultraCompactMode
             Layout.preferredHeight: root.ultraCompactMode ? -1 : Kirigami.Units.gridUnit * 5
             Layout.minimumHeight: Kirigami.Units.gridUnit * 4
-            voiceAgent: conversationPane.voiceAgent
-            // Icon and font sizes scale with the actual frame height so
-            // the inner Button's contentItem doesn't overflow at small
-            // heights and look cut off at the bottom.
-            iconSize: Math.max(18, Math.min(48, height * 0.32))
-            fontPixel: Math.max(10, Math.min(14, height * 0.10))
-            borderWidth: root.compactMode ? 3 : 0
-            buttonColor: root.micButtonColor
-            pulseColor: root.micPulseColor
-            // No animation in compact mode; the inner MicButton receives
-            // pinned, opaque-looking glow values directly.
-            animatePulse: false
-            glowOpacity: 0.85
-            glowScale: 1.0
-            pulseActive: true
         }
     }
 }

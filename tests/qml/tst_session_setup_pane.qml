@@ -41,9 +41,6 @@ TestCase {
                 voiceAgent: stubAgent
                 compactMode: false
                 mediumMode: true
-                micPulseActive: false
-                micButtonColor: "white"
-                micPulseColor: "white"
             }
         }
     }

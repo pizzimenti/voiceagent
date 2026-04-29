@@ -5,23 +5,15 @@ import org.kde.kirigami 2.20 as Kirigami
 
 // Session Setup pane shown above the conversation in medium mode. Hosts
 // the STT / TTS selectors, LLM URL + connect button, loaded-model
-// selector, and the medium-mode pulsing mic frame, plus model / tts
-// loading progress rows.
+// selector, plus model / tts loading progress rows. The medium-mode
+// mic button is rendered at page level by MainWindow.qml so its
+// geometry can animate across the compact ↔ medium breakpoint flip.
+// `micAnchor` here reserves the layout slot the mic occupies in this
+// pane; the actual MicButtonFrame floats over the anchor at page level.
 //
-// This component takes voiceAgent + the few responsive-mode predicates +
-// mic colors as required properties rather than reaching back through
-// ApplicationWindow.window. Internal `voiceAgent.*` references use the
-// `voiceAgent ? ... : fallback` ternary form for the same nested-binding
-// timing reason documented on MicButton / ConversationPane.
-//
-// The label/control pairs use `Kirigami.FormLayout` (the documented
-// Kirigami pattern for settings/control groups). Compact-mode collapse
-// is driven by `Kirigami.FormLayout.wideMode: !compactMode` — wideMode
-// false stacks each label above its control on one column; wideMode
-// true puts label-and-control side-by-side. The medium-mode mic frame
-// sits next to the form via the surrounding RowLayout, replacing the
-// previous GridLayout's `Layout.row/Layout.column/Layout.rowSpan`
-// hand-positioning.
+// Compact-mode collapse is driven by `Kirigami.FormLayout.wideMode`:
+// wideMode false stacks each label above its control on one column;
+// wideMode true puts label-and-control side-by-side.
 Pane {
     id: sessionPane
 
@@ -32,10 +24,9 @@ Pane {
     required property bool compactMode
     required property bool mediumMode
 
-    // Mic-frame inputs (medium-mode only).
-    required property bool micPulseActive
-    required property color micButtonColor
-    required property color micPulseColor
+    // Exposed so MainWindow.qml's page-level mic can bind its geometry
+    // to this pane's reserved mic slot via Loader.item.micAnchor.
+    property alias micAnchor: micAnchorItem
 
     function _stringIndex(options, value) {
         for (let i = 0; i < options.length; i += 1) {
@@ -199,24 +190,13 @@ Pane {
                     }
                 }
 
-                MicButtonFrame {
-                    id: mediumMicButtonFrame
+                Item {
+                    id: micAnchorItem
+                    objectName: "micAnchor"
                     visible: sessionPane.mediumMode
                     Layout.fillHeight: true
                     Layout.minimumWidth: Kirigami.Units.gridUnit * 9
                     Layout.preferredWidth: Kirigami.Units.gridUnit * 10
-                    voiceAgent: sessionPane.voiceAgent
-                    iconSize: 34
-                    fontPixel: 11
-                    borderWidth: 3
-                    buttonColor: sessionPane.micButtonColor
-                    pulseColor: sessionPane.micPulseColor
-                    pulseActive: sessionPane.micPulseActive
-                    animatePulse: true
-                    // Initial glow values are overwritten by the
-                    // SequentialAnimation as soon as it starts.
-                    glowOpacity: sessionPane.micPulseActive ? 0.5 : 0.2
-                    glowScale: 1.0
                 }
             }
         }
