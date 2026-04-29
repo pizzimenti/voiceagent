@@ -177,9 +177,19 @@ Pane {
                 width: conversationView.width
                 readonly property bool systemEntry: model.messageRole === "system"
                 readonly property bool statusEntry: model.messageRole === "status"
+                // Verbose toggle hides existing status entries on the
+                // fly. The coordinator already gates *new* status rows
+                // on logVerboseMode, but rows already in the model
+                // would otherwise stay visible until restart. Read the
+                // live property here so toggling rebuilds the layout.
+                readonly property bool verboseMode: conversationPane.voiceAgent
+                    ? conversationPane.voiceAgent.logVerboseMode
+                    : false
+                readonly property bool statusEntryVisible: statusEntry && verboseMode
                 implicitHeight: statusEntry
-                    ? statusMessage.implicitHeight
+                    ? (verboseMode ? statusMessage.implicitHeight : 0)
                     : (systemEntry ? systemMessage.implicitHeight : messageRow.implicitHeight)
+                visible: !statusEntry || verboseMode
 
                 property bool assistant: model.messageRole === "assistant"
                 readonly property string bubbleState: model.bubbleState || "sent"
@@ -207,10 +217,15 @@ Pane {
                 readonly property color systemTextColor: (model.level || "status") === "error"
                     ? Kirigami.Theme.negativeTextColor
                     : Kirigami.Theme.disabledTextColor
-                // Hardcoded purple. Kirigami.Theme.linkColor on Breeze is blue,
-                // not purple, so we tune this independently. Verified to read
-                // against both Breeze Light and Dark backgrounds.
-                readonly property color statusTextColor: "#9b6bcc"
+                // Status-row purple, hand-tuned per theme. Original
+                // single `#9b6bcc` was too light against white in
+                // Light mode and too dark against the page bg in
+                // Dark mode. Same hue (~270°), shifted lightness:
+                //   - Light theme: deeper purple for stronger
+                //     contrast on white.
+                //   - Dark theme : softer lavender for stronger
+                //     contrast on the dark page bg.
+                readonly property color statusTextColor: darkTheme ? "#bf95e8" : "#7b4ab8"
                 readonly property real maxBubbleWidth: Math.min(
                     conversationView.width * (root.compactMode ? 0.96 : (root.mediumMode ? 0.9 : 0.78)),
                     Kirigami.Units.gridUnit * (root.compactMode ? 18 : (root.mediumMode ? 28 : 34))
@@ -231,7 +246,7 @@ Pane {
 
                 Label {
                     id: statusMessage
-                    visible: parent.statusEntry
+                    visible: parent.statusEntryVisible
                     width: parent.width
                     text: root.bubbleText(model.text)
                     wrapMode: Text.WordWrap
