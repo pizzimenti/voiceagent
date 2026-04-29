@@ -144,6 +144,15 @@ class MainWindow(QObject):
         self._llm = LlmController(self.controller.chat_client, self.settings, parent=self)
         self._shutting_down = False
         self._state = "idle"
+        # Track the model we last reacted to so we can short-circuit
+        # no-op `selected_model_changed` re-fires (LM Studio refresh,
+        # reconnect, URL change). Without this guard the
+        # context-tokens counters reset and a fresh
+        # `fetch_loaded_context_length` HTTP probe fires on every
+        # repeat, even when the loaded model genuinely hasn't changed.
+        # Seeded from the chat client's current model so an
+        # autoconnect that re-resolves the same name is silent.
+        self._last_selected_llm_model: str = self.controller.chat_client.model
         # v0.11 multi-turn history. The coordinator owns the trim
         # invariant ("visible transcript == what the LLM sees on the
         # next call"); seed its cap from `AppConfig` via the
@@ -913,6 +922,15 @@ class MainWindow(QObject):
         self.ui_changed.emit()
 
     def _on_llm_selected_model_changed(self, model: str) -> None:
+        # Short-circuit duplicate fires of the same model. LlmController
+        # already tries to gate this internally, but several paths
+        # (set_current_url, refresh_models, autoconnect retries) can
+        # legitimately re-emit with an unchanged value; we don't want
+        # to reset counters or queue a fresh context-length probe each
+        # time a refresh re-confirms the loaded model.
+        if model == self._last_selected_llm_model:
+            return
+        self._last_selected_llm_model = model
         # When the loaded model changes, the previous ceiling no longer
         # applies. Reset immediately on the GUI thread; if a new model
         # is loaded, hop the (blocking) context-length probe to the

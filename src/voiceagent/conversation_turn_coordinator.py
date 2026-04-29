@@ -500,14 +500,18 @@ class ConversationTurnCoordinator(QObject):
         if excess % 2 == 1:
             excess += 1
         if excess >= len(finalized):
-            # Cap shrunk dramatically (e.g. set_max_history_turns(0)
-            # mid-session). Clear everything, then re-establish the
-            # streaming pointer if the just-promoted assistant was
-            # what we were tracking — which it isn't, since the
-            # assistant has been promoted to "sent" before this
-            # helper is called.
-            return
-        keep_from_index = finalized[excess]
+            # Cap is smaller than a complete pair (e.g. `cap=1`).
+            # Drop EVERY finalized row plus any non-pair rows
+            # interleaved between them — pair-integrity beats keeping
+            # a stranded single-side row at the head. Anything after
+            # the last finalized row (a trailing status breadcrumb,
+            # or a freshly-arriving draft) belongs to a still-open
+            # turn and stays. Without this branch the early `return`
+            # left the visible transcript growing unbounded at
+            # `cap=1`, which Codex P2 surfaced.
+            keep_from_index = finalized[-1] + 1
+        else:
+            keep_from_index = finalized[excess]
         if keep_from_index <= 0:
             return
         # Adjust the streaming-draft pointer for the row shift before

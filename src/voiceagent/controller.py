@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 import logging
 from pathlib import Path
 import time
-from typing import Callable
 
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 

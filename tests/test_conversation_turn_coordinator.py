@@ -849,7 +849,7 @@ def test_clear_resets_model_and_internal_state(model_and_coordinator):
 
 
 def test_clear_emits_conversation_changed_when_rows_present(model_and_coordinator):
-    model, coord = model_and_coordinator(verbose=False)
+    _model, coord = model_and_coordinator(verbose=False)
     coord.on_user_transcript("u1")
     spy = QSignalSpy(coord.conversation_changed)
     coord.clear()
@@ -973,3 +973,23 @@ def test_set_max_history_turns_clamps_negative(model_and_coordinator):
         coord.on_user_transcript(f"u{i}")
         coord.on_assistant_response(f"a{i}")
     assert model.rowCount() == 10
+
+
+def test_trim_at_cap_one_drops_all_finalized(model_and_coordinator):
+    """Codex P2 edge case: with `cap=1`, the pair-integrity rounding
+    pushes `excess` to equal `len(finalized)`. The earlier early-
+    return left the transcript growing unbounded — fix drops every
+    finalized row instead so the cap is actually enforced."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(1)
+    coord.on_user_transcript("u0")
+    coord.on_assistant_response("a0")
+    # First pair lands → trim drops both (pair integrity beats
+    # keeping a single user turn at cap=1).
+    assert model.rowCount() == 0
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    # Same again — the visible transcript does NOT grow.
+    assert model.rowCount() == 0
+
+

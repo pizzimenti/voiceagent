@@ -857,6 +857,11 @@ def test_context_ceiling_resets_to_zero_when_model_unloaded(
     # Seed a non-zero ceiling first so we can assert it's cleared.
     window._context_tokens_ceiling = 8192
     chat_client.fetch_context_length_calls = 0
+    # Simulate the workflow precondition: a real model was loaded
+    # before this unload event. Without seeding the prior selection,
+    # MainWindow's same-model short-circuit (added to suppress
+    # refresh-spam re-fires) would no-op the "" → "" transition.
+    window._last_selected_llm_model = "previously-loaded"
 
     window._llm.selected_model_changed.emit("")
     _drain_events()
@@ -970,6 +975,42 @@ def test_max_history_turns_propagated_to_coordinator(main_window_factory):
         window._turn_coordinator._max_history_turns  # pyright: ignore[reportPrivateUsage]
         == window.controller.max_history_turns
     )
+
+
+def test_same_model_repeat_does_not_reset_counters_or_refetch(
+    main_window_factory,
+):
+    """LM Studio refresh / reconnect / URL-change paths can re-emit
+    `selected_model_changed` with the SAME model name. Resetting the
+    context-token counters and queueing a fresh
+    `fetch_loaded_context_length` HTTP probe each time would be
+    wasteful (and visibly flicker the bar). MainWindow short-circuits
+    on the model-equality check."""
+    window = main_window_factory()
+    chat_client = window.controller.chat_client
+    chat_client.context_length_value = 8192
+    # Bring the window into a steady state under "test-model".
+    chat_client.set_model("test-model")
+    window._llm.selected_model_changed.emit("test-model")
+    # Drain enough events for the worker probe to land.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and window.contextTokensCeiling != 8192:
+        _drain_events(times=2)
+    assert window.contextTokensCeiling == 8192
+    fetch_calls_after_first = chat_client.fetch_context_length_calls
+
+    # Seed visible "used" so we can detect a reset.
+    window.controller.chat_usage_changed.emit(120, 8)
+    _drain_events()
+    assert window.contextTokensUsed == 128
+
+    # Refresh re-emits the SAME model. Should be a no-op.
+    window._llm.selected_model_changed.emit("test-model")
+    _drain_events()
+
+    assert window.contextTokensCeiling == 8192  # unchanged
+    assert window.contextTokensUsed == 128       # unchanged
+    assert chat_client.fetch_context_length_calls == fetch_calls_after_first
 
 
 def test_visible_transcript_trims_when_cap_hits(main_window_factory):

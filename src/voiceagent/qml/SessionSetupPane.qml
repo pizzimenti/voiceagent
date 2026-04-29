@@ -188,7 +188,7 @@ Pane {
                         currentIndex: sessionPane.voiceAgent
                             ? sessionPane._stringIndex(sessionPane.voiceAgent.llmModelOptions, sessionPane.voiceAgent.selectedLlmModel)
                             : -1
-                        displayText: currentIndex <= 0 ? sessionPane.tr("Select a loaded model") : currentText
+                        displayText: currentIndex < 0 ? sessionPane.tr("Select a loaded model") : currentText
                         onActivated: {
                             if (sessionPane.voiceAgent) {
                                 sessionPane.voiceAgent.selectLlmModel(currentText);

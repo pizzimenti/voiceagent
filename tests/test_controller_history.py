@@ -186,14 +186,18 @@ def test_run_pipeline_does_not_mutate_caller_history(make_controller):
     """The provider hands a list to the controller; the executor must
     NOT mutate it in place — appending a current-turn user message to
     the snapshot would corrupt the shared list if the controller
-    reused the same provider closure across turns."""
-    ctrl, chat, audio_path = make_controller(transcript="follow up")
+    reused the same provider closure across turns. Use a deep copy
+    so an in-place edit to any nested dict still trips the assertion
+    (a shallow `list(history)` would silently miss it)."""
+    import copy
+
+    ctrl, _chat, audio_path = make_controller(transcript="follow up")
     history = [
         {"role": "system", "content": "you are local"},
         {"role": "user", "content": "earlier"},
         {"role": "assistant", "content": "earlier reply"},
     ]
-    snapshot_before = list(history)
+    snapshot_before = copy.deepcopy(history)
     ctrl._run_pipeline(audio_path, history)
     assert history == snapshot_before
 
