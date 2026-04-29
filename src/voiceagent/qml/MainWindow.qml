@@ -460,6 +460,86 @@ Kirigami.ApplicationWindow {
                     Behavior on height { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
                 }
             }
+
+            // Context-token progress strip. Visible only when the loaded
+            // model's ceiling is known (`contextTokensCeiling > 0`); offscreen
+            // visualtest renders without a real LLM keep ceiling == 0 and the
+            // strip stays hidden, matching the existing screenshot baseline.
+            // Layout sits below `dashboardModes` (the conversation/session
+            // pane area) so it hugs the bottom of the page content area
+            // above any system chrome. The bar fill animates over 250 ms to
+            // match the rest of the window's responsive transitions.
+            Item {
+                id: contextTokenStrip
+
+                // `|| 0` defends against undefined when the Layer-6 backend
+                // properties are not yet present (e.g. mid-merge of the
+                // v0.10 layer bundle). undefined-on-int property returns
+                // NaN through JS arithmetic; coercing to 0 keeps usageRatio
+                // sane and visible gated to "ceiling known and > 0".
+                readonly property int tokensUsed: (root.voiceAgent.contextTokensUsed || 0)
+                readonly property int tokensCeiling: (root.voiceAgent.contextTokensCeiling || 0)
+                readonly property real usageRatio: {
+                    if (tokensCeiling <= 0) return 0;
+                    return Math.min(1.0, tokensUsed / tokensCeiling);
+                }
+                // Green-blue at low usage, amber > 0.75, red > 0.9. The
+                // theme's neutral/negative roles already track Plasma's
+                // light/dark mode so this picks up the v0.9.x theme work
+                // for free.
+                readonly property color barFillColor: {
+                    if (usageRatio > 0.9) return Kirigami.Theme.negativeTextColor;
+                    if (usageRatio > 0.75) return Kirigami.Theme.neutralTextColor;
+                    return Kirigami.Theme.highlightColor;
+                }
+
+                Layout.fillWidth: true
+                Layout.preferredHeight: Kirigami.Units.gridUnit + Kirigami.Units.smallSpacing
+                visible: tokensCeiling > 0
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: Kirigami.Units.smallSpacing
+                    anchors.rightMargin: Kirigami.Units.smallSpacing
+                    spacing: 2
+
+                    // Tiny label above the bar with raw counts + percentage.
+                    // Hidden in ultraCompactMode where vertical space is at
+                    // a premium; the bar itself still renders and conveys
+                    // usage at a glance.
+                    Label {
+                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignRight
+                        visible: !root.ultraCompactMode
+                        text: i18nCtx.i18n("%1 / %2 tokens (%3%)")
+                            .arg(contextTokenStrip.tokensUsed)
+                            .arg(contextTokenStrip.tokensCeiling)
+                            .arg(Math.round(contextTokenStrip.usageRatio * 100))
+                        font.pixelSize: 10
+                        color: Kirigami.Theme.disabledTextColor
+                    }
+
+                    // The bar itself — 4 px high progress strip. Fill
+                    // width animates so a turn that suddenly consumes a
+                    // large chunk of context glides rather than snaps.
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 4
+                        color: Kirigami.Theme.alternateBackgroundColor
+                        radius: 2
+
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: parent.width * contextTokenStrip.usageRatio
+                            radius: parent.radius
+                            color: contextTokenStrip.barFillColor
+                            Behavior on width { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+                        }
+                    }
+                }
+            }
         }
     }
 }
