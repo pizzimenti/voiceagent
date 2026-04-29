@@ -89,14 +89,26 @@ Pane {
                 spacing: Kirigami.Units.smallSpacing
                 model: conversationPane.voiceAgent ? conversationPane.voiceAgent.conversationModel : null
                 boundsBehavior: Flickable.StopAtBounds
-                // v0.9.11: lowered from 1800 to 900 to extend the
-                // wheel-driven inertial flick's glide. With the
-                // 2x velocity bump in MainWindow.scrollList(), the
-                // combined effect is ~8x the v0.9.9 glide distance
-                // per wheel notch (glide ∝ v² / (2 * deceleration)).
-                flickDeceleration: 900
+                // Default Flickable deceleration is restored — the
+                // hand-tuned scrollList curve (v0.8.0 → v0.9.11) is
+                // gone in favor of `Kirigami.WheelHandler` below,
+                // which manages velocity itself.
                 maximumFlickVelocity: 24000
                 ScrollBar.vertical: ScrollBar {}
+
+                // Kirigami's purpose-built wheel handler. Replaces the
+                // custom MouseArea + MainWindow.scrollList curve that
+                // had to be retuned three times (v0.9.9 / .11 / .x)
+                // and still shipped at 1/5 native speed on Plasma 6 /
+                // Wayland with high-resolution scroll input. The
+                // handler routes wheel events into the underlying
+                // Flickable's native flick, which gives us proper
+                // inertia and source-aware velocity (mouse wheel,
+                // hi-res mouse, touchpad continuous events) for free.
+                Kirigami.WheelHandler {
+                    target: conversationView
+                    filterMouseEvents: true
+                }
 
                 // The model is stable; only rows mutate. Keep scrolling deterministic:
                 // stick to the true bottom until the user intentionally leaves it.
@@ -162,19 +174,6 @@ Pane {
                         if (conversationView.stickToBottom) {
                             conversationView.forceBottom();
                         }
-                    }
-                }
-
-                // MouseArea overlay captures wheel before the Flickable does.
-                // acceptedButtons: Qt.NoButton lets mouse presses pass through to delegates.
-                MouseArea {
-                    anchors.fill: parent
-                    acceptedButtons: Qt.NoButton
-                    propagateComposedEvents: true
-                    z: 2
-                    onWheel: function(wheel) {
-                        root.scrollList(conversationView, wheel);
-                        conversationView.updateStickinessFromPosition();
                     }
                 }
 
