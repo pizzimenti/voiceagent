@@ -130,21 +130,11 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    Kirigami.Action {
-        id: muteAction
-        text: (root.hasVoiceAgent && voiceAgent.audioMuted) ? root.tr("Unmute") : root.tr("Mute")
-        icon.name: (root.hasVoiceAgent && voiceAgent.audioMuted) ? "audio-volume-muted-symbolic" : "audio-volume-high-symbolic"
-        icon.color: Kirigami.Theme.textColor
-        enabled: root.hasVoiceAgent && voiceAgent.talkReady
-        onTriggered: {
-            if (root.hasVoiceAgent) {
-                voiceAgent.setAudioMuted(!voiceAgent.audioMuted);
-            }
-        }
-    }
+    // (The toolbar Mute action was removed in favor of an inline
+    //  ▶ / 🤫 toggle on each assistant bubble. See ConversationPane.qml.)
 
     // Verbose-log toggle, surfaced on the page header alongside theme /
-    // mute / model-manager so all stateful UI affordances live on one
+    // model-manager so all stateful UI affordances live on one
     // command surface rather than scattered across pane headers.
     // Hidden in compact mode (where the page header itself is hidden).
     Kirigami.Action {
@@ -365,7 +355,6 @@ Kirigami.ApplicationWindow {
         title: root.tr("Voice Agent")
         actions: [
             themeAction,
-            muteAction,
             verboseLogAction,
             modelManagerAction
         ]

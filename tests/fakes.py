@@ -131,9 +131,6 @@ class FakePlayer(QObject):
         self.played_paths.append(path)
         return True
 
-    def set_muted(self, muted: bool) -> None:
-        self._muted = muted
-
 
 class FakeTranscriber:
     """`SpeechToTextBackend` stand-in covering both protocol surfaces:

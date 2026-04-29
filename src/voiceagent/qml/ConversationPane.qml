@@ -487,17 +487,39 @@ Pane {
                         }
                     }
 
+                    // ▶ / 🤫 toggle. Replaces the static "Replay"
+                    // button (and the toolbar mute action). When the
+                    // voiceagent is currently reading THIS row, show
+                    // 🤫 — clicking it cuts the speech mid-utterance
+                    // (`stopSpeaking`) without touching the voice
+                    // connection. Otherwise show ▶ — clicking
+                    // re-synthesizes + plays this row's text
+                    // (`replayMessage`).
+                    //
+                    // `model.replayable` is coerced to bool — the
+                    // role returns `undefined` for system / status /
+                    // draft rows, and `visible: ... && undefined`
+                    // produces a log warning per row per resize.
                     Button {
-                        // Coerce `model.replayable` to bool — the role
-                        // returns `undefined` for rows that never set
-                        // it (system / status / draft entries), and
-                        // QML's `visible: ... && undefined` produces a
-                        // log warning per row per resize.
+                        readonly property bool thisRowSpeaking:
+                            conversationPane.voiceAgent
+                                ? conversationPane.voiceAgent.speakingRow === index
+                                : false
                         visible: !root.compactMode && !!model.replayable
-                        text: conversationPane.tr("Replay")
+                        text: thisRowSpeaking ? "🤫" : "▶"
+                        font.pixelSize: 14
+                        ToolTip.visible: hovered
+                        ToolTip.text: thisRowSpeaking
+                            ? conversationPane.tr("Quiet — stop speaking")
+                            : conversationPane.tr("Replay")
                         Layout.alignment: Qt.AlignBottom
                         onClicked: {
-                            if (conversationPane.voiceAgent) {
+                            if (!conversationPane.voiceAgent) {
+                                return;
+                            }
+                            if (thisRowSpeaking) {
+                                conversationPane.voiceAgent.stopSpeaking();
+                            } else {
                                 conversationPane.voiceAgent.replayMessage(index);
                             }
                         }

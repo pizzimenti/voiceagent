@@ -155,7 +155,7 @@ along with their parent pair.
 `MainWindow` wires `controller.max_history_turns` →
 `coordinator.set_max_history_turns(...)` once at construction.
 
-### Tests (363 → 420, +57)
+### Tests (363 → 442, +79)
 
 - `tests/test_chat.py` (+3) — `test_complete_posts_messages_verbatim_no_injection`
   locks the v0.11 contract that the client never injects the system
@@ -189,6 +189,78 @@ along with their parent pair.
   and provider agree).
 - `tests/fakes.py` — `FakeChatClient` gained `system_prompt`
   attribute + `complete()` keyword-args matching the real shape.
+
+### Replaced — Mute toolbar action → per-bubble ▶/🤫 toggle
+
+The toolbar Mute action and its underlying machinery (`audioMuted`
+Q_PROPERTY, `setAudioMuted` slot, `AudioPlayer.set_muted`,
+`muted_changed` signal, the worker's mute branch + counter) were
+retired. Muting mid-utterance is genuinely useless once the
+audio's been generated — the user wanted a "stop reading this turn
+NOW, leave the mic hot for the next thing I'm about to say"
+button.
+
+Each assistant bubble now carries an inline button that toggles
+between ▶ (when nothing is playing this row's audio) and 🤫 (when
+this row IS being read aloud — by the in-pipeline auto-play OR by
+a user-triggered replay). Click ▶ → `replayMessage(index)`. Click
+🤫 → `stopSpeaking()`, which calls `stop()` on both
+`controller.player` (in-pipeline) and `replay_player` (user
+replays) and resets a new `speakingRow: int` Q_PROPERTY back to
+-1. The voice connection is deliberately untouched so the next
+user turn can begin immediately.
+
+`speakingRow` tracks which row owns the currently-playing audio:
+
+- in-pipeline auto-play → most recent finalized assistant row
+  (resolved via `find_message_index("assistant", bubble_state="sent",
+  turn_pending=False)` on `playback_started`).
+- replay → the row index the user clicked, stashed in
+  `_pending_replay_row` before `play_file` so the
+  `playback_started` signal can pick it up.
+- both reset to -1 on `playback_finished` / `playback_failed`,
+  and on the explicit `stopSpeaking()` slot.
+
+### Fixed — Model-switch timeout (pre-v0.11 bug, hit during testing)
+
+`AppConfig.lm_studio_timeout_seconds` (default 10 s) was applied
+to every HTTP call including `POST /api/v1/models/load`, which
+LM Studio frequently takes 30-90+ seconds to complete (longer on
+first-load with cold disk). Result: model switches initiated from
+within voiceagent timed out with "timed out after 10 seconds"
+even though the same swap from LM Studio's own UI worked. Added
+`AppConfig.lm_studio_load_timeout_seconds` (default 300, env
+`LM_STUDIO_LOAD_TIMEOUT_SECONDS`), wired through to a per-call
+override on `_json_request` used only by the `/models/load`
+POST. Fast-path queries (list models, fetch context length,
+list-loaded, unload) keep the 10 s budget so unreachable-server
+errors still surface promptly.
+
+### Fixed — PortAudio teardown error surfacing as playback failure
+
+User stopped a long TTS playback mid-utterance. The worker was
+blocked inside `stream.write()`; `stop()` set `stop_event` then
+abandoned the still-blocked worker after 250 ms. ~21 s later the
+abandoned worker finally unblocked with `PortAudioError -9999`
+(host audio API teardown side-effect) and the catch-all
+exception handler emitted `playback_failed` → red error in the
+conversation pane for a turn that had already finished cleanly.
+Fix: in the playback worker's exception handler, suppress
+exceptions that fire after `stop_event.is_set()` OR after the
+worker has been superseded (`not _is_current_generation(gen)`).
+Real failures with a live, current worker still surface
+unchanged so genuine device errors aren't silently swallowed.
+
+### Added — session-rotated conversation log
+
+New `~/.local/state/voiceagent/logs/conversation.log` captures
+the full LLM context per turn (transcript, every entry of the
+`messages` list, assistant response, token usage, trim events,
+model swaps). Rotates by SESSION (each launch shifts the prior
+to `.1`, drops the oldest beyond `.5`), separate from the main
+`voiceagent.log` size-rotation. Useful when debugging multi-turn
+behavior — "what context did the model actually see for that
+turn?" — without bloating the main app log.
 
 ### Note — visualtest gate
 

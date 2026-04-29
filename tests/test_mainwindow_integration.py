@@ -1013,6 +1013,99 @@ def test_same_model_repeat_does_not_reset_counters_or_refetch(
     assert chat_client.fetch_context_length_calls == fetch_calls_after_first
 
 
+def test_speaking_row_tracks_in_pipeline_playback(main_window_factory):
+    """When the in-pipeline player starts playing the just-finalized
+    assistant turn, `speakingRow` updates to that row's index. Drives
+    the per-bubble ▶/🤫 toggle in the conversation pane."""
+    window = main_window_factory()
+    coord = window._turn_coordinator
+    coord.on_user_transcript("hi")
+    coord.on_assistant_response("hello")
+    _drain_events()
+    # The assistant row is the second visible row (after the user
+    # turn).
+    assistant_idx = window._conversation_model.find_message_index(
+        "assistant", bubble_state="sent", turn_pending=False
+    )
+    assert assistant_idx == 1
+    assert window.speakingRow == -1
+
+    # Simulate the controller player firing playback_started, the
+    # signal MainWindow listens to.
+    window.controller.player.playback_started.emit("/tmp/dummy.wav")
+    _drain_events()
+    assert window.speakingRow == assistant_idx
+
+    # Playback finishes naturally → reset.
+    window.controller.player.playback_finished.emit("/tmp/dummy.wav")
+    _drain_events()
+    assert window.speakingRow == -1
+
+
+def test_speaking_row_tracks_replay_player(main_window_factory):
+    """When the user clicks ▶ on a specific row, the replay path
+    stashes the row index and surfaces it as `speakingRow` on the
+    replay player's playback_started signal."""
+    window = main_window_factory()
+    tts = window.tts_loader.tts_service
+    tts.set_available(True)
+    window.replay_player.play_file = lambda path: True
+
+    window._append_assistant_message("first")
+    window._append_assistant_message("second")
+    _drain_events()
+
+    window.replayMessage(1)
+    # play_file was monkeypatched, so we manually fire the signal.
+    window.replay_player.playback_started.emit("/tmp/replay.wav")
+    _drain_events()
+    assert window.speakingRow == 1
+
+    window.replay_player.playback_finished.emit("/tmp/replay.wav")
+    _drain_events()
+    assert window.speakingRow == -1
+
+
+def test_speaking_row_resets_on_playback_failure(main_window_factory):
+    """A playback_failed signal resets speakingRow even though it
+    arrives with a 2-arg payload (path, message)."""
+    window = main_window_factory()
+    coord = window._turn_coordinator
+    coord.on_user_transcript("hi")
+    coord.on_assistant_response("hello")
+    _drain_events()
+    window.controller.player.playback_started.emit("/tmp/dummy.wav")
+    _drain_events()
+    assert window.speakingRow >= 0
+
+    window.controller.player.playback_failed.emit(
+        "/tmp/dummy.wav", "device gone"
+    )
+    _drain_events()
+    assert window.speakingRow == -1
+
+
+def test_stop_speaking_stops_both_players_and_resets_row(main_window_factory):
+    """`stopSpeaking()` stops both `controller.player` and
+    `replay_player`, and resets `speakingRow` immediately even if the
+    workers don't subsequently emit a finished signal (which they
+    don't, post v0.11 fix to the teardown-error path)."""
+    window = main_window_factory()
+    main_stops: list[None] = []
+    replay_stops: list[None] = []
+    window.controller.player.stop = lambda: main_stops.append(None)
+    window.replay_player.stop = lambda: replay_stops.append(None)
+    # Seed a non-default speaking row so we can assert the reset.
+    window._speaking_row = 3
+
+    window.stopSpeaking()
+    _drain_events()
+
+    assert len(main_stops) == 1
+    assert len(replay_stops) == 1
+    assert window.speakingRow == -1
+
+
 def test_visible_transcript_trims_when_cap_hits(main_window_factory):
     """v0.11 invariant: the visible transcript matches what the LLM
     sees on the next call. When new pairs push past the cap, oldest

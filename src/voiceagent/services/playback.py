@@ -25,7 +25,6 @@ class AudioPlayer(QObject):
     playback_finished = Signal(str)
     playback_failed = Signal(str, str)
     playback_state_changed = Signal(str, str)
-    muted_changed = Signal(bool)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -48,7 +47,6 @@ class AudioPlayer(QObject):
         self._stream: Any | None = None
         self._pause_condition = threading.Condition()
         self._paused = False
-        self._muted = False
 
         self._level_lock = threading.Lock()
         self._current_output_level = 0.0
@@ -231,10 +229,6 @@ class AudioPlayer(QObject):
         return current_file is not None and self._paused
 
     @property
-    def is_muted(self) -> bool:
-        return self._muted
-
-    @property
     def current_output_level(self) -> float:
         with self._level_lock:
             return self._current_output_level
@@ -246,13 +240,6 @@ class AudioPlayer(QObject):
                 self._recent_output_sample_rate,
                 self._recent_output_timestamp,
             )
-
-    def set_muted(self, muted: bool) -> None:
-        if self._muted == muted:
-            return
-        self._muted = muted
-        self._logger.info("Audio output muted=%s", muted)
-        self.muted_changed.emit(muted)
 
     # ------------------------------------------------------------------
     # Worker
@@ -266,7 +253,6 @@ class AudioPlayer(QObject):
     ) -> None:
         try:
             chunk_writes = 0
-            muted_chunk_sleeps = 0
             with wave.open(str(path), "rb") as wav_file:
                 channels = wav_file.getnchannels()
                 sample_rate = wav_file.getframerate()
@@ -312,11 +298,6 @@ class AudioPlayer(QObject):
                                 self._normalize_level(self._chunk_rms(data))
                             )
                             self._set_recent_output(data, sample_rate)
-                        if self._muted:
-                            frame_count = len(data) // max(1, channels * sample_width)
-                            time.sleep(frame_count / sample_rate)
-                            muted_chunk_sleeps += 1
-                            continue
                         stream.write(data)
                         chunk_writes += 1
         except Exception as exc:
@@ -350,11 +331,10 @@ class AudioPlayer(QObject):
         else:
             if not stop_event.is_set():
                 self._logger.info(
-                    "Audio playback finished gen=%s path=%s chunk_writes=%s muted_chunk_sleeps=%s",
+                    "Audio playback finished gen=%s path=%s chunk_writes=%s",
                     gen,
                     path,
                     chunk_writes,
-                    muted_chunk_sleeps,
                 )
                 self._emit_finished(gen, str(path))
         finally:

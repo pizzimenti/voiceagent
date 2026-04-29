@@ -165,6 +165,20 @@ class MainWindow(QObject):
         self._turn_coordinator.set_max_history_turns(
             self.controller.max_history_turns
         )
+        # Row index of the assistant bubble whose TTS audio is currently
+        # being read aloud. -1 when nothing is playing. Drives the
+        # per-bubble ▶/🤫 toggle in the conversation pane: only the
+        # actively-speaking row shows 🤫 (which calls `stopSpeaking()`
+        # to cut the speech without touching the voice connection).
+        # Set when playback_started fires on either player; reset on
+        # finished / failed / explicit stop.
+        self._speaking_row: int = -1
+        # The row a user-triggered replay was issued for. Stashed in
+        # `replayMessage` and consumed when the replay player's
+        # `playback_started` signal arrives, since the signal itself
+        # only carries the audio path (which doesn't tell us which
+        # transcript row owns it).
+        self._pending_replay_row: int = -1
         # Wire the controller's history snapshot provider so each
         # voice turn captures the visible transcript on the GUI thread
         # before the executor takes over. The closure reads
@@ -228,6 +242,28 @@ class MainWindow(QObject):
         self.replay_player.playback_started.connect(self.controller.handle_aux_playback_started)
         self.replay_player.playback_finished.connect(self.controller.handle_aux_playback_finished)
         self.replay_player.playback_failed.connect(self.controller.handle_aux_playback_failed)
+        # speakingRow tracking. The in-pipeline player belongs to the
+        # controller; the replay player is ours. Both feed the same
+        # `_speaking_row` field — only one path can be active at a
+        # time, and either player ending resets to -1.
+        self.controller.player.playback_started.connect(
+            self._on_main_playback_started
+        )
+        self.controller.player.playback_finished.connect(
+            self._on_any_playback_ended
+        )
+        self.controller.player.playback_failed.connect(
+            self._on_any_playback_ended_with_message
+        )
+        self.replay_player.playback_started.connect(
+            self._on_replay_playback_started
+        )
+        self.replay_player.playback_finished.connect(
+            self._on_any_playback_ended
+        )
+        self.replay_player.playback_failed.connect(
+            self._on_any_playback_ended_with_message
+        )
         self.model_loader.ready_changed.connect(self._emit_ui_changed)
         self.model_loader.loading_changed.connect(self._emit_ui_changed)
         self.model_loader.status_changed.connect(self._apply_model_status)
@@ -271,7 +307,6 @@ class MainWindow(QObject):
         self._context_length_fetched.connect(self._on_context_length_fetched)
 
         self._restore_initial_selections()
-        self._apply_audio_mute_state(self.settings.value("audio_output_muted", False, bool))
         self._apply_state(self.controller.state.value)
         self._apply_theme_mode(self.settings.value("theme_mode", "auto", str) or "auto")
 
@@ -524,9 +559,14 @@ class MainWindow(QObject):
     def voiceConnectionLabel(self) -> str:  # noqa: N802
         return "Voice Connection On" if self.controller.voice_connection_enabled else "Voice Connection Off"
 
-    @Property(bool, notify=ui_changed)
-    def audioMuted(self) -> bool:  # noqa: N802
-        return self.settings.value("audio_output_muted", False, bool)
+    @Property(int, notify=ui_changed)
+    def speakingRow(self) -> int:  # noqa: N802
+        """Row index of the assistant bubble whose audio is currently
+        being read aloud (in-pipeline auto-play OR user-triggered
+        replay). -1 when nothing is playing. The conversation pane's
+        per-bubble button uses this to toggle between ▶ (replay) and
+        🤫 (quiet — stop the active speech)."""
+        return self._speaking_row
 
     @Property(str, notify=ui_changed)
     def themeMode(self) -> str:  # noqa: N802
@@ -652,10 +692,19 @@ class MainWindow(QObject):
         self.controller.stop_recording()
         log_ui_timing(self._logger, "setVoiceConnectionEnabled.off", started)
 
-    @Slot(bool)
-    def setAudioMuted(self, enabled: bool) -> None:  # noqa: N802
-        self.settings.setValue("audio_output_muted", enabled)
-        self._apply_audio_mute_state(enabled)
+    @Slot()
+    def stopSpeaking(self) -> None:  # noqa: N802
+        """Cut the current speech mid-utterance. Stops both the
+        in-pipeline auto-play (`controller.player`) and the
+        user-triggered replay (`replay_player`). Does NOT touch the
+        voice connection — the mic stays in whatever state it was in
+        so the next user turn can begin immediately. The QML
+        per-bubble button calls this when the user taps 🤫."""
+        self.controller.player.stop()
+        self.replay_player.stop()
+        if self._speaking_row != -1:
+            self._speaking_row = -1
+            self.ui_changed.emit()
 
     @Slot(bool)
     def setLogVerboseMode(self, enabled: bool) -> None:  # noqa: N802
@@ -722,6 +771,11 @@ class MainWindow(QObject):
             self.replay_failed.emit(message)
             return
         if audio_path is not None:
+            # Stash the row so `_on_replay_playback_started` can drive
+            # the speakingRow Q_PROPERTY when the worker actually
+            # starts producing frames. Set BEFORE `play_file` so the
+            # signal can't outrun the assignment.
+            self._pending_replay_row = index
             self.replay_player.play_file(audio_path)
 
     def _handle_inventory_change(self) -> None:
@@ -794,10 +848,36 @@ class MainWindow(QObject):
         # Thin forwarder — coordinator owns ordering policy.
         self._turn_coordinator.on_log_message(text, level)
 
-    def _apply_audio_mute_state(self, enabled: bool) -> None:
-        self.controller.player.set_muted(enabled)
-        self.replay_player.set_muted(enabled)
+    def _on_main_playback_started(self, _path: str) -> None:
+        # In-pipeline auto-play: the speaking row is the most recent
+        # finalized assistant bubble. The pipeline appends the
+        # assistant turn to the model BEFORE invoking play_file, so
+        # this find is reliable.
+        self._speaking_row = self._conversation_model.find_message_index(
+            "assistant", bubble_state="sent", turn_pending=False
+        )
         self.ui_changed.emit()
+
+    def _on_replay_playback_started(self, _path: str) -> None:
+        # User-triggered replay: speaking row was stashed by
+        # `replayMessage()` before play_file was invoked.
+        if self._pending_replay_row >= 0:
+            self._speaking_row = self._pending_replay_row
+            self._pending_replay_row = -1
+            self.ui_changed.emit()
+
+    def _on_any_playback_ended(self, _path: str) -> None:
+        if self._speaking_row != -1:
+            self._speaking_row = -1
+            self.ui_changed.emit()
+
+    def _on_any_playback_ended_with_message(
+        self, _path: str, _message: str
+    ) -> None:
+        # Two-arg variant for `playback_failed(path, message)`.
+        if self._speaking_row != -1:
+            self._speaking_row = -1
+            self.ui_changed.emit()
 
     def _apply_theme_mode(self, mode: str) -> None:
         app = QApplication.instance()

@@ -44,7 +44,6 @@ QtObject {
     property bool talkReady: true
     property bool voiceConnectionEnabled: false
     property string micStatusLabel: "Idle"
-    property bool audioMuted: false
 
     // MainWindow reads
     property int sttInstalledCount: 1
@@ -53,6 +52,8 @@ QtObject {
     property bool logVerboseMode: false
     property int contextTokensUsed: 0
     property int contextTokensCeiling: 0
+    // ConversationPane reads — drives the per-bubble ▶/🤫 toggle.
+    property int speakingRow: -1
 
     // Catalog models — empty placeholders since CatalogList isn't on
     // the rendered surface for these tests.
@@ -72,11 +73,11 @@ QtObject {
     function installTtsModel(name) {}
     function deleteTtsModel(name) {}
     function setThemeMode(mode) {}
-    function setAudioMuted(muted) {}
     function setLogVerboseMode(value) {}
     function setVoiceConnectionEnabled(value) {}
     function setThinkingExpanded(index, value) {}
     function replayMessage(index) {}
+    function stopSpeaking() {}
     function pttPress() {}
     function pttRelease() {}
 
