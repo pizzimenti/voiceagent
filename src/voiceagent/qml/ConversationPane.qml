@@ -264,8 +264,17 @@ Pane {
                 readonly property string thinkingText: model.thinkingText || ""
                 readonly property bool thinkingExpanded: !!model.thinkingExpanded
                 readonly property bool hasThinking: assistant && thinkingText.length > 0
+                // Bubble width caps. Tightened from 0.96 / 0.9 once
+                // the ▶/🤫 toggle started rendering on assistant rows
+                // in BOTH responsive modes — the button reserves a
+                // square 28 px / 44 px slot, plus a smallSpacing gap
+                // and the right-side fillWidth spacer. 0.78 in
+                // compact / 0.84 in medium leaves the slot free
+                // even at the narrow end of each range. User
+                // bubbles share the cap (no button on that side)
+                // and just sit slightly inset from the right edge.
                 readonly property real maxBubbleWidth: Math.min(
-                    conversationView.width * (root.compactMode ? 0.96 : (root.mediumMode ? 0.9 : 0.78)),
+                    conversationView.width * (root.compactMode ? 0.78 : (root.mediumMode ? 0.84 : 0.78)),
                     Kirigami.Units.gridUnit * (root.compactMode ? 18 : (root.mediumMode ? 28 : 34))
                 )
 
@@ -501,18 +510,54 @@ Pane {
                     // draft rows, and `visible: ... && undefined`
                     // produces a log warning per row per resize.
                     Button {
+                        id: replayToggleButton
                         readonly property bool thisRowSpeaking:
                             conversationPane.voiceAgent
                                 ? conversationPane.voiceAgent.speakingRow === index
                                 : false
-                        visible: !root.compactMode && !!model.replayable
+                        // Visible in BOTH responsive modes — replayable is
+                        // the only gate. Square dimensions (NOT default
+                        // implicit content-driven sizing) so the row layout
+                        // can't squish the glyph laterally when bubble +
+                        // spacer compete for width. Wide mode is ~1.5× the
+                        // original 14 px button; compact is half of that.
+                        readonly property int buttonDim: root.compactMode ? 28 : 44
+                        visible: !!model.replayable
                         text: thisRowSpeaking ? "🤫" : "▶"
-                        font.pixelSize: 14
+                        font.pixelSize: root.compactMode ? 11 : 21
+                        padding: 0
+                        Layout.preferredWidth: buttonDim
+                        Layout.preferredHeight: buttonDim
+                        Layout.minimumWidth: buttonDim
+                        Layout.alignment: Qt.AlignBottom
                         ToolTip.visible: hovered
                         ToolTip.text: thisRowSpeaking
                             ? conversationPane.tr("Quiet — stop speaking")
                             : conversationPane.tr("Replay")
-                        Layout.alignment: Qt.AlignBottom
+                        // Rounded-square background. Theme-aware colors so
+                        // it sits comfortably under both Breeze Light and
+                        // Dark; press/hover states give a subtle indication
+                        // without competing visually with the violet
+                        // bubble palette.
+                        background: Rectangle {
+                            color: replayToggleButton.pressed
+                                ? Kirigami.Theme.highlightColor
+                                : (replayToggleButton.hovered
+                                    ? Kirigami.Theme.alternateBackgroundColor
+                                    : Kirigami.Theme.backgroundColor)
+                            border.color: Kirigami.Theme.disabledTextColor
+                            border.width: 1
+                            radius: 6
+                        }
+                        contentItem: Label {
+                            text: replayToggleButton.text
+                            color: replayToggleButton.pressed
+                                ? Kirigami.Theme.highlightedTextColor
+                                : Kirigami.Theme.textColor
+                            font.pixelSize: replayToggleButton.font.pixelSize
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
                         onClicked: {
                             if (!conversationPane.voiceAgent) {
                                 return;

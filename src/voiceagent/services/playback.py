@@ -100,6 +100,7 @@ class AudioPlayer(QObject):
         # log and abandon rather than blocking the caller; the stop event
         # has been set and the `with` block will close the output stream
         # on the next write attempt.
+        abandoned_predecessor = False
         if previous_thread is not None and previous_thread.is_alive():
             previous_thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
             if previous_thread.is_alive():
@@ -107,10 +108,12 @@ class AudioPlayer(QObject):
                     "Previous playback worker did not exit within %.3fs; abandoning",
                     _JOIN_TIMEOUT_SECONDS,
                 )
+                abandoned_predecessor = True
 
         thread = threading.Thread(
             target=self._playback_worker,
             args=(gen, path, stop_event),
+            kwargs={"post_abandon_grace": abandoned_predecessor},
             daemon=True,
         )
         with self._lock:
@@ -250,8 +253,24 @@ class AudioPlayer(QObject):
         gen: int,
         path: Path,
         stop_event: threading.Event,
+        *,
+        post_abandon_grace: bool = False,
     ) -> None:
         try:
+            # If we're succeeding an ABANDONED previous worker (one
+            # whose `join` timed out — most often because its
+            # `stream.write()` was blocked when the user pressed 🤫),
+            # PortAudio's ALSA backend needs a moment to release the
+            # device resources before we open a new stream. Without
+            # this grace, we see PortAudio→ALSA stderr chatter
+            # ("alsa_snd_pcm_mmap_begin failed",
+            # "PaAlsaStream_SetUpBuffers failed") on the new stream's
+            # setup. The new playback still works (PortAudio retries),
+            # but the noise is alarming and confuses the user. 100 ms
+            # is enough in practice; we run on the worker thread so
+            # the GUI stays responsive.
+            if post_abandon_grace:
+                time.sleep(0.1)
             chunk_writes = 0
             with wave.open(str(path), "rb") as wav_file:
                 channels = wav_file.getnchannels()
