@@ -279,8 +279,8 @@ ding before a stable release.
 - One small migration concern: any existing log files from v0.11
   remain on disk; they don't auto-clear. Document in the v1.0
   CHANGELOG that users may want to remove
-  `~/.local/state/voiceagent/logs/conversation.log*` if the content
-  is sensitive.
+  `${XDG_STATE_HOME:-$HOME/.local/state}/voiceagent/logs/conversation.log*`
+  if the content is sensitive.
 
 ### Other v1.0 items
 

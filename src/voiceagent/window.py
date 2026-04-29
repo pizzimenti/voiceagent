@@ -926,10 +926,20 @@ class MainWindow(QObject):
         # spuriously look like cancellation. CodeRabbit round-4 P2.
         is_current = request_id == self._replay_request_id
         if error_message is not None:
+            # Stale failures: don't surface them. If replay A was
+            # superseded by replay B (or cancelled via stopSpeaking),
+            # a late exception from A's synth thread would otherwise
+            # show as a user-visible "Replay failed" toast for an
+            # abandoned request the user has already moved on from.
+            # The audio-dispatch path below already gates on
+            # `is_current`; the error path was the symmetric gap.
+            # CodeRabbit round-5 Major.
+            if not is_current:
+                return
             wrapped = f"Replay failed: {error_message}"
             self._set_error_message(wrapped, discard_draft=False)
             self.replay_failed.emit(wrapped)
-            if is_current and self._speaking_owner == "replay":
+            if self._speaking_owner == "replay":
                 self._speaking_row = -1
                 self._speaking_owner = ""
                 self.ui_changed.emit()

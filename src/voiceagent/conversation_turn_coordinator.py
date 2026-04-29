@@ -469,13 +469,20 @@ class ConversationTurnCoordinator(QObject):
         Conversation" command, a session-reset shortcut, etc.); no
         production code currently invokes it.
         """
-        was_empty = self._model.rowCount() == 0
+        dropped = self._model.rowCount()
         self._model.clear()
         self._streaming_assistant_index = -1
         self._current_turn_user_bubble_present = False
         self._pending_status_log_states.clear()
         self._last_logged_status_state = None
-        if not was_empty:
+        if dropped:
+            # Notify external row-index trackers (e.g.
+            # `MainWindow._speaking_row`) that every row is gone.
+            # `_trim_to_history_cap` emits this for partial drops; the
+            # public reset path must do the same so a future caller of
+            # `clear()` while a row is speaking doesn't leave the UI
+            # pointing at a deleted bubble. CodeRabbit round-5 Major.
+            self.rows_dropped_from_front.emit(dropped)
             self.conversation_changed.emit()
 
     # -- internal helpers --------------------------------------------
