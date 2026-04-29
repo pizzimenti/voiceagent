@@ -2,6 +2,65 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.8.5 — 2026-04-28
+
+**ultraCompactMode + 250 ms reorientation animations + smaller minimum
+window.** When the user has shrunk the window to "I just need the
+mic" mode, the conversation pane is dead space. Hide it; let the mic
+button fill the window. Plus: lower the minimum-window floor so the
+window can shrink to a small mic-only widget.
+
+### Added — `ultraCompactMode`
+
+- New responsive mode in `MainWindow.qml`:
+  ```
+  readonly property bool ultraCompactMode:
+      compactMode && height < Kirigami.Units.gridUnit * 28
+  ```
+- When true, `ConversationPane.qml` hides the conversation feed
+  (header row + ListView + scroll-to-bottom button) and the
+  MicButtonFrame fills the available space.
+- `pageContentMargin` and `ConversationPane.padding` drop to 0 in
+  ultraCompactMode so the mic is hemmed against the window edges.
+
+### Changed — minimum window dimensions
+
+- `minimumWidth` lowered `gridUnit * 22` → `gridUnit * 12` (~216 px
+  at 1.0x).
+- `minimumHeight` lowered `gridUnit * 18` → `gridUnit * 10` (~180 px
+  at 1.0x).
+- The user can now shrink to a tiny mic-only window. Title bar still
+  shows "Voice Agent" + Mute action; mic button + status text fit.
+
+### Changed — MicButton.qml status text wraps instead of eliding
+
+- Custom `contentItem: ColumnLayout { Kirigami.Icon; Label }` with
+  `wrapMode: Text.WordWrap` and `elide: Text.ElideNone` so longer
+  status strings ("No model loaded", "Whisper transcribing…") line-
+  break at narrow widths instead of truncating to "No model lo...".
+- Default `AbstractButton`'s `IconLabel` content elides with "..." at
+  narrow widths, which was exactly what the user reported on the
+  pre-fix small-window screenshot.
+
+### Added — 250 ms cross-fade between responsive modes
+
+- `ConversationPane.qml`: header `RowLayout` and conversation Item
+  fade out over 250 ms when `ultraCompactMode` flips on.
+- `MainWindow.qml`: medium-mode `ColumnLayout` and compact-mode
+  `Loader` cross-fade over 250 ms when `compactMode` flips. Loader
+  `active:` still gates instantiation by mode (smooth fade-IN, instant
+  unload on hide is an acceptable simplification — the new mode's
+  content fades in over the disappearing one).
+- Easing: `Easing.InOutQuad`. Duration matches Kirigami's roughly-
+  standard transition feel.
+
+### Changed — visual smoke runner
+
+- `tests/visual/visual_smoke.py` adds a `SHORT_CAPTURES` list to
+  exercise the ultraCompactMode threshold:
+  `(220, 200)`, `(280, 280)`, `(340, 360)`, `(400, 460)` per scale.
+  Verifies the mic-fills-window layout at very small dimensions.
+
 ## 0.8.4 — 2026-04-28
 
 **Window-sizing rework: drop max caps, raise min width, fix mediumMode

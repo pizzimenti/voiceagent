@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 import org.kde.kirigami 2.20 as Kirigami
 
 // Reusable microphone toggle button used by the medium and compact mic
@@ -49,6 +50,42 @@ Button {
 
     scale: micButton.glowScaleSource
     opacity: micButton.pulseActive ? 1 : 0.92
+
+    // Custom contentItem to wordwrap the status label rather than elide.
+    // Qt's default `IconLabel` for AbstractButton truncates with "..." at
+    // narrow widths, which clipped "No model loaded" → "No model lo..."
+    // at the smaller window sizes ultraCompactMode now allows. This
+    // ColumnLayout lets long status strings wrap to two/three lines
+    // instead of disappearing.
+    contentItem: ColumnLayout {
+        spacing: Kirigami.Units.smallSpacing
+
+        Item { Layout.fillHeight: true }
+
+        Kirigami.Icon {
+            Layout.alignment: Qt.AlignHCenter
+            source: micButton.icon.name
+            implicitWidth: micButton.iconSize
+            implicitHeight: micButton.iconSize
+            color: micButton.icon.color
+            isMask: true
+        }
+
+        Label {
+            Layout.alignment: Qt.AlignHCenter
+            Layout.fillWidth: true
+            Layout.leftMargin: Kirigami.Units.smallSpacing
+            Layout.rightMargin: Kirigami.Units.smallSpacing
+            text: micButton.text
+            font.pixelSize: micButton.fontPixel
+            color: micButton.palette.buttonText
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            elide: Text.ElideNone
+        }
+
+        Item { Layout.fillHeight: true }
+    }
 
     background: Rectangle {
         radius: height / 2

@@ -25,7 +25,9 @@ Pane {
 
     readonly property var root: ApplicationWindow.window
 
-    padding: root.compactMode ? Kirigami.Units.smallSpacing : (root.mediumMode ? Kirigami.Units.smallSpacing : Kirigami.Units.mediumSpacing)
+    // ultraCompact: zero padding so the mic button reaches the pane
+    // edges. compact/medium: small breathing room.
+    padding: root.ultraCompactMode ? 0 : (root.compactMode ? Kirigami.Units.smallSpacing : (root.mediumMode ? Kirigami.Units.smallSpacing : Kirigami.Units.mediumSpacing))
 
     ColumnLayout {
         id: conversationContent
@@ -34,6 +36,12 @@ Pane {
 
         RowLayout {
             Layout.fillWidth: true
+            // In ultraCompactMode the entire conversation feed is hidden
+            // and the mic fills the window — collapse this header row too
+            // so it doesn't reserve a tiny empty band above the mic.
+            opacity: root.ultraCompactMode ? 0 : 1
+            visible: opacity > 0.01
+            Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.InOutQuad } }
 
             Kirigami.Heading {
                 visible: !root.compactMode
@@ -59,8 +67,18 @@ Pane {
         }
 
         Item {
+            // Conversation feed area. In ultraCompactMode (window has been
+            // shrunk so small the conversation pane is dead space) we hide
+            // it entirely and let the mic button fill the window — the
+            // user has clearly opted into "I just need the mic" mode. The
+            // opacity Behavior + visible-follows-opacity gives a 250 ms
+            // fade-out when the breakpoint flips.
+            opacity: root.ultraCompactMode ? 0 : 1
+            visible: opacity > 0.01
             Layout.fillWidth: true
-            Layout.fillHeight: true
+            Layout.fillHeight: !root.ultraCompactMode
+            Layout.preferredHeight: root.ultraCompactMode ? 0 : -1
+            Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.InOutQuad } }
 
             ListView {
                 id: conversationView

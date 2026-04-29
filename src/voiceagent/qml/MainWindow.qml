@@ -9,14 +9,16 @@ Kirigami.ApplicationWindow {
 
     width: 512
     height: 512
-    // Floor on horizontal width: below ~22 grid units the title bar
-    // collapses actions into "..." overflow and the compact mic button's
-    // "LLM disconnected" status text truncates. gridUnit-scaled keeps
-    // the floor scale-aware (Plasma 125%–200% bumps it proportionally).
-    // No upper cap: maximize / fullscreen are allowed; the layout scales
-    // naturally up to whatever the user's compositor permits.
-    minimumWidth: Kirigami.Units.gridUnit * 22
-    minimumHeight: Kirigami.Units.gridUnit * 18
+    // Floors are tuned to the minimum at which the title bar shows
+    // *something* useful and the mic button has room for its icon and
+    // (wrapped) status text. Below this the WM's title bar collapses
+    // entirely and the mic frame becomes a uselessly small dot. The
+    // mic-button label uses Text.WordWrap (see MicButton.qml's custom
+    // contentItem) so long status strings line-break at narrow widths
+    // rather than truncating with "...". gridUnit-scaled keeps the
+    // floor scale-aware. No upper cap.
+    minimumWidth: Kirigami.Units.gridUnit * 12
+    minimumHeight: Kirigami.Units.gridUnit * 10
     flags: Qt.Window
         | Qt.WindowTitleHint
         | Qt.WindowSystemMenuHint
@@ -38,13 +40,21 @@ Kirigami.ApplicationWindow {
     // requiring an oversized window.
     readonly property bool compactMode: width < Kirigami.Units.gridUnit * 40
     readonly property bool mediumMode: !compactMode
-    readonly property bool ultraCompactMode: compactMode
+    // ultraCompactMode: window is too small for the conversation pane to be
+    // useful (height-driven). Below this threshold we hide the conversation
+    // entirely and let the mic button fill the window — the user has clearly
+    // shrunk the window down to "I just need the mic" mode. gridUnit-scaled
+    // so the threshold respects Plasma scale.
+    readonly property bool ultraCompactMode: compactMode && height < Kirigami.Units.gridUnit * 28
     readonly property int sttInstalledCount: voiceAgent.sttInstalledCount
     readonly property int ttsInstalledCount: voiceAgent.ttsInstalledCount
     readonly property color micPulseColor: voiceAgent.talkReady ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
     readonly property color micButtonColor: voiceAgent.voiceConnectionEnabled ? Kirigami.Theme.highlightColor : Kirigami.Theme.alternateBackgroundColor
     readonly property bool micPulseActive: voiceAgent.voiceConnectionEnabled || voiceAgent.talkReady
-    readonly property real pageContentMargin: root.compactMode ? Kirigami.Units.smallSpacing : (root.mediumMode ? Kirigami.Units.mediumSpacing : Kirigami.Units.largeSpacing)
+    // ultraCompact: hem the mic button against the window edge with no
+    // extra padding. compact: a small breathing margin. medium and above:
+    // standard spacing.
+    readonly property real pageContentMargin: root.ultraCompactMode ? 0 : (root.compactMode ? Kirigami.Units.smallSpacing : (root.mediumMode ? Kirigami.Units.mediumSpacing : Kirigami.Units.largeSpacing))
     readonly property real pageContentSpacing: root.compactMode ? Kirigami.Units.smallSpacing : Kirigami.Units.largeSpacing
 
     // Wheel handler with two scrolling modes, gated on the ListView's
@@ -401,8 +411,17 @@ Kirigami.ApplicationWindow {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    visible: root.mediumMode
+                    // 250 ms cross-fade when the responsive breakpoint
+                    // flips. opacity drives a smooth transition; visible
+                    // follows opacity so the Item drops out of layout
+                    // after fade. Loader.active still gates instantiation
+                    // by mode (smooth fade-IN, instant unload on hide is
+                    // an acceptable simplification — the new mode's
+                    // content fades in over the disappearing one).
+                    opacity: root.mediumMode ? 1 : 0
+                    visible: opacity > 0.01
                     spacing: Kirigami.Units.largeSpacing
+                    Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.InOutQuad } }
 
                     Loader {
                         active: root.mediumMode
@@ -420,7 +439,9 @@ Kirigami.ApplicationWindow {
 
                 Loader {
                     anchors.fill: parent
-                    visible: root.compactMode
+                    opacity: root.compactMode ? 1 : 0
+                    visible: opacity > 0.01
+                    Behavior on opacity { NumberAnimation { duration: 250; easing.type: Easing.InOutQuad } }
                     active: root.compactMode
                     sourceComponent: conversationPaneComponent
                 }

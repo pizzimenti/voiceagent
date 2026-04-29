@@ -45,10 +45,18 @@ sys.path.insert(0, str(_REPO / "src"))
 
 from tests.fakes import build_compiletest_window  # noqa: E402
 
-# Bracket the compactMode breakpoint (25 grid units ≈ 600 px on standard
-# Kirigami density) plus typical desktop/laptop widths above it.
-WIDTHS = [400, 600, 800, 1000, 1200]
+# Bracket the responsive breakpoints:
+#   minimumWidth  ≈ 18gu ≈ 324 px @1.0x  (smallest legal)
+#   compactMode   ≈ 40gu ≈ 720 px @1.0x  (compact ↔ medium)
+#   ultraCompact  height < 28gu ≈ 504 px (when compact AND short)
+# Capture both width-scan at typical height (700) AND short-height
+# captures at narrow widths to confirm ultraCompactMode trips.
+WIDTHS = [340, 400, 600, 800, 1000, 1200]
 HEIGHT = 700
+# (width, height) pairs for short-window captures — drives ultraCompactMode.
+# Includes very small (near minimumWidth/Height floor) so the mic-button
+# wordwrap + zero-padding hemming-in is verifiable.
+SHORT_CAPTURES = [(220, 200), (280, 280), (340, 360), (400, 460)]
 
 # Time to let layout + render settle after a resize. Two render frames
 # at 60 Hz is ~33 ms; 250 ms is generous to absorb any deferred
@@ -89,6 +97,9 @@ def main() -> int:
     for w in WIDTHS:
         out_path = out_dir / f"scale-{scale_label}_width-{w}.png"
         grab(qquick, w, HEIGHT, out_path)
+    for w, h in SHORT_CAPTURES:
+        out_path = out_dir / f"scale-{scale_label}_short-{w}x{h}.png"
+        grab(qquick, w, h, out_path)
 
     # Final settle + clean shutdown.
     pump(app, 100)
