@@ -413,6 +413,38 @@ def test_draft_promoted_to_sent_on_final_transcript(model_and_coordinator):
     assert rows[0]["text"] == "hello world"
 
 
+def test_empty_user_transcript_drops_pending_bubble(model_and_coordinator):
+    """No-speech outcome (v0.9.14): when `_run_pipeline` short-circuits
+    on an empty Whisper transcript and emits `transcript_changed("")`,
+    the coordinator must remove the bubble that was promoted to
+    `sent/turnPending=true` at the TRANSCRIBING boundary. Otherwise the
+    UI would show a stuck "sent" row for a turn the user didn't speak.
+    """
+    model, coord = model_and_coordinator(verbose=False)
+
+    coord.on_live_transcript("partial guess")
+    coord.on_state_changed(AppState.TRANSCRIBING.value)
+    rows = _all_rows(model)
+    assert len(rows) == 1
+    assert rows[0]["turnPending"] is True
+    assert rows[0]["bubbleState"] == "sent"
+
+    coord.on_user_transcript("")  # empty Whisper result
+
+    assert _all_rows(model) == []
+
+
+def test_empty_user_transcript_no_pending_bubble_is_noop(model_and_coordinator):
+    """Empty transcript with no pending bubble must not error or insert
+    anything (e.g. user pressed-and-released without speaking)."""
+    model, coord = model_and_coordinator(verbose=False)
+
+    coord.on_user_transcript("")
+    coord.on_user_transcript("   ")
+
+    assert _all_rows(model) == []
+
+
 def test_blank_live_transcript_removes_draft_when_not_pending(
     model_and_coordinator,
 ):

@@ -8,7 +8,8 @@ the custom-vs-managed path logic) by covering:
   partially populated.
 * lifecycle: `set_model_name` resets the loaded model handle; `ensure_loaded`
   / `download_and_load` route through the mocked `WhisperModel` constructor.
-* `transcribe` happy-path + empty-transcript error.
+* `transcribe` happy-path + empty-transcript no-op (returns "" with a
+  WARNING log entry instead of raising — v0.9.14 fix).
 * `remove_item` semantics — only managed items are removed, custom paths raise.
 * `artifact_paths` / `artifact_manifest` for both managed and unmanaged
   selections, including HF metadata fall-soft on network failure.
@@ -325,7 +326,16 @@ def test_transcribe_returns_concatenated_segment_text(monkeypatch, model_root):
     assert result == "hello world"
 
 
-def test_transcribe_raises_on_empty_segments(monkeypatch, model_root):
+def test_transcribe_returns_empty_on_empty_segments(monkeypatch, model_root, caplog):
+    """No-speech / silence yields an empty transcript, not a raise.
+
+    Whisper produces no segments for silence or VAD-rejected audio. The
+    transcriber must surface that as an empty string so the caller can
+    short-circuit the turn cleanly; raising would surface as a red error
+    row in the UI for what is in fact a graceful no-op.
+    """
+    import logging
+
     monkeypatch.setattr(
         "voiceagent.services.stt.default_stt_model_root", lambda: model_root
     )
@@ -351,8 +361,16 @@ def test_transcribe_raises_on_empty_segments(monkeypatch, model_root):
     )
 
     transcriber = WhisperTranscriber("tiny.en")
-    with pytest.raises(RuntimeError, match="Detected language: es"):
-        transcriber.transcribe(Path("/tmp/fake.wav"))
+    with caplog.at_level(logging.WARNING, logger="voiceagent.services.stt"):
+        result = transcriber.transcribe(Path("/tmp/fake.wav"))
+    assert result == ""
+    # The warning log entry must remain visible so verbose logs show
+    # that Whisper did run and reported zero segments.
+    assert any(
+        "Whisper returned empty transcript" in record.message
+        and record.levelno == logging.WARNING
+        for record in caplog.records
+    )
 
 
 # --- _prepare_model_source ----------------------------------------------
