@@ -320,3 +320,99 @@ def test_partial_inflight_clears_inline_when_emitted_on_owner_thread(qtbot, cont
     controller._partial_inflight_changed.emit(False)
     # Inline same-thread delivery via AutoConnection.
     assert controller._partial_inflight is False
+
+
+# --- Empty-transcript short-circuit (v0.9.14) ---------------------------
+
+
+class _RecordingChatClient:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def complete(self, text: str) -> str:
+        self.calls.append(text)
+        return "should-not-be-returned"
+
+
+class _EmptyTranscriber:
+    is_loaded = True
+    backend_name = "Fake"
+    selection_label = "Model"
+
+    def ensure_loaded(self) -> None:
+        pass
+
+    def transcribe(self, path: Path) -> str:
+        return ""
+
+
+class _WhitespaceTranscriber(_EmptyTranscriber):
+    def transcribe(self, path: Path) -> str:
+        return "   \n  "
+
+
+def _make_controller(transcriber, chat_client):
+    return VoiceController(
+        recorder=_FakeRecorder(),
+        transcriber=transcriber,
+        chat_client=chat_client,
+        tts_service=_FakeTts(),
+        player=_FakePlayer(),
+    )
+
+
+def test_run_pipeline_skips_chat_on_empty_transcript(qtbot, tmp_path):
+    """`_run_pipeline` must NOT call `chat_client.complete` when the
+    transcriber returns an empty string. This is the v0.9.14 fix for the
+    "Whisper did not return any transcript" pipeline failure that
+    surfaced silence as a red error row instead of a clean no-op."""
+
+    chat = _RecordingChatClient()
+    ctrl = _make_controller(_EmptyTranscriber(), chat)
+    try:
+        audio = tmp_path / "fake.wav"
+        audio.write_bytes(b"")  # _run_pipeline unlinks in finally
+        result = ctrl._run_pipeline(audio)
+    finally:
+        ctrl.shutdown()
+
+    assert chat.calls == []
+    assert result.transcript == ""
+    assert result.response == ""
+    assert result.tts_audio_path is None
+
+
+def test_run_pipeline_skips_chat_on_whitespace_only_transcript(qtbot, tmp_path):
+    """A transcript of pure whitespace is also a no-speech outcome and
+    must not reach the LLM."""
+
+    chat = _RecordingChatClient()
+    ctrl = _make_controller(_WhitespaceTranscriber(), chat)
+    try:
+        audio = tmp_path / "fake.wav"
+        audio.write_bytes(b"")
+        result = ctrl._run_pipeline(audio)
+    finally:
+        ctrl.shutdown()
+
+    assert chat.calls == []
+    assert result.transcript == ""
+    assert result.response == ""
+    assert result.tts_audio_path is None
+
+
+def test_run_pipeline_unlinks_audio_after_empty_transcript(qtbot, tmp_path):
+    """The `finally` cleanup that deletes the recorded WAV still fires
+    when we short-circuit on empty — otherwise stale audio would
+    accumulate in the tempdir for every silent turn."""
+
+    chat = _RecordingChatClient()
+    ctrl = _make_controller(_EmptyTranscriber(), chat)
+    try:
+        audio = tmp_path / "fake.wav"
+        audio.write_bytes(b"\x00")
+        assert audio.exists()
+        ctrl._run_pipeline(audio)
+        assert not audio.exists()
+    finally:
+        ctrl.shutdown()

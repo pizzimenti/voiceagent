@@ -2,6 +2,72 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.14 — 2026-04-29
+
+**Empty Whisper transcript no longer crashes the pipeline.** When
+the user records silence or non-speech audio, Whisper returns no
+segments. Previously `services/stt.py` raised
+`RuntimeError("Whisper did not return any transcript ...")` and
+the pipeline failed with a red error row. Empty transcripts are
+now treated as a no-op turn.
+
+### Fixed
+
+- **`services/stt.py:transcribe()`** returns `""` instead of
+  raising when no segments are produced. The existing log entry
+  is retained at `WARNING` level so verbose-log mode still shows
+  the no-speech event.
+- **`controller.py:_run_pipeline()`** short-circuits when
+  `transcript.strip()` is empty: returns a no-op
+  `PipelineResult(transcript="", response="", tts_audio_path=None)`,
+  the chat client is never called, audio cleanup still fires.
+- **`conversation_turn_coordinator.py:on_user_transcript("")`**
+  now drops any dangling `turnPending=True` user bubble that
+  was created during transcription, so silence after a draft
+  doesn't leave a stuck row.
+
+### Tests
+
+- `tests/test_stt.py` — empty-segment branch returns `""` plus
+  WARNING log line.
+- `tests/test_controller_thread_safety.py` (+3) — chat client
+  not called on empty / whitespace-only transcript, audio file
+  still unlinked.
+- `tests/test_conversation_turn_coordinator.py` (+2) —
+  pending-bubble dropped on empty transcript, no-pending case
+  no-op.
+- Net: 320 → 325 (+5).
+
+## 0.9.14 — 2026-04-29
+
+**Empty Whisper transcript no longer crashes the pipeline.** When
+the user records silence or non-speech audio, Whisper returns no
+segments. Previously `services/stt.py` raised
+`RuntimeError("Whisper did not return any transcript ...")` and
+the pipeline failed with a red error row. Empty transcripts are
+now treated as a no-op turn.
+
+### Fixed
+
+- **`services/stt.py:transcribe()`** returns `""` instead of
+  raising when no segments are produced. Existing log entry
+  retained at `WARNING` level so verbose-log mode still shows
+  the no-speech event.
+- **`controller.py:_run_pipeline()`** short-circuits when
+  `transcript.strip()` is empty: returns a no-op
+  `PipelineResult`, the chat client is never called, audio
+  cleanup still fires.
+- **`conversation_turn_coordinator.py:on_user_transcript("")`**
+  drops any dangling `turnPending=True` user bubble that was
+  created during transcription, so silence after a draft doesn't
+  leave a stuck row.
+
+### Tests
+
+- `tests/test_stt.py`, `tests/test_controller_thread_safety.py`
+  (+3), `tests/test_conversation_turn_coordinator.py` (+2).
+  Net: 320 → 325 (+5).
+
 ## 0.9.13 — 2026-04-28
 
 **Two reverts from v0.9.12 user testing.**

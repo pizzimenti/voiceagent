@@ -205,6 +205,16 @@ class VoiceController(QObject):
 
             self.pipeline_state_changed.emit(AppState.TRANSCRIBING.value, "Transcribing")
             transcript = self.transcriber.transcribe(audio_path)
+            if not transcript.strip():
+                self._logger.info(
+                    "Voice pipeline ending early — empty transcript path=%s",
+                    audio_path,
+                )
+                return PipelineResult(
+                    transcript="",
+                    response="",
+                    tts_audio_path=None,
+                )
             self.pipeline_state_changed.emit(AppState.THINKING.value, "Waiting for LM Studio")
 
             def _on_usage(usage: dict) -> None:
