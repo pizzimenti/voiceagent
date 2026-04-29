@@ -186,4 +186,60 @@ def test_update_message_uses_inverse_role_map():
     assert ConversationModel._KEY_TO_ROLE['text'] == ConversationModel.TextRole
     assert ConversationModel._KEY_TO_ROLE['bubbleState'] == ConversationModel.BubbleStateRole
     assert ConversationModel._KEY_TO_ROLE['stateName'] == ConversationModel.StateNameRole
+    assert ConversationModel._KEY_TO_ROLE['thinkingText'] == ConversationModel.ThinkingTextRole
+    assert (
+        ConversationModel._KEY_TO_ROLE['thinkingExpanded']
+        == ConversationModel.ThinkingExpandedRole
+    )
+
+
+def test_role_names_includes_thinking_roles(model):
+    role_names = model.roleNames()
+    assert role_names[ConversationModel.ThinkingTextRole] == b"thinkingText"
+    assert role_names[ConversationModel.ThinkingExpandedRole] == b"thinkingExpanded"
+
+
+def test_thinking_fields_default_to_none_when_unspecified(model):
+    # A row inserted without thinkingText / thinkingExpanded should
+    # report `None` through `data()` for both new roles. This preserves
+    # the existing model behavior — keys not present in the underlying
+    # dict resolve to `None`, never to a fabricated default.
+    model.append_message(_make_message("assistant", "hi"))
+    idx = model.index(0, 0)
+    assert model.data(idx, ConversationModel.ThinkingTextRole) is None
+    assert model.data(idx, ConversationModel.ThinkingExpandedRole) is None
+
+
+def test_update_message_round_trips_thinking_text(model):
+    model.append_message(_make_message("assistant", "hello"))
+    model.update_message(0, thinkingText="step 1\nstep 2")
+    idx = model.index(0, 0)
+    assert model.data(idx, ConversationModel.ThinkingTextRole) == "step 1\nstep 2"
+
+
+def test_update_message_round_trips_thinking_expanded(model):
+    model.append_message(_make_message("assistant", "hello"))
+    model.update_message(0, thinkingExpanded=True)
+    idx = model.index(0, 0)
+    assert model.data(idx, ConversationModel.ThinkingExpandedRole) is True
+    model.update_message(0, thinkingExpanded=False)
+    assert model.data(idx, ConversationModel.ThinkingExpandedRole) is False
+
+
+def test_update_message_emits_data_changed_for_thinking_text(model):
+    model.append_message(_make_message("assistant", "hello"))
+    spy = QSignalSpy(model.dataChanged)
+    model.update_message(0, thinkingText="reasoning…")
+    assert spy.count() == 1
+    roles = spy.at(0)[2]
+    assert ConversationModel.ThinkingTextRole in roles
+
+
+def test_update_message_emits_data_changed_for_thinking_expanded(model):
+    model.append_message(_make_message("assistant", "hello"))
+    spy = QSignalSpy(model.dataChanged)
+    model.update_message(0, thinkingExpanded=True)
+    assert spy.count() == 1
+    roles = spy.at(0)[2]
+    assert ConversationModel.ThinkingExpandedRole in roles
 
