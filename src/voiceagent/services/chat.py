@@ -151,14 +151,25 @@ class LmStudioClient:
         return self.refresh_loaded_model()
 
     def load_model(self, model: str | None = None) -> str:
+        """Switch the loaded LLM to ``model`` (or ``self.model``).
+
+        Memory note: while a new model is loading, the previously
+        selected model stays loaded too — we only unload it once
+        ``/models/load`` confirms the new instance is ready. Peak
+        memory is briefly 2x, but the trade is worth it because a
+        failed load no longer evicts the user's working model and
+        leaves them in an empty state.
+        """
         model_name = (model or self.model).strip()
         if not self.base_url:
             raise RuntimeError("LLM URL is not configured.")
         if not model_name:
             raise RuntimeError("LLM model is not configured.")
 
-        self.unload_other_models(keep_model=model_name)
+        # Already loaded? Unload others (safe — the keep model is
+        # confirmed available) and claim it as current.
         if any(loaded_model == model_name for loaded_model in self.list_loaded_models()):
+            self.unload_other_models(keep_model=model_name)
             self.model = model_name
             return model_name
 
@@ -166,12 +177,17 @@ class LmStudioClient:
         if not native_api_root:
             raise RuntimeError("LM Studio native API root could not be determined.")
 
+        # Load FIRST. Previous models stay loaded until the server
+        # confirms the new one — that way a failed load can't strand
+        # the user with no working LLM.
         payload = {"model": model_name}
         response = self._json_request(f"{native_api_root}/models/load", payload=payload, method="POST")
         status = response.get("status")
         if status != "loaded":
             raise RuntimeError(f"LM Studio did not confirm model load for '{model_name}'.")
 
+        # Now safe to evict the previous selection.
+        self.unload_other_models(keep_model=model_name)
         self.model = model_name
         return model_name
 

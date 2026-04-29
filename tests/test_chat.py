@@ -706,6 +706,108 @@ def test_load_model_raises_when_server_does_not_confirm(monkeypatch):
         client.load_model("alpha")
 
 
+def test_load_model_keeps_previous_loaded_when_new_load_fails(monkeypatch):
+    """Regression for P2 #3: a failed `/models/load` must NOT evict
+    the previously-loaded model. The reorder is load-first-then-unload
+    precisely so that a queued/refused load leaves the user's working
+    LLM intact rather than dropping them into an empty state."""
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="previous", system_prompt="p"
+    )
+
+    serve_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "previous",
+                "loaded_instances": [{"id": "p1"}],
+            }
+        ]
+    }
+    posts: list[dict] = []
+    unloads: list[str] = []
+
+    def _handler(req, timeout):
+        if req.get_method() == "POST":
+            url = req.full_url
+            body = json.loads(req.data.decode("utf-8"))
+            posts.append({"url": url, "body": body})
+            if url.endswith("/api/v1/models/load"):
+                # Simulate a load that does not confirm.
+                return _FakeResponse({"status": "queued"})
+            if url.endswith("/api/v1/models/unload"):
+                unloads.append(body.get("instance_id", ""))
+                return _FakeResponse({"status": "ok"})
+            return _FakeResponse({"status": "ok"})
+        return _FakeResponse(serve_payload)
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    with pytest.raises(RuntimeError, match="did not confirm model load"):
+        client.load_model("alpha")
+
+    # The previous selection must NOT have been evicted: no
+    # /models/unload call should have fired at all.
+    assert unloads == [], (
+        f"unload_other_models ran before load was confirmed: {unloads}"
+    )
+    # And `self.model` must not have been overwritten with the failed
+    # candidate — the working model pointer survives.
+    assert client.model == "previous"
+
+
+def test_load_model_unloads_previous_only_after_load_confirmed(monkeypatch):
+    """The new ordering: a successful load fires the load POST FIRST,
+    then unloads the prior selection. Order matters — if these flipped
+    back, P2 #3 regresses."""
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="previous", system_prompt="p"
+    )
+
+    # Server reports `previous` currently loaded; after the load POST
+    # the test still serves the same listing (the unload step works
+    # off whatever the GET returns).
+    serve_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "previous",
+                "loaded_instances": [{"id": "p1"}],
+            }
+        ]
+    }
+    call_log: list[str] = []
+    unloaded_instances: list[str] = []
+
+    def _handler(req, timeout):
+        if req.get_method() == "POST":
+            url = req.full_url
+            body = json.loads(req.data.decode("utf-8"))
+            if url.endswith("/api/v1/models/load"):
+                call_log.append("load")
+                return _FakeResponse({"status": "loaded"})
+            if url.endswith("/api/v1/models/unload"):
+                call_log.append("unload")
+                unloaded_instances.append(body["instance_id"])
+                return _FakeResponse({"status": "ok"})
+            return _FakeResponse({"status": "ok"})
+        call_log.append("list")
+        return _FakeResponse(serve_payload)
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    assert client.load_model("alpha") == "alpha"
+    # The first POST must be the load, and any unload must happen
+    # strictly after a confirmed load.
+    post_calls = [c for c in call_log if c in ("load", "unload")]
+    assert post_calls and post_calls[0] == "load", (
+        f"unload fired before /models/load: {call_log}"
+    )
+    # And the previous model's instance got unloaded after confirm.
+    assert unloaded_instances == ["p1"]
+    assert client.model == "alpha"
+
+
 def test_load_model_raises_without_url():
     client = LmStudioClient(base_url="", model="", system_prompt="p")
     with pytest.raises(RuntimeError, match="LLM URL is not configured"):
