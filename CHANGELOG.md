@@ -7,10 +7,37 @@ All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 **Multi-turn conversation history.** Voiceagent up to v0.10.x was
 single-turn — `LmStudioClient.complete()` rebuilt `messages` from
 scratch on every call (system + user only), so the model saw each turn
-as a brand-new conversation. v0.11 ships history serialization, a
-turn-count cap, and clear-on-model-switch so follow-ups like "what
-about *that* one?" resolve correctly. Roadmap entry retired; v0.12
-(MCP tool calling) now unblocked.
+as a brand-new conversation. v0.11 ships history serialization and a
+turn-count cap that trims the visible transcript in place — so
+follow-ups like "what about *that* one?" resolve correctly, and what
+the user sees is exactly what the LLM sees on the next call. Roadmap
+entry retired; v0.12 (MCP tool calling) now unblocked.
+
+### Design choice — visible transcript == LLM payload
+
+The cap is enforced by trimming the `ConversationModel` itself, not
+just the serialized payload. When a new assistant response lands and
+the conversation has more than `max_history_turns` finalized
+user/assistant entries, the oldest pair (and any per-turn status /
+system breadcrumbs that fall before the new kept-window head) is
+dropped from the model. The user sees the same transcript the model
+will see on the next turn — no "phantom history" that's visible but
+not in scope.
+
+### Design choice — conversation persists across model swaps
+
+Earlier iterations of this milestone wiped the transcript on
+`selected_model_changed`. That was an over-correction. Modern
+instruction-tuned local models handle each other's transcripts well,
+and a surprise wipe (especially when comparing models on the same
+question) is the bigger UX cost than theoretical incoherence. The
+context-token bar still resets on swap and the new model's
+`loaded_context_length` is re-fetched, so the visual warning stays
+accurate under the new ceiling. If the existing transcript exceeds
+the new model's context window, LM Studio silently truncates from
+the front — the token-aware trim follow-up (roadmap.md v0.11.x)
+addresses that automatically; for v0.11 the user can shrink
+`VOICEAGENT_MAX_HISTORY_TURNS`.
 
 ### How conversation memory works (newcomer note)
 
@@ -31,7 +58,10 @@ model has a hard limit on how many *tokens* (chunks of ~0.75 words
 each) it can read in one call — its **context window**. v0.11 ships a
 simple turn-count cap (default: last 20 user/assistant entries) to
 keep the prompt bounded, configurable via
-`VOICEAGENT_MAX_HISTORY_TURNS`. A token-aware trim that adapts
+`VOICEAGENT_MAX_HISTORY_TURNS`. **The cap trims the visible transcript
+in place** — when an oldest pair scrolls out of the LLM's context, it
+also disappears from the chat pane, so what you see and what the
+model sees stay in lockstep. A token-aware trim that adapts
 automatically to the loaded model's `loaded_context_length` is on the
 v0.11.x roadmap; turn-count is good enough to unblock the multi-turn
 experience and ship.
@@ -110,18 +140,22 @@ rows actually existed pre-clear.
   posts the full list. Empty-transcript path (v0.9.14) skips the
   chat call entirely so a no-speech turn does not land in history.
 
-### Added — Model-switch wipe + toast
+### Added — Cap-driven trim of the visible transcript
 
-When `LlmController.selected_model_changed(model)` fires with a
-genuinely different model AND the previous model was non-empty AND
-the conversation has rows, `MainWindow` calls
-`coordinator.clear()` + emits a new `conversation_cleared(reason)`
-signal. QML wires it via the existing `replay_failed`-style passive-
-notification pattern. The initial `""` → first-load transition and
-no-op same-model fires both skip the clear path so an autoconnect or
-refresh does not surprise-wipe the transcript.
+`ConversationTurnCoordinator.set_max_history_turns(n)` plus a
+`_trim_to_history_cap` helper invoked at the end of every
+`on_assistant_response`. After a complete user/assistant pair lands,
+the helper counts finalized rows and drops oldest entries (rounded
+to a complete pair via the same pair-integrity guard) until the
+total fits the cap. The streaming-draft assistant index is adjusted
+to track its new row position when the front of the model is
+trimmed; status / system rows belonging to dropped turns disappear
+along with their parent pair.
 
-### Tests (363 → 414, +51)
+`MainWindow` wires `controller.max_history_turns` →
+`coordinator.set_max_history_turns(...)` once at construction.
+
+### Tests (363 → 420, +57)
 
 - `tests/test_chat.py` (+3) — `test_complete_posts_messages_verbatim_no_injection`
   locks the v0.11 contract that the client never injects the system
@@ -133,19 +167,26 @@ refresh does not surprise-wipe the transcript.
   thinking, skip drafts/pending/system/status, skip empty text, omit
   empty system prompt, max-turns cap behavior, cap=0/None unbounded,
   pair-integrity guard on odd cut.
-- `tests/test_conversation_turn_coordinator.py` (+3) — coordinator
+- `tests/test_conversation_turn_coordinator.py` (+10) — coordinator
   `clear` resets all internal state, emits signal only when
-  non-empty.
+  non-empty. Trim-on-assistant-response: drops oldest pair when
+  cap exceeded, no-ops below cap, treats `cap=0` as unbounded,
+  drops per-turn status breadcrumbs along with their parent pair,
+  pair-integrity rounds excess to even, single
+  `conversation_changed` per landing despite the trim, negative
+  cap clamps to 0.
 - `tests/test_controller_history.py` (NEW, +10) — `_run_pipeline`
   appends user turn after history; falls back when no provider; no
   system message when chat client has empty prompt; provider list
   not mutated; empty transcript skips chat call. Plus
   `AppConfig.max_history_turns` env-var parsing (default, override,
   invalid, negative-clamp).
-- `tests/test_mainwindow_integration.py` (+5) — provider wired to
-  window; serializes visible turns; model-switch with rows
-  clears + toasts; initial `""` → load is silent; same-model
-  repeat is silent; empty conversation switch is silent.
+- `tests/test_mainwindow_integration.py` (+4) — provider wired to
+  window; serializes visible turns; model-switch preserves
+  conversation (per-model context counters reset only); cap
+  propagated from `AppConfig` → coordinator; visible transcript
+  trims when cap fires (with snapshot read confirming the model
+  and provider agree).
 - `tests/fakes.py` — `FakeChatClient` gained `system_prompt`
   attribute + `complete()` keyword-args matching the real shape.
 

@@ -933,87 +933,72 @@ def test_chat_history_provider_serializes_visible_turns(main_window_factory):
     ]
 
 
-def test_model_switch_clears_conversation_and_emits_toast(main_window_factory):
-    """A genuine model swap (previous model non-empty, new model
-    different) wipes the transcript and fires the
-    `conversation_cleared` signal so QML can surface a toast."""
-    from PySide6.QtTest import QSignalSpy
-
+def test_model_switch_preserves_conversation(main_window_factory):
+    """v0.11 design choice: switching loaded LLMs does NOT wipe the
+    transcript. The user gets continuity (e.g. ask the same question
+    to two models and compare); modern instruction-tuned local models
+    handle foreign transcripts well, and a surprise wipe is the
+    bigger UX cost. Only context-token state resets — that's bound
+    to the new model's `loaded_context_length`."""
     window = main_window_factory()
-    coord = window._turn_coordinator
-    coord.on_user_transcript("u1")
-    coord.on_assistant_response("a1")
-    _drain_events()
-    assert window._conversation_model.rowCount() > 0
-
-    # Seed previous model so the transition is "qwen → llama" rather
-    # than the initial "" → first-load case.
-    window._previous_loaded_model = "qwen"
-    spy = QSignalSpy(window.conversation_cleared)
-
-    window._llm.selected_model_changed.emit("llama")
-    _drain_events()
-
-    assert window._conversation_model.rowCount() == 0
-    assert spy.count() == 1
-    reason = spy.at(0)[0]
-    assert "model changed" in reason.lower()
-
-
-def test_initial_model_load_does_not_clear_or_toast(main_window_factory):
-    """First-time autoconnect "" → "qwen" must NOT fire the clear path
-    — there's nothing to clear and the toast would be noise on app
-    startup."""
-    from PySide6.QtTest import QSignalSpy
-
-    window = main_window_factory()
-    window._previous_loaded_model = ""
     coord = window._turn_coordinator
     coord.on_user_transcript("u1")
     coord.on_assistant_response("a1")
     _drain_events()
     rows_before = window._conversation_model.rowCount()
-    spy = QSignalSpy(window.conversation_cleared)
+    assert rows_before > 0
 
-    window._llm.selected_model_changed.emit("qwen")
-    _drain_events()
-
-    assert window._conversation_model.rowCount() == rows_before
-    assert spy.count() == 0
-
-
-def test_repeat_same_model_signal_does_not_clear(main_window_factory):
-    """Repeat fires of `selected_model_changed("qwen")` (e.g. after a
-    refresh that didn't actually swap) must not clear the conversation."""
-    from PySide6.QtTest import QSignalSpy
-
-    window = main_window_factory()
-    window._previous_loaded_model = "qwen"
-    coord = window._turn_coordinator
-    coord.on_user_transcript("u1")
-    coord.on_assistant_response("a1")
-    _drain_events()
-    rows_before = window._conversation_model.rowCount()
-    spy = QSignalSpy(window.conversation_cleared)
-
-    window._llm.selected_model_changed.emit("qwen")
-    _drain_events()
-
-    assert window._conversation_model.rowCount() == rows_before
-    assert spy.count() == 0
-
-
-def test_model_switch_with_empty_conversation_emits_no_toast(main_window_factory):
-    """Switching models with no transcript to clear is silent — no
-    spurious toast on a swap that would not visibly change anything."""
-    from PySide6.QtTest import QSignalSpy
-
-    window = main_window_factory()
-    window._previous_loaded_model = "qwen"
-    spy = QSignalSpy(window.conversation_cleared)
+    # Seed a non-zero ceiling so we can assert it's reset.
+    window._context_tokens_ceiling = 8192
+    window._context_tokens_used = 1000
 
     window._llm.selected_model_changed.emit("llama")
     _drain_events()
 
-    assert window._conversation_model.rowCount() == 0
-    assert spy.count() == 0
+    # Conversation persists; per-model context counters reset.
+    assert window._conversation_model.rowCount() == rows_before
+    assert window.contextTokensCeiling == 0
+    assert window.contextTokensUsed == 0
+
+
+def test_max_history_turns_propagated_to_coordinator(main_window_factory):
+    """`AppConfig.max_history_turns` flows controller → coordinator
+    via `set_max_history_turns` in MainWindow.__init__, so the
+    coordinator's trim invariant uses the user's configured cap."""
+    window = main_window_factory()
+    assert (
+        window._turn_coordinator._max_history_turns  # pyright: ignore[reportPrivateUsage]
+        == window.controller.max_history_turns
+    )
+
+
+def test_visible_transcript_trims_when_cap_hits(main_window_factory):
+    """v0.11 invariant: the visible transcript matches what the LLM
+    sees on the next call. When new pairs push past the cap, oldest
+    pairs disappear from the model — they don't just get hidden from
+    the LLM payload."""
+    window = main_window_factory()
+    coord = window._turn_coordinator
+    coord.set_max_history_turns(4)  # last 4 entries = 2 pairs
+    # Land 4 pairs.
+    for i in range(4):
+        coord.on_user_transcript(f"u{i}")
+        coord.on_assistant_response(f"a{i}")
+    _drain_events()
+    # Cap = 4; only the last 2 pairs survive.
+    assert window._conversation_model.rowCount() == 4
+    rows = [
+        window._conversation_model.message(i)
+        for i in range(window._conversation_model.rowCount())
+    ]
+    texts = [(r or {}).get("text") for r in rows]
+    assert texts == ["u2", "a2", "u3", "a3"]
+    # And the history-provider snapshot reads the same trimmed view.
+    snapshot = window.controller.chat_history_provider()
+    user_assistant = [m for m in snapshot if m["role"] != "system"]
+    assert user_assistant == [
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "user", "content": "u3"},
+        {"role": "assistant", "content": "a3"},
+    ]

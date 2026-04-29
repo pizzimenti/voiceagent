@@ -95,14 +95,6 @@ class MainWindow(QObject):
     # real `KLocalizedContext` later.
     replay_failed = Signal(str)
 
-    # Fires after the conversation transcript is wiped because the
-    # loaded LLM was swapped for a different one (different tokenizer /
-    # context window / fine-tuning makes accumulated history invalid
-    # against the new model). QML wires this the same way as
-    # `replay_failed` — `Kirigami.ApplicationWindow.showPassiveNotification(...)`
-    # for a transient "Conversation cleared — model changed." toast.
-    conversation_cleared = Signal(str)
-
     # Internal worker-thread → main-thread bridge for the LM Studio
     # context-length fetch. Layer 5 / 6 design: when the selected LLM
     # model changes, hop a `fetch_loaded_context_length()` HTTP call off
@@ -152,18 +144,26 @@ class MainWindow(QObject):
         self._llm = LlmController(self.controller.chat_client, self.settings, parent=self)
         self._shutting_down = False
         self._state = "idle"
-        # v0.11 multi-turn history: track the last loaded model so a
-        # model swap can clear the conversation transcript (different
-        # tokenizer / context window / fine-tuning makes prior history
-        # incoherent against the new model). Initial value is the
-        # current chat_client.model so an autoconnect that resolves
-        # the same model does not spuriously fire the clear path.
-        self._previous_loaded_model: str = self.controller.chat_client.model
+        # v0.11 multi-turn history. The coordinator owns the trim
+        # invariant ("visible transcript == what the LLM sees on the
+        # next call"); seed its cap from `AppConfig` via the
+        # controller. Conversation deliberately persists across LLM
+        # model swaps — modern instruction-tuned local models handle
+        # foreign transcripts well, and the user gets continuity
+        # rather than a surprise wipe when comparing models. The
+        # context-token bar visually warns when the prompt approaches
+        # the new model's loaded_context_length.
+        self._turn_coordinator.set_max_history_turns(
+            self.controller.max_history_turns
+        )
         # Wire the controller's history snapshot provider so each
         # voice turn captures the visible transcript on the GUI thread
-        # before the executor takes over. The closure reads `system_prompt`
-        # off the chat client (the v0.10 source-of-truth) and the cap
-        # off the controller (set from `AppConfig.max_history_turns`).
+        # before the executor takes over. The closure reads
+        # `system_prompt` off the chat client (the v0.10 source-of-
+        # truth) and the cap off the controller (set from
+        # `AppConfig.max_history_turns`). With the coordinator's trim
+        # active, the model is already capped — `max_turns` here is a
+        # defensive backup.
         self.controller.chat_history_provider = self._build_chat_history_messages
         # Token-usage state for the QML context-window readout. `used`
         # is the running prompt + completion tokens reported on the
@@ -921,25 +921,16 @@ class MainWindow(QObject):
         # Token usage from the previous model's last turn is meaningless
         # against the new (or absent) model; clear it too.
         self._context_tokens_used = 0
-        # v0.11 multi-turn history: clear the conversation when the user
-        # genuinely swaps models. Skip the initial "" → first-model
-        # transition (autoconnect resolving the loaded model) and
-        # no-op repeat fires of the same model. The toast surfaces via
-        # the existing `replay_failed`-style passive-notification wiring
-        # in QML, so the empty transcript reads as "we cleared it" not
-        # "the app forgot something".
-        previous_model = self._previous_loaded_model
-        self._previous_loaded_model = model
-        if (
-            previous_model
-            and previous_model != model
-            and self._conversation_model.rowCount() > 0
-        ):
-            self._turn_coordinator.clear()
-            self.conversation_cleared.emit(
-                self._translator.i18n("Conversation cleared — model changed.")
-            )
-            self.conversation_changed.emit()
+        # v0.11 multi-turn history: the conversation persists across
+        # model swaps — the user gets continuity (e.g. ask the same
+        # question to two models and compare) rather than a surprise
+        # wipe. The new model's loaded_context_length is re-fetched
+        # via the bar above so the visual warning stays accurate
+        # under the new ceiling. If the existing transcript is too
+        # large for the new model, the LM Studio call will truncate
+        # from the front — the token-aware trim follow-up
+        # (roadmap.md v0.11.x) addresses that automatically; for
+        # v0.11 the user can shrink `VOICEAGENT_MAX_HISTORY_TURNS`.
         if model:
             self._submit_context_length_fetch(model)
         self.ui_changed.emit()

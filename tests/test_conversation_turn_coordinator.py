@@ -862,3 +862,114 @@ def test_clear_on_empty_transcript_is_silent(model_and_coordinator):
     coord.clear()
     assert model.rowCount() == 0
     assert spy.count() == 0
+
+
+# --- v0.11 trim-on-assistant-response --------------------------------
+
+
+def test_trim_drops_oldest_pair_after_cap_exceeded(model_and_coordinator):
+    """When `on_assistant_response` lands a pair beyond the cap,
+    the oldest user/assistant pair is dropped from the model."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(4)  # last 4 entries = 2 pairs
+    coord.on_user_transcript("u0")
+    coord.on_assistant_response("a0")
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    coord.on_user_transcript("u2")
+    coord.on_assistant_response("a2")  # this lands the 3rd pair → trim 1
+    rows = _all_rows(model)
+    assert [(r or {}).get("text") for r in rows] == ["u1", "a1", "u2", "a2"]
+
+
+def test_trim_skipped_when_cap_zero(model_and_coordinator):
+    """`max_history_turns=0` is the unbounded-history sentinel —
+    trim must NOT fire."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(0)
+    for i in range(8):
+        coord.on_user_transcript(f"u{i}")
+        coord.on_assistant_response(f"a{i}")
+    assert model.rowCount() == 16
+
+
+def test_trim_does_not_fire_below_cap(model_and_coordinator):
+    """When the conversation hasn't reached the cap, nothing is
+    dropped on assistant-response landings."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(20)
+    coord.on_user_transcript("u0")
+    coord.on_assistant_response("a0")
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    assert model.rowCount() == 4
+
+
+def test_trim_drops_status_rows_belonging_to_removed_turns(model_and_coordinator):
+    """Per-turn status breadcrumbs (Transcribing, Thinking) that
+    landed inside a turn's window must be dropped along with the
+    user/assistant pair they belong to — they're meaningless once
+    their parent pair is gone."""
+    model, coord = model_and_coordinator(verbose=True)
+    coord.set_max_history_turns(2)  # last 2 entries = 1 pair
+    # Turn 1 with status breadcrumbs.
+    coord.on_state_changed(AppState.RECORDING.value)
+    coord.on_user_transcript("u0")
+    coord.on_state_changed(AppState.TRANSCRIBING.value)
+    coord.on_state_changed(AppState.THINKING.value)
+    coord.on_assistant_response("a0")
+    assert model.rowCount() > 2  # u0 + a0 + status rows
+    # Turn 2 lands → trim. Older status rows should also disappear.
+    coord.on_state_changed(AppState.RECORDING.value)
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    rows = _all_rows(model)
+    # Only the keep-window survives — turn 1's status rows are gone
+    # along with u0/a0.
+    texts = [(r or {}).get("text") for r in rows]
+    assert "u0" not in texts
+    assert "a0" not in texts
+
+
+def test_trim_pair_integrity_drops_complete_pair(model_and_coordinator):
+    """Excess of 1 (odd) is rounded up to 2 so we drop a complete
+    user/assistant pair, never a stranded single-side row."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(3)  # cap=3 means after a 4th row, drop 2
+    coord.on_user_transcript("u0")
+    coord.on_assistant_response("a0")
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    rows = _all_rows(model)
+    texts = [(r or {}).get("text") for r in rows]
+    # After (u0, a0, u1, a1), excess=1 → rounded to 2 → drop u0+a0.
+    # Window starts on a user, never on a stranded assistant.
+    assert texts == ["u1", "a1"]
+
+
+def test_trim_emits_conversation_changed_once_per_assistant_landing(
+    model_and_coordinator,
+):
+    """The on_assistant_response handler emits exactly one
+    `conversation_changed` even when the helper trims rows — the
+    trim itself does not double-emit."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(2)
+    coord.on_user_transcript("u0")
+    coord.on_assistant_response("a0")
+    coord.on_user_transcript("u1")
+    spy = QSignalSpy(coord.conversation_changed)
+    coord.on_assistant_response("a1")  # lands + trims u0/a0
+    # Exactly one signal: the on_assistant_response final emit. The
+    # trim helper deliberately doesn't fan out additional signals.
+    assert spy.count() == 1
+
+
+def test_set_max_history_turns_clamps_negative(model_and_coordinator):
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(-5)
+    # Negative clamps to 0 = unbounded.
+    for i in range(5):
+        coord.on_user_transcript(f"u{i}")
+        coord.on_assistant_response(f"a{i}")
+    assert model.rowCount() == 10

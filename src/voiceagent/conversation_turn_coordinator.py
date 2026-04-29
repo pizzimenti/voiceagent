@@ -149,6 +149,12 @@ class ConversationTurnCoordinator(QObject):
         # or -1 when no draft exists. Reset on turn boundaries
         # (RECORDING / IDLE) and after promotion to "sent".
         self._streaming_assistant_index: int = -1
+        # v0.11 multi-turn cap. Trimmed at the end of every assistant
+        # turn so the visible transcript matches what the LLM sees on
+        # the *next* call. 0 = unbounded (defensive matches what
+        # `to_openai_messages(max_turns=0)` does). Settable via
+        # `set_max_history_turns` from the window.
+        self._max_history_turns: int = 20
 
     # -- introspection (used by integration tests) --------------------
 
@@ -182,6 +188,15 @@ class ConversationTurnCoordinator(QObject):
         if self._verbose_static is None:
             return
         self._verbose_static = bool(enabled)
+
+    def set_max_history_turns(self, value: int) -> None:
+        """Set the cap on finalized user/assistant rows kept in the
+        visible transcript. Mirrors `AppConfig.max_history_turns`.
+        Negative clamps to 0 (= unbounded). Trim is applied lazily on
+        the next assistant-response landing — does not retroactively
+        prune the model when the cap shrinks (call `clear()` if you
+        need an immediate reset)."""
+        self._max_history_turns = max(0, int(value))
 
     def on_state_changed(self, state: str) -> None:
         if state in {
@@ -293,6 +308,7 @@ class ConversationTurnCoordinator(QObject):
         # accumulation if the chat client normalizes / strips between
         # the per-chunk callbacks and the final return value).
         draft_index = self._streaming_assistant_index
+        promoted_in_place = False
         if draft_index >= 0:
             draft = self._model.message(draft_index)
             if (
@@ -309,22 +325,31 @@ class ConversationTurnCoordinator(QObject):
                     timestampLabel=f"Received {self._clock_time()}",
                 )
                 self._streaming_assistant_index = -1
-                self.conversation_changed.emit()
-                return
-            # Stale pointer (row was removed / mutated underneath us).
-            # Drop it and fall through to the legacy append path so the
-            # final response still lands in the transcript.
-            self._streaming_assistant_index = -1
-        self._model.append_message(
-            {
-                "role": "assistant",
-                "text": cleaned,
-                "replayable": True,
-                "bubbleState": "sent",
-                "turnPending": False,
-                "timestampLabel": f"Received {self._clock_time()}",
-            }
-        )
+                promoted_in_place = True
+            else:
+                # Stale pointer (row was removed / mutated underneath
+                # us). Drop it and fall through to the legacy append
+                # path so the final response still lands in the
+                # transcript.
+                self._streaming_assistant_index = -1
+        if not promoted_in_place:
+            self._model.append_message(
+                {
+                    "role": "assistant",
+                    "text": cleaned,
+                    "replayable": True,
+                    "bubbleState": "sent",
+                    "turnPending": False,
+                    "timestampLabel": f"Received {self._clock_time()}",
+                }
+            )
+        # v0.11 multi-turn cap: a complete user/assistant pair just
+        # landed; trim oldest pairs if we've passed the cap so the
+        # visible transcript matches what we'll send to the LLM next
+        # turn. Trimmed pairs include any per-turn status / system
+        # rows that fell before the new kept-window head — those
+        # breadcrumbs belong to dropped turns.
+        self._trim_to_history_cap()
         self.conversation_changed.emit()
 
     # -- streaming chat chunks (v0.10.0) -----------------------------
@@ -435,6 +460,73 @@ class ConversationTurnCoordinator(QObject):
             self.conversation_changed.emit()
 
     # -- internal helpers --------------------------------------------
+
+    def _trim_to_history_cap(self) -> None:
+        """Drop oldest rows so finalized user/assistant entries fit
+        within `_max_history_turns`. Pair-integrity guard rounds the
+        excess up to even so we always drop a complete user/assistant
+        pair (mirrors LangChain `ConversationBufferWindowMemory`
+        semantics). Status / system rows that fall before the new
+        kept-window head are dropped along with the pair — they are
+        per-turn breadcrumbs and would dangle without their parent
+        turn. The streaming-draft assistant pointer is updated to
+        track its new row index after the front-of-model removal; it
+        cannot itself be in the dropped range because drafts are
+        excluded from the cap (`turnPending=True`).
+
+        Caller emits `conversation_changed` once after this returns —
+        the helper does not emit, to keep the on_assistant_response
+        notify-once contract intact.
+        """
+        cap = self._max_history_turns
+        if cap <= 0:
+            return
+        finalized: list[int] = []
+        for i in range(self._model.rowCount()):
+            msg = self._model.message(i) or {}
+            if msg.get("role") not in ("user", "assistant"):
+                continue
+            if msg.get("bubbleState") != "sent":
+                continue
+            if bool(msg.get("turnPending")):
+                continue
+            text = msg.get("text") or ""
+            if not isinstance(text, str) or not text.strip():
+                continue
+            finalized.append(i)
+        if len(finalized) <= cap:
+            return
+        excess = len(finalized) - cap
+        if excess % 2 == 1:
+            excess += 1
+        if excess >= len(finalized):
+            # Cap shrunk dramatically (e.g. set_max_history_turns(0)
+            # mid-session). Clear everything, then re-establish the
+            # streaming pointer if the just-promoted assistant was
+            # what we were tracking — which it isn't, since the
+            # assistant has been promoted to "sent" before this
+            # helper is called.
+            return
+        keep_from_index = finalized[excess]
+        if keep_from_index <= 0:
+            return
+        # Adjust the streaming-draft pointer for the row shift before
+        # mutating the model — `_streaming_assistant_index` is a row
+        # index into the same model.
+        if self._streaming_assistant_index >= 0:
+            if self._streaming_assistant_index < keep_from_index:
+                # Draft was inside the dropped range. Should not happen
+                # — drafts are turnPending=True so they were not
+                # counted as finalized — but defensively reset.
+                self._streaming_assistant_index = -1
+            else:
+                self._streaming_assistant_index -= keep_from_index
+        # Bulk-drop from the front. `remove_message` emits
+        # beginRemoveRows / endRemoveRows per call; QML's ListView
+        # batches the resulting layout updates, so the visual cost is
+        # roughly linear in dropped-row count.
+        for _ in range(keep_from_index):
+            self._model.remove_message(0)
 
     def _append_status_log_entry(self, state: str) -> None:
         self._model.append_message(
