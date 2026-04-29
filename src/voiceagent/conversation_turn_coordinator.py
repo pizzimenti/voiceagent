@@ -236,6 +236,15 @@ class ConversationTurnCoordinator(QObject):
     def on_user_transcript(self, text: str) -> None:
         cleaned = text.strip()
         if not cleaned:
+            # No-speech outcome — drop any draft/pending user bubble that
+            # was promoted at the TRANSCRIBING boundary so the turn ends
+            # cleanly instead of leaving a stuck "sent" row.
+            pending_index = self._model.find_message_index(
+                "user", turn_pending=True
+            )
+            if pending_index >= 0:
+                self._model.remove_message(pending_index)
+                self.conversation_changed.emit()
             return
         pending_index = self._model.find_message_index(
             "user", turn_pending=True
