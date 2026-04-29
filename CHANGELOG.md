@@ -2,6 +2,27 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.11 — 2026-04-28
+
+**Inertial scroll glide retuned ~8x.** v0.9.9 doubled the wheel
+multipliers but scroll was still sluggish. The inertial branch's
+glide distance is `velocity² / (2 × flickDeceleration)` —
+quadratic in velocity, not linear. Two-axis retune:
+
+### Changed
+
+- **Inertial velocity multipliers** (`MainWindow.scrollList`)
+  doubled again: `pdy * 80` → `pdy * 160`,
+  `gridUnit * 120` → `gridUnit * 240`. The squared term gives
+  4x glide per notch.
+- **`ListView.flickDeceleration`** halved in
+  `ConversationPane.qml`: `1800` → `900`. Linear contribution
+  doubles glide on top.
+- Combined: ~8x glide vs v0.9.9. Direct path multipliers
+  unchanged.
+- **`tests/qml/tst_scroll_mode.qml`** magnitude assertion
+  updated.
+
 ## 0.9.10 — 2026-04-28
 
 **Verbose toggle hides existing status rows + theme-aware status
