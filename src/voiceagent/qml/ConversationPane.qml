@@ -89,25 +89,40 @@ Pane {
                 spacing: Kirigami.Units.smallSpacing
                 model: conversationPane.voiceAgent ? conversationPane.voiceAgent.conversationModel : null
                 boundsBehavior: Flickable.StopAtBounds
-                // Default Flickable deceleration is restored — the
-                // hand-tuned scrollList curve (v0.8.0 → v0.9.11) is
-                // gone in favor of `Kirigami.WheelHandler` below,
-                // which manages velocity itself.
+                flickDeceleration: 1800
                 maximumFlickVelocity: 24000
                 ScrollBar.vertical: ScrollBar {}
 
-                // Kirigami's purpose-built wheel handler. Replaces the
-                // custom MouseArea + MainWindow.scrollList curve that
-                // had to be retuned three times (v0.9.9 / .11 / .x)
-                // and still shipped at 1/5 native speed on Plasma 6 /
-                // Wayland with high-resolution scroll input. The
-                // handler routes wheel events into the underlying
-                // Flickable's native flick, which gives us proper
-                // inertia and source-aware velocity (mouse wheel,
-                // hi-res mouse, touchpad continuous events) for free.
-                Kirigami.WheelHandler {
-                    target: conversationView
-                    filterMouseEvents: true
+                // Direct-only wheel scrolling, matching CatalogList's
+                // pattern that the user reports as "fast". v0.9.12's
+                // Kirigami.WheelHandler experiment did not deliver
+                // expected speed in this view; v0.9.9–v0.9.11's
+                // multiplier tuning did not either. The previous
+                // inertial-flick branch was the wrong abstraction —
+                // direct contentY assignment with the same multipliers
+                // CatalogList uses (`pdy * 8`, `gridUnit * 12`)
+                // matches the catalog's scroll feel exactly.
+                function _scrollList(wheel) {
+                    const pdy = wheel.pixelDelta ? wheel.pixelDelta.y : 0;
+                    const ady = wheel.angleDelta ? wheel.angleDelta.y : 0;
+                    const delta = pdy !== 0
+                        ? pdy * 8
+                        : (ady / 120) * Kirigami.Units.gridUnit * 12;
+                    const minY = conversationView.originY || 0;
+                    const maxY = minY + Math.max(0, conversationView.contentHeight - conversationView.height);
+                    conversationView.contentY = Math.max(minY, Math.min(maxY, conversationView.contentY - delta));
+                    wheel.accepted = true;
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.NoButton
+                    propagateComposedEvents: true
+                    z: 2
+                    onWheel: function(wheel) {
+                        conversationView._scrollList(wheel);
+                        conversationView.updateStickinessFromPosition();
+                    }
                 }
 
                 // The model is stable; only rows mutate. Keep scrolling deterministic:

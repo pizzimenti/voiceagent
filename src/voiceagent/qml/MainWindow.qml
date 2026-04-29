@@ -66,21 +66,16 @@ Kirigami.ApplicationWindow {
         id: modelManagerAction
         text: i18nCtx.i18n("Voice Models")
         icon.name: "folder-cloud-symbolic"
-        // Plasma's auto-tint of symbolic icons in IconOnly toolbar
-        // slots intermittently drops out and the icon renders against
-        // the un-tinted source SVG (very low contrast on Breeze Dark).
-        // Forcing icon.color to the resolved textColor closes that
-        // gap. Same pattern on the other three header actions below.
+        // Plasma's auto-tint of symbolic icons in toolbar slots
+        // intermittently drops out — force textColor.
         icon.color: Kirigami.Theme.textColor
         visible: !root.compactMode
         onTriggered: {
-            // Guard against double-push if the manager is already on top.
-            const stack = root.pageStack;
-            const top = stack.currentItem;
-            if (top && top.objectName === "modelManagerPage") {
-                return;
-            }
-            stack.push(modelManagerPageComponent);
+            modelManagerWindow.x = root.x + Math.max(0, (root.width - modelManagerWindow.width) / 2);
+            modelManagerWindow.y = root.y + Math.max(0, (root.height - modelManagerWindow.height) / 2);
+            modelManagerWindow.show();
+            modelManagerWindow.raise();
+            modelManagerWindow.requestActivate();
         }
     }
 
@@ -176,14 +171,149 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    Component {
-        id: modelManagerPageComponent
+    Window {
+        id: modelManagerWindow
 
-        ModelManagerPage {
-            voiceAgent: root.voiceAgent
-            compactMode: root.compactMode
-            sttInstalledCount: root.sttInstalledCount
-            ttsInstalledCount: root.ttsInstalledCount
+        transientParent: root
+        modality: Qt.ApplicationModal
+        flags: Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint
+        title: i18nCtx.i18n("Voice Models")
+        visible: false
+        width: Math.min(root.width - Kirigami.Units.gridUnit * 4, Kirigami.Units.gridUnit * 58)
+        height: Math.min(root.height - Kirigami.Units.gridUnit * 4, Kirigami.Units.gridUnit * 42)
+        minimumWidth: Kirigami.Units.gridUnit * 30
+        minimumHeight: Kirigami.Units.gridUnit * 24
+        color: Kirigami.Theme.backgroundColor
+
+        property string sttFilter: ""
+        property string ttsFilter: ""
+
+        Pane {
+            anchors.fill: parent
+            padding: 0
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 0
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: Kirigami.Units.largeSpacing
+                    Layout.rightMargin: Kirigami.Units.largeSpacing
+                    Layout.topMargin: Kirigami.Units.largeSpacing
+                    Layout.bottomMargin: Kirigami.Units.mediumSpacing
+                    spacing: Kirigami.Units.smallSpacing
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.mediumSpacing
+
+                        Kirigami.Heading {
+                            text: i18nCtx.i18n("Voice Models")
+                            level: 2
+                        }
+
+                        Item {
+                            Layout.fillWidth: true
+                        }
+
+                        ToolButton {
+                            icon.name: "window-close"
+                            text: i18nCtx.i18n("Close")
+                            onClicked: modelManagerWindow.close()
+                        }
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: i18nCtx.i18n("Install, remove, and switch local speech models here. Session selectors only show installed items.")
+                        wrapMode: Text.WordWrap
+                        color: Kirigami.Theme.disabledTextColor
+                    }
+
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: root.compactMode ? 1 : 2
+                        columnSpacing: Kirigami.Units.largeSpacing
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: i18nCtx.i18n("%1 STT model(s) installed").arg(root.sttInstalledCount)
+                            font.weight: Font.DemiBold
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: i18nCtx.i18n("%1 TTS voice(s) installed").arg(root.ttsInstalledCount)
+                            font.weight: Font.DemiBold
+                        }
+                    }
+                }
+
+                TabBar {
+                    id: managerTabs
+                    Layout.fillWidth: true
+
+                    TabButton { text: i18nCtx.i18n("Speech To Text") }
+                    TabButton { text: i18nCtx.i18n("Text To Speech") }
+                }
+
+                StackLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    currentIndex: managerTabs.currentIndex
+
+                    ColumnLayout {
+                        Layout.leftMargin: Kirigami.Units.largeSpacing
+                        Layout.rightMargin: Kirigami.Units.largeSpacing
+                        Layout.topMargin: Kirigami.Units.mediumSpacing
+                        Layout.bottomMargin: Kirigami.Units.largeSpacing
+                        spacing: Kirigami.Units.smallSpacing
+
+                        TextField {
+                            Layout.fillWidth: true
+                            placeholderText: i18nCtx.i18n("Filter STT models")
+                            text: modelManagerWindow.sttFilter
+                            onTextChanged: modelManagerWindow.sttFilter = text
+                        }
+
+                        CatalogList {
+                            id: sttCatalogView
+                            catalogModel: voiceAgent.sttCatalogModel
+                            filterText: modelManagerWindow.sttFilter
+                            selectedName: voiceAgent.selectedSttModel
+                            onSelect: function(name) { voiceAgent.selectSttModel(name); }
+                            onInstall: function(name) { voiceAgent.installSttModel(name); }
+                            onRemove: function(name) { voiceAgent.deleteSttModel(name); }
+                        }
+                    }
+
+                    ColumnLayout {
+                        Layout.leftMargin: Kirigami.Units.largeSpacing
+                        Layout.rightMargin: Kirigami.Units.largeSpacing
+                        Layout.topMargin: Kirigami.Units.mediumSpacing
+                        Layout.bottomMargin: Kirigami.Units.largeSpacing
+                        spacing: Kirigami.Units.smallSpacing
+
+                        TextField {
+                            Layout.fillWidth: true
+                            placeholderText: i18nCtx.i18n("Filter TTS voices")
+                            text: modelManagerWindow.ttsFilter
+                            onTextChanged: modelManagerWindow.ttsFilter = text
+                        }
+
+                        CatalogList {
+                            id: ttsCatalogView
+                            catalogModel: voiceAgent.ttsCatalogModel
+                            filterText: modelManagerWindow.ttsFilter
+                            selectedName: voiceAgent.selectedTtsModel
+                            onSelect: function(name) { voiceAgent.selectTtsModel(name); }
+                            onInstall: function(name) { voiceAgent.installTtsModel(name); }
+                            onRemove: function(name) { voiceAgent.deleteTtsModel(name); }
+                        }
+                    }
+                }
+            }
         }
     }
 
