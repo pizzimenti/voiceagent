@@ -458,3 +458,114 @@ def test_superseded_worker_unlinks_its_own_file(qapp, tmp_path):
     )
 
     player.stop()
+
+
+def test_stop_swallows_portaudio_error_during_teardown(qapp, tmp_path):
+    """When `stop()` is called and the worker is blocked inside
+    `stream.write()`, the host audio API can raise a "PaErrorCode -9999"
+    teardown error seconds AFTER stop. Pre-fix that error was emitted
+    as `playback_failed` and surfaced in the conversation pane as a
+    fresh user-facing error for a turn that already finished. The fix
+    suppresses any exception that fires AFTER `stop_event` was set.
+    """
+    from PySide6.QtTest import QSignalSpy
+
+    file_a = tmp_path / "long.wav"
+    _write_wav(file_a, frames=20_000, marker=1)
+
+    teardown_after_stop = threading.Event()
+
+    class _PortAudioFailingStream:
+        """`write()` blocks until `teardown_after_stop` is set, then
+        raises a PortAudio-style host error — exactly the shape the
+        real bug surfaced as."""
+
+        aborted = False
+
+        def write(self, _data: bytes) -> None:
+            # Block until the test signals the teardown moment, then
+            # raise. Mirrors the real `stream.write()` blocking call
+            # that unblocks with a host error after the device closes.
+            teardown_after_stop.wait(timeout=2.0)
+            raise RuntimeError(
+                "Unanticipated host error [PaErrorCode -9999]: '' "
+                "[<host API not found> error 0]"
+            )
+
+        def abort(self) -> None:
+            self.aborted = True
+
+    @contextmanager
+    def _open(self, *, sample_rate, channels, dtype):
+        yield _PortAudioFailingStream()
+
+    player = AudioPlayer()
+    player._open_output_stream = _open.__get__(player, AudioPlayer)
+    failed_spy = QSignalSpy(player.playback_failed)
+
+    assert player.play_file(file_a)
+    # Give the worker a moment to enter the blocked write.
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not player.is_playing:
+        _process_events(2)
+        time.sleep(0.01)
+
+    # User-intentional stop. The worker is still blocked in write;
+    # stop() will set stop_event then time-out joining.
+    player.stop()
+
+    # Now release the blocked write — it raises the PortAudio error.
+    # Pre-fix: that error reaches `playback_failed`.
+    # Post-fix: stop_event is set, so the exception is logged INFO
+    # and never surfaces.
+    teardown_after_stop.set()
+
+    # Drain the worker. Wait long enough for the exception path to
+    # complete in the background thread.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and player.is_playing:
+        _process_events(2)
+        time.sleep(0.02)
+    _process_events(5)
+
+    assert failed_spy.count() == 0, (
+        f"playback_failed should not fire when the host-API error arrives "
+        f"after stop_event was set; got {failed_spy.count()} emissions"
+    )
+
+
+def test_real_failure_still_surfaces_when_stop_not_requested(qapp, tmp_path):
+    """Sanity check the inverse: a write() that raises while the
+    worker is genuinely live (no stop, no supersede) MUST still
+    surface as `playback_failed` so real device failures aren't
+    silently swallowed."""
+    from PySide6.QtTest import QSignalSpy
+
+    file_a = tmp_path / "broken.wav"
+    _write_wav(file_a, frames=4_000, marker=1)
+
+    class _ImmediatelyFailingStream:
+        aborted = False
+
+        def write(self, _data: bytes) -> None:
+            raise RuntimeError("device gone")
+
+        def abort(self) -> None:
+            self.aborted = True
+
+    @contextmanager
+    def _open(self, *, sample_rate, channels, dtype):
+        yield _ImmediatelyFailingStream()
+
+    player = AudioPlayer()
+    player._open_output_stream = _open.__get__(player, AudioPlayer)
+    failed_spy = QSignalSpy(player.playback_failed)
+
+    assert player.play_file(file_a)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and failed_spy.count() == 0:
+        _process_events(2)
+        time.sleep(0.02)
+
+    assert failed_spy.count() == 1, "real playback failure must surface"
+    player.stop()

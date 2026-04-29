@@ -320,10 +320,33 @@ class AudioPlayer(QObject):
                         stream.write(data)
                         chunk_writes += 1
         except Exception as exc:
-            self._logger.exception(
-                "Audio playback failed gen=%s path=%s", gen, path
+            # An exception that fires AFTER the user asked us to stop
+            # (or after a newer play_file took our seat) is a teardown
+            # side-effect, not a user-facing failure. PortAudio in
+            # particular often throws "Unanticipated host error
+            # [PaErrorCode -9999]" when the host audio API is torn
+            # down while a worker is blocked in `stream.write()` —
+            # this surfaces minutes after the actual stop and reads
+            # to the user as a fresh error for a turn that already
+            # finished cleanly.
+            intentionally_stopped = (
+                stop_event.is_set() or not self._is_current_generation(gen)
             )
-            self._emit_failed(gen, str(path), str(exc) or "Audio playback failed.")
+            if intentionally_stopped:
+                self._logger.info(
+                    "Audio playback exception suppressed during teardown "
+                    "gen=%s path=%s stop_event=%s current=%s exc=%s",
+                    gen,
+                    path,
+                    stop_event.is_set(),
+                    self._is_current_generation(gen),
+                    exc,
+                )
+            else:
+                self._logger.exception(
+                    "Audio playback failed gen=%s path=%s", gen, path
+                )
+                self._emit_failed(gen, str(path), str(exc) or "Audio playback failed.")
         else:
             if not stop_event.is_set():
                 self._logger.info(
