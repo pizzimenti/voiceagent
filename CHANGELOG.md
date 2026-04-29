@@ -2,6 +2,35 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.9.6 — 2026-04-28
+
+**Warm complementary assistant bubble + replayable bool coerce.**
+v0.9.5's `View` colorSet rendered the assistant bubble ~5 % off
+the page bg on Breeze Dark — read as flat black. Kirigami doesn't
+expose a "complementary panel" set, so the assistant bubble is
+now an explicit hand-picked warm coffee / cream palette per
+theme.
+
+### Changed
+
+- **Assistant bubble palette** — hand-tuned hue ~25° complementary
+  to the teal/green Plasma highlight (~170°):
+  - Dark theme: bg `#3d3027`, text `#f4e3d0`
+  - Light theme: bg `#f4e3d0`, text `#3d3027`
+- **Theme detection** — ITU-R BT.601 luminance check on
+  `Kirigami.Theme.backgroundColor` (bg < 0.5 → dark theme).
+  Stand-alone fork is the only way to get a real complementary
+  panel — Kirigami's color sets all converge near page bg in dark.
+
+### Fixed
+
+- **Replay-button QML warning flood** — `visible: !compactMode &&
+  model.replayable` produced `Unable to assign [undefined] to
+  bool` warnings per row per resize. Rows that aren't replayable
+  (system, status, draft) never set `replayable`, and the
+  conversation model returns `None` → JS `undefined`. Coerced
+  with `!!` so the binding lands a real bool.
+
 ## 0.9.5 — 2026-04-28
 
 **Bubble colorSet correction + explicit toolbar icon tint.**
