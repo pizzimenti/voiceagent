@@ -2,41 +2,80 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
-## 0.9.14 — 2026-04-29
+## 0.10.0 — 2026-04-29
 
-**Empty Whisper transcript no longer crashes the pipeline.** When
-the user records silence or non-speech audio, Whisper returns no
-segments. Previously `services/stt.py` raised
-`RuntimeError("Whisper did not return any transcript ...")` and
-the pipeline failed with a red error row. Empty transcripts are
-now treated as a no-op turn.
+**Streaming chat completions, thinking expander, context-token
+bar.** Three intersecting capability additions shipped as one
+bundle. Closes the v0.9.x 60-second timeout class, makes
+reasoning-model thoughts visible per turn, and surfaces token
+usage against the loaded model's context window.
 
-### Fixed
+### Added — streaming chat (v0.9.x timeout class fixed)
 
-- **`services/stt.py:transcribe()`** returns `""` instead of
-  raising when no segments are produced. The existing log entry
-  is retained at `WARNING` level so verbose-log mode still shows
-  the no-speech event.
-- **`controller.py:_run_pipeline()`** short-circuits when
-  `transcript.strip()` is empty: returns a no-op
-  `PipelineResult(transcript="", response="", tts_audio_path=None)`,
-  the chat client is never called, audio cleanup still fires.
-- **`conversation_turn_coordinator.py:on_user_transcript("")`**
-  now drops any dangling `turnPending=True` user bubble that
-  was created during transcription, so silence after a draft
-  doesn't leave a stuck row.
+- **`services/chat.py:LmStudioClient.complete()`** now sets
+  `stream: True` + `stream_options.include_usage: True`, parses
+  SSE chunks, accumulates `delta.content` into the returned
+  answer string. Optional callbacks fire from the worker thread:
+  - `on_content_chunk(text)` — incremental answer text
+  - `on_thinking_chunk(text)` — incremental
+    `delta.reasoning_content` (LM Studio's R1-style thinking
+    surface)
+  - `on_usage(usage_dict)` — fires once on the final chunk
+- **Per-read timeout** instead of total-response cap.
+  `timeout_seconds` now bounds per-chunk gaps, so multi-minute
+  generations are fine as long as tokens keep arriving.
+- **`fetch_loaded_context_length()`** queries LM Studio's native
+  `/api/v1/models` for the loaded model's context window
+  (`loaded_context_length` with `context_length` fallback).
+
+### Added — thinking expander (UX C)
+
+- **`ConversationModel`** — `ThinkingTextRole`,
+  `ThinkingExpandedRole` per row.
+- **`ConversationTurnCoordinator`** — streams chunks into a
+  draft assistant row created on first chunk. Default
+  `thinkingExpanded` snapshots `verbose_mode` at row insertion
+  (per-item state, never overwritten by chunks).
+  `set_thinking_expanded(row, bool)` slot for QML toggling.
+- **`ConversationPane.qml`** delegate — collapsible "Thoughts"
+  expander attached above each assistant bubble that has
+  thinking content. Chevron rotates 0° → 90° on expand. Body
+  italic, theme-aware purple (matches existing `statusTextColor`
+  pair). Maps cleanly to `<details><summary>Thoughts</summary>
+  *body*</details>` in markdown export.
+
+### Added — context-token progress bar
+
+- **`MainWindow.contextTokensUsed`** /
+  **`contextTokensCeiling`** Q_PROPERTYs, notified by
+  `ui_changed`.
+- **`setThinkingExpanded(int, bool)`** Slot bridging QML to
+  the coordinator.
+- **MainWindow worker** for the context-length probe — private
+  `ThreadPoolExecutor` triggered on
+  `LlmController.selected_model_changed`. Calls
+  `chat_client.fetch_loaded_context_length()` off the GUI
+  thread, posts the result back via a private signal. Stale-
+  result guard against fast load-then-switch.
+- **`MainWindow.qml`** — thin progress strip at the bottom of
+  the page. Bar fill `highlightColor` < 75 %,
+  `neutralTextColor` 75–90 %, `negativeTextColor` > 90 %. Hidden
+  when ceiling is 0. Count label hidden in `ultraCompactMode`.
 
 ### Tests
 
-- `tests/test_stt.py` — empty-segment branch returns `""` plus
-  WARNING log line.
-- `tests/test_controller_thread_safety.py` (+3) — chat client
-  not called on empty / whitespace-only transcript, audio file
-  still unlinked.
-- `tests/test_conversation_turn_coordinator.py` (+2) —
-  pending-bubble dropped on empty transcript, no-pending case
-  no-op.
-- Net: 320 → 325 (+5).
+- `tests/test_chat.py` (43 → 52, +9): SSE streaming, chunk
+  callbacks, `fetch_loaded_context_length` happy/fallback/empty
+  paths.
+- `tests/test_conversation_model.py` (19 → 25, +6): new role
+  round-trips + `dataChanged` emission.
+- `tests/test_conversation_turn_coordinator.py` (+15): streaming
+  lifecycle, draft row promotion, `thinkingExpanded` snapshot,
+  `set_thinking_expanded` no-ops.
+- `tests/test_mainwindow_integration.py` (+8): chunk
+  forwarders, context-token state, ceiling probe round-trip,
+  stale-result guard.
+- Net (vs v0.9.14): 325 → 363 (+38).
 
 ## 0.9.14 — 2026-04-29
 
