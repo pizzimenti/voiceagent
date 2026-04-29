@@ -905,10 +905,22 @@ class MainWindow(QObject):
         self.ui_changed.emit()
 
     def _submit_context_length_fetch(self, model: str) -> None:
+        # `_shutting_down` is set BEFORE `_context_length_executor.shutdown()`
+        # in `shutdown()`, so any queued Qt slot that lands here after the
+        # window has begun tearing down sees the flag and bails out before
+        # touching a dead pool. The `RuntimeError` catch closes the residual
+        # race between the flag check above and the `submit` call itself —
+        # if the executor was shut down between those two lines, treat the
+        # submission as dropped (same outcome as if we'd checked after).
+        if self._shutting_down:
+            return
         chat_client = self.controller.chat_client
-        future = self._context_length_executor.submit(
-            chat_client.fetch_loaded_context_length
-        )
+        try:
+            future = self._context_length_executor.submit(
+                chat_client.fetch_loaded_context_length
+            )
+        except RuntimeError:
+            return
         future.add_done_callback(
             lambda completed, name=model: self._handle_context_length_future(
                 completed, name
