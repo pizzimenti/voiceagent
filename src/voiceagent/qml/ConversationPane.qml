@@ -183,10 +183,26 @@ Pane {
 
                 property bool assistant: model.messageRole === "assistant"
                 readonly property string bubbleState: model.bubbleState || "sent"
-                readonly property color bubbleColor: bubbleState === "draft"
+                readonly property bool draft: bubbleState === "draft"
+                // Bubble palette uses Kirigami theme roles so the
+                // contrast tracks Breeze Light / Dark / user accent
+                // automatically, instead of hardcoded green/gray that
+                // shipped with poor white-on-green legibility.
+                //   - assistant (the AI's reply) → quiet
+                //     `alternateBackgroundColor`, like a system message
+                //     panel; reads with `textColor`.
+                //   - user sent → `highlightColor` accent (Plasma blue
+                //     by default) with `highlightedTextColor`, which
+                //     Kirigami already pairs as the "selection" pair.
+                //   - user draft (transcribing) → pink hold-over kept
+                //     deliberately as a transient state marker; flips
+                //     to the highlight pair on finalize.
+                readonly property color bubbleColor: draft
                     ? "#ff5c8a"
-                    : (assistant ? "#34c759" : "#4a4a4f")
-                readonly property color bubbleTextColor: "#ffffff"
+                    : (assistant ? Kirigami.Theme.alternateBackgroundColor : Kirigami.Theme.highlightColor)
+                readonly property color bubbleTextColor: draft
+                    ? "#ffffff"
+                    : (assistant ? Kirigami.Theme.textColor : Kirigami.Theme.highlightedTextColor)
                 readonly property color systemTextColor: (model.level || "status") === "error"
                     ? Kirigami.Theme.negativeTextColor
                     : Kirigami.Theme.disabledTextColor
@@ -266,7 +282,11 @@ Pane {
                                 visible: !!(model.timestampLabel || "")
                                 Layout.fillWidth: true
                                 text: model.timestampLabel || ""
-                                color: Qt.rgba(1, 1, 1, 0.72)
+                                // Track bubbleTextColor at reduced
+                                // opacity so the timestamp reads on
+                                // both the assistant (theme bg) and
+                                // user (highlight bg) bubbles.
+                                color: Qt.rgba(bubbleTextColor.r, bubbleTextColor.g, bubbleTextColor.b, 0.72)
                                 font.pixelSize: 10
                                 horizontalAlignment: Text.AlignLeft
                             }
