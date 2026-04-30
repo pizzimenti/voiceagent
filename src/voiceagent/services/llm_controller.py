@@ -445,6 +445,7 @@ class LlmController(QObject):
             model=self._chat_client.model,
             system_prompt=self._chat_client.system_prompt,
             timeout_seconds=self._chat_client.timeout_seconds,
+            load_timeout_seconds=self._chat_client.load_timeout_seconds,
         )
         try:
             models = snapshot_client.list_models()

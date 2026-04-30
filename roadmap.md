@@ -37,9 +37,12 @@ already does.
 
 User says "what's the capital of France?" → "Paris." → "what's the
 population?" — the second turn resolves correctly because the model
-sees both prior turns. New Conversation clears history. Switching
-models clears history (different model, different context window,
-different tokenizer).
+sees both prior turns. (The original v0.11 plan also clear-wiped on
+model swap; that was retired during the PR after user feedback —
+modern instruction-tuned models handle each other's transcripts
+fine, and the surprise wipe was the bigger UX cost. See the v0.11.0
+CHANGELOG entry "Design choice — conversation persists across model
+swaps" for the final shipped behavior.)
 
 ### Scope
 
@@ -83,15 +86,18 @@ oldest pairs until prompt+headroom fits) is the natural v0.11.x
 follow-up but **not** v0.11 — turn-count is good enough to unblock the
 multi-turn experience and ship.
 
-### Clear-on-model-switch
+### Clear-on-model-switch — DROPPED (see CHANGELOG v0.11.0)
 
-Different models = different tokenizers, context windows, and
-fine-tuning. A history accumulated against Qwen 2.5 14B may not be
-coherent when replayed to Llama 3.1 8B. `LlmController`'s
-model-changed signal should clear `ConversationModel` and emit a
-toast: "Conversation cleared — model changed." This matches LM
-Studio's own behaviour and avoids surprise context-window blowups
-when the user swaps to a smaller model mid-session.
+The original plan called for clearing history on every model swap.
+Retired during the PR after user testing: continuity wins, and modern
+instruction-tuned local models handle each other's transcripts well
+enough that a surprise wipe was the worse UX. The
+context-token bar still resets on swap and the new model's
+`loaded_context_length` is re-fetched, so the visual warning stays
+accurate under the new ceiling. If a swap to a smaller-context model
+exceeds the new ceiling mid-session, LM Studio truncates from the
+front; the v0.11.x token-aware-trim follow-up handles this
+automatically.
 
 ### Tests
 
@@ -101,7 +107,8 @@ when the user swaps to a smaller model mid-session.
   `to_openai_messages()` round-trips a multi-turn convo correctly,
   skips thinking content, respects the `max_history_turns` cap.
 - `tests/test_controller.py` — pipeline appends user-then-assistant
-  in the right order, model-change clears history.
+  in the right order. (Model-change-clears-history was dropped per
+  above.)
 
 ### Open questions and risks
 
@@ -241,3 +248,41 @@ tool-result messages between iterations). v0.11 is what gives us that
 list in the first place — without it, every MCP iteration would lose
 the prior conversation and the agent loop would be a single-turn-only
 feature, defeating the point.
+
+## v1.0 — Stable-release housekeeping
+
+**Status:** scheduled before any 1.0 tag is cut.
+
+### Conversation log default → OFF
+
+The v0.11 conversation log
+(`$XDG_STATE_HOME/voiceagent/logs/conversation.log`) is currently
+default-ON for debug convenience: full transcript text + LLM
+`messages` payload + assistant responses persist on every turn.
+That was the right call for the v0.11 development cycle — being able
+to grep `conversation.log` after a multi-turn session is exactly
+what the file is for. CodeRabbit (PR #44 review, round 3) flagged
+the privacy posture: persisting raw user content by default runs
+counter to privacy-by-default principles, even on a local-only
+single-user tool, and is the kind of thing a security audit would
+ding before a stable release.
+
+**v1.0 work:**
+
+- Flip the conversation log default to **OFF**. Opt in with an
+  explicit env flag (e.g. `VOICEAGENT_CONVERSATION_LOG=1`).
+- Document the flag in `README.md` § Configuration.
+- The session-rotation machinery + per-turn content capture stay
+  exactly as-is — only the install gate in
+  `logging_utils._install_conversation_logger` changes from "always
+  install" to "install iff env flag set".
+- One small migration concern: any existing log files from v0.11
+  remain on disk; they don't auto-clear. Document in the v1.0
+  CHANGELOG that users may want to remove
+  `${XDG_STATE_HOME:-$HOME/.local/state}/voiceagent/logs/conversation.log*`
+  if the content is sensitive.
+
+### Other v1.0 items
+
+(Reserved — add as the v0.11.x → v0.12 cycle surfaces other
+"good for a release-candidate" cleanups.)

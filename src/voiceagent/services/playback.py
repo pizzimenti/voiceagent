@@ -25,7 +25,6 @@ class AudioPlayer(QObject):
     playback_finished = Signal(str)
     playback_failed = Signal(str, str)
     playback_state_changed = Signal(str, str)
-    muted_changed = Signal(bool)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -48,7 +47,6 @@ class AudioPlayer(QObject):
         self._stream: Any | None = None
         self._pause_condition = threading.Condition()
         self._paused = False
-        self._muted = False
 
         self._level_lock = threading.Lock()
         self._current_output_level = 0.0
@@ -92,16 +90,22 @@ class AudioPlayer(QObject):
         with self._pause_condition:
             self._pause_condition.notify_all()
 
-        if self._stream is not None:
-            try:
-                self._stream.abort()
-            except Exception:
-                pass
+        # Previously we called `self._stream.abort()` here to try to
+        # unblock the worker's `stream.write()` faster. Removed: the
+        # call races against the worker's `with self._open_output_stream`
+        # exit (which closes the PortAudio stream), and dereferencing
+        # the freed C-side stream object segfaulted the process. The
+        # user reported a hard "zsh: segmentation fault (core dumped)"
+        # right after a stop-induced abandon; abort() was the racy
+        # piece. Without abort() the worker exits naturally at the end
+        # of its current write chunk (~186 ms for 4096 samples at
+        # 22050 Hz mono), well within the join timeout below.
 
         # Bounded join on the prior worker. If the old worker is stuck,
-        # log and abandon rather than blocking the caller; the stop event
-        # has been set and the `with` block will close the output stream
-        # on the next write attempt.
+        # log and abandon rather than blocking the caller; the stop
+        # event has been set and the worker will exit on its next loop
+        # check after the current write completes.
+        abandoned_predecessor = False
         if previous_thread is not None and previous_thread.is_alive():
             previous_thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
             if previous_thread.is_alive():
@@ -109,10 +113,12 @@ class AudioPlayer(QObject):
                     "Previous playback worker did not exit within %.3fs; abandoning",
                     _JOIN_TIMEOUT_SECONDS,
                 )
+                abandoned_predecessor = True
 
         thread = threading.Thread(
             target=self._playback_worker,
             args=(gen, path, stop_event),
+            kwargs={"post_abandon_grace": abandoned_predecessor},
             daemon=True,
         )
         with self._lock:
@@ -185,11 +191,16 @@ class AudioPlayer(QObject):
             self._paused = False
             self._pause_condition.notify_all()
 
-        if self._stream is not None:
-            try:
-                self._stream.abort()
-            except Exception:
-                pass
+        # Previously: `self._stream.abort()` here to try to unblock
+        # the worker's blocking write faster. Removed because the
+        # call raced against the worker's `with` block closing the
+        # underlying PortAudio stream — touching the freed C-side
+        # pointer segfaulted the process (user-reported crash on a
+        # stop-induced abandon). Worker now exits naturally on the
+        # next stop_event check at the end of its current write
+        # chunk; that's bounded by the audio chunk duration (~186 ms
+        # for 4096 samples at 22050 Hz mono), well within the join
+        # timeout below.
 
         if previous_thread is not None and previous_thread.is_alive():
             previous_thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
@@ -231,10 +242,6 @@ class AudioPlayer(QObject):
         return current_file is not None and self._paused
 
     @property
-    def is_muted(self) -> bool:
-        return self._muted
-
-    @property
     def current_output_level(self) -> float:
         with self._level_lock:
             return self._current_output_level
@@ -247,13 +254,6 @@ class AudioPlayer(QObject):
                 self._recent_output_timestamp,
             )
 
-    def set_muted(self, muted: bool) -> None:
-        if self._muted == muted:
-            return
-        self._muted = muted
-        self._logger.info("Audio output muted=%s", muted)
-        self.muted_changed.emit(muted)
-
     # ------------------------------------------------------------------
     # Worker
     # ------------------------------------------------------------------
@@ -263,10 +263,25 @@ class AudioPlayer(QObject):
         gen: int,
         path: Path,
         stop_event: threading.Event,
+        *,
+        post_abandon_grace: bool = False,
     ) -> None:
         try:
+            # If we're succeeding an ABANDONED previous worker (one
+            # whose `join` timed out — most often because its
+            # `stream.write()` was blocked when the user pressed 🤫),
+            # PortAudio's ALSA backend needs a moment to release the
+            # device resources before we open a new stream. Without
+            # this grace, we see PortAudio→ALSA stderr chatter
+            # ("alsa_snd_pcm_mmap_begin failed",
+            # "PaAlsaStream_SetUpBuffers failed") on the new stream's
+            # setup. The new playback still works (PortAudio retries),
+            # but the noise is alarming and confuses the user. 100 ms
+            # is enough in practice; we run on the worker thread so
+            # the GUI stays responsive.
+            if post_abandon_grace:
+                time.sleep(0.1)
             chunk_writes = 0
-            muted_chunk_sleeps = 0
             with wave.open(str(path), "rb") as wav_file:
                 channels = wav_file.getnchannels()
                 sample_rate = wav_file.getframerate()
@@ -312,26 +327,65 @@ class AudioPlayer(QObject):
                                 self._normalize_level(self._chunk_rms(data))
                             )
                             self._set_recent_output(data, sample_rate)
-                        if self._muted:
-                            frame_count = len(data) // max(1, channels * sample_width)
-                            time.sleep(frame_count / sample_rate)
-                            muted_chunk_sleeps += 1
-                            continue
                         stream.write(data)
                         chunk_writes += 1
         except Exception as exc:
-            self._logger.exception(
-                "Audio playback failed gen=%s path=%s", gen, path
+            # An exception that fires AFTER the user asked us to stop
+            # (or after a newer play_file took our seat) is a teardown
+            # side-effect, not a user-facing failure. PortAudio in
+            # particular often throws "Unanticipated host error
+            # [PaErrorCode -9999]" when the host audio API is torn
+            # down while a worker is blocked in `stream.write()` —
+            # this surfaces minutes after the actual stop and reads
+            # to the user as a fresh error for a turn that already
+            # finished cleanly.
+            intentionally_stopped = (
+                stop_event.is_set() or not self._is_current_generation(gen)
             )
-            self._emit_failed(gen, str(path), str(exc) or "Audio playback failed.")
+            if intentionally_stopped:
+                self._logger.info(
+                    "Audio playback exception suppressed during teardown "
+                    "gen=%s path=%s stop_event=%s current=%s exc=%s",
+                    gen,
+                    path,
+                    stop_event.is_set(),
+                    self._is_current_generation(gen),
+                    exc,
+                )
+            else:
+                # Re-check immediately before emit. The window between the
+                # initial check above and the call below is tiny but real
+                # — a fast `stop()` from the GUI thread can flip
+                # stop_event right after we entered this branch, or a
+                # concurrent `play_file` can supersede our generation.
+                # CodeRabbit round-3 finding: without this re-check, a
+                # user-initiated stop arriving after the initial check
+                # can still surface playback_failed in the conversation
+                # pane for a turn the user just chose to silence.
+                if stop_event.is_set() or not self._is_current_generation(gen):
+                    self._logger.info(
+                        "Audio playback exception suppressed at emit-time recheck "
+                        "gen=%s path=%s stop_event=%s current=%s exc=%s",
+                        gen,
+                        path,
+                        stop_event.is_set(),
+                        self._is_current_generation(gen),
+                        exc,
+                    )
+                else:
+                    self._logger.exception(
+                        "Audio playback failed gen=%s path=%s", gen, path
+                    )
+                    self._emit_failed(
+                        gen, str(path), str(exc) or "Audio playback failed."
+                    )
         else:
             if not stop_event.is_set():
                 self._logger.info(
-                    "Audio playback finished gen=%s path=%s chunk_writes=%s muted_chunk_sleeps=%s",
+                    "Audio playback finished gen=%s path=%s chunk_writes=%s",
                     gen,
                     path,
                     chunk_writes,
-                    muted_chunk_sleeps,
                 )
                 self._emit_finished(gen, str(path))
         finally:

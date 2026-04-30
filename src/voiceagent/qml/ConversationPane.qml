@@ -31,6 +31,13 @@ Pane {
 
     readonly property var root: ApplicationWindow.window
 
+    function tr(text) {
+        if (typeof i18nCtx !== "undefined" && i18nCtx) {
+            return i18nCtx.i18n(text);
+        }
+        return text;
+    }
+
     // ultraCompact: zero padding so the mic button reaches the pane
     // edges. compact/medium: small breathing room.
     padding: root.ultraCompactMode ? 0 : (root.compactMode ? Kirigami.Units.smallSpacing : (root.mediumMode ? Kirigami.Units.smallSpacing : Kirigami.Units.mediumSpacing))
@@ -49,7 +56,7 @@ Pane {
 
             Kirigami.Heading {
                 visible: !root.compactMode
-                text: i18nCtx.i18n("Conversation")
+                text: conversationPane.tr("Conversation")
                 level: 2
             }
 
@@ -65,7 +72,7 @@ Pane {
 
             Label {
                 visible: !root.compactMode
-                text: (conversationPane.voiceAgent && conversationPane.voiceAgent.voiceConnectionEnabled) ? i18nCtx.i18n("Live") : i18nCtx.i18n("Idle")
+                text: (conversationPane.voiceAgent && conversationPane.voiceAgent.voiceConnectionEnabled) ? conversationPane.tr("Live") : conversationPane.tr("Idle")
                 color: Kirigami.Theme.disabledTextColor
             }
         }
@@ -257,8 +264,17 @@ Pane {
                 readonly property string thinkingText: model.thinkingText || ""
                 readonly property bool thinkingExpanded: !!model.thinkingExpanded
                 readonly property bool hasThinking: assistant && thinkingText.length > 0
+                // Bubble width caps. Tightened from 0.96 / 0.9 once
+                // the ▶/🤫 toggle started rendering on assistant rows
+                // in BOTH responsive modes — the button reserves a
+                // square 28 px / 44 px slot, plus a smallSpacing gap
+                // and the right-side fillWidth spacer. 0.78 in
+                // compact / 0.84 in medium leaves the slot free
+                // even at the narrow end of each range. User
+                // bubbles share the cap (no button on that side)
+                // and just sit slightly inset from the right edge.
                 readonly property real maxBubbleWidth: Math.min(
-                    conversationView.width * (root.compactMode ? 0.96 : (root.mediumMode ? 0.9 : 0.78)),
+                    conversationView.width * (root.compactMode ? 0.78 : (root.mediumMode ? 0.84 : 0.78)),
                     Kirigami.Units.gridUnit * (root.compactMode ? 18 : (root.mediumMode ? 28 : 34))
                 )
 
@@ -344,7 +360,7 @@ Pane {
                                     }
 
                                     Label {
-                                        text: i18nCtx.i18n("Thoughts")
+                                        text: conversationPane.tr("Thoughts")
                                         font.pixelSize: 11
                                         font.italic: true
                                         color: thoughtsLabelColor
@@ -449,7 +465,7 @@ Pane {
 
                             Label {
                                 visible: !root.compactMode
-                                text: assistant ? i18nCtx.i18n("Assistant") : i18nCtx.i18n("You")
+                                text: assistant ? conversationPane.tr("Assistant") : conversationPane.tr("You")
                                 color: bubbleFrame.resolvedText
                                 opacity: 0.8
                                 font.pixelSize: 12
@@ -480,17 +496,75 @@ Pane {
                         }
                     }
 
+                    // ▶ / 🤫 toggle. Replaces the static "Replay"
+                    // button (and the toolbar mute action). When the
+                    // voiceagent is currently reading THIS row, show
+                    // 🤫 — clicking it cuts the speech mid-utterance
+                    // (`stopSpeaking`) without touching the voice
+                    // connection. Otherwise show ▶ — clicking
+                    // re-synthesizes + plays this row's text
+                    // (`replayMessage`).
+                    //
+                    // `model.replayable` is coerced to bool — the
+                    // role returns `undefined` for system / status /
+                    // draft rows, and `visible: ... && undefined`
+                    // produces a log warning per row per resize.
                     Button {
-                        // Coerce `model.replayable` to bool — the role
-                        // returns `undefined` for rows that never set
-                        // it (system / status / draft entries), and
-                        // QML's `visible: ... && undefined` produces a
-                        // log warning per row per resize.
-                        visible: !root.compactMode && !!model.replayable
-                        text: i18nCtx.i18n("Replay")
+                        id: replayToggleButton
+                        readonly property bool thisRowSpeaking:
+                            conversationPane.voiceAgent
+                                ? conversationPane.voiceAgent.speakingRow === index
+                                : false
+                        // Visible in BOTH responsive modes — replayable is
+                        // the only gate. Square dimensions (NOT default
+                        // implicit content-driven sizing) so the row layout
+                        // can't squish the glyph laterally when bubble +
+                        // spacer compete for width. Wide mode is ~1.5× the
+                        // original 14 px button; compact is half of that.
+                        readonly property int buttonDim: root.compactMode ? 28 : 44
+                        visible: !!model.replayable
+                        text: thisRowSpeaking ? "🤫" : "▶"
+                        font.pixelSize: root.compactMode ? 11 : 21
+                        padding: 0
+                        Layout.preferredWidth: buttonDim
+                        Layout.preferredHeight: buttonDim
+                        Layout.minimumWidth: buttonDim
                         Layout.alignment: Qt.AlignBottom
+                        ToolTip.visible: hovered
+                        ToolTip.text: thisRowSpeaking
+                            ? conversationPane.tr("Quiet — stop speaking")
+                            : conversationPane.tr("Replay")
+                        // Rounded-square background. Theme-aware colors so
+                        // it sits comfortably under both Breeze Light and
+                        // Dark; press/hover states give a subtle indication
+                        // without competing visually with the violet
+                        // bubble palette.
+                        background: Rectangle {
+                            color: replayToggleButton.pressed
+                                ? Kirigami.Theme.highlightColor
+                                : (replayToggleButton.hovered
+                                    ? Kirigami.Theme.alternateBackgroundColor
+                                    : Kirigami.Theme.backgroundColor)
+                            border.color: Kirigami.Theme.disabledTextColor
+                            border.width: 1
+                            radius: 6
+                        }
+                        contentItem: Label {
+                            text: replayToggleButton.text
+                            color: replayToggleButton.pressed
+                                ? Kirigami.Theme.highlightedTextColor
+                                : Kirigami.Theme.textColor
+                            font.pixelSize: replayToggleButton.font.pixelSize
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
                         onClicked: {
-                            if (conversationPane.voiceAgent) {
+                            if (!conversationPane.voiceAgent) {
+                                return;
+                            }
+                            if (thisRowSpeaking) {
+                                conversationPane.voiceAgent.stopSpeaking();
+                            } else {
                                 conversationPane.voiceAgent.replayMessage(index);
                             }
                         }
@@ -511,7 +585,7 @@ Pane {
                 footer: Kirigami.PlaceholderMessage {
                     width: conversationView.width
                     visible: conversationView.count === 0
-                    text: i18nCtx.i18n("Spoken turns will appear here once voice mode is active.")
+                    text: conversationPane.tr("Spoken turns will appear here once voice mode is active.")
                 }
             }
 
@@ -535,7 +609,7 @@ Pane {
                 opacity: 0.85
                 z: 10
                 ToolTip.visible: hovered
-                ToolTip.text: i18nCtx.i18n("Scroll to bottom")
+                ToolTip.text: conversationPane.tr("Scroll to bottom")
                 onClicked: {
                     conversationView.scrollToBottom();
                 }

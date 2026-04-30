@@ -2,6 +2,276 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.11.0 — 2026-04-29
+
+**Multi-turn conversation history.** Voiceagent up to v0.10.x was
+single-turn — `LmStudioClient.complete()` rebuilt `messages` from
+scratch on every call (system + user only), so the model saw each turn
+as a brand-new conversation. v0.11 ships history serialization and a
+turn-count cap that trims the visible transcript in place — so
+follow-ups like "what about *that* one?" resolve correctly, and what
+the user sees is exactly what the LLM sees on the next call. Roadmap
+entry retired; v0.12 (MCP tool calling) now unblocked.
+
+### Design choice — visible transcript == LLM payload
+
+The cap is enforced by trimming the `ConversationModel` itself, not
+just the serialized payload. When a new assistant response lands and
+the conversation has more than `max_history_turns` finalized
+user/assistant entries, the oldest pair (and any per-turn status /
+system breadcrumbs that fall before the new kept-window head) is
+dropped from the model. The user sees the same transcript the model
+will see on the next turn — no "phantom history" that's visible but
+not in scope.
+
+### Design choice — conversation persists across model swaps
+
+Earlier iterations of this milestone wiped the transcript on
+`selected_model_changed`. That was an over-correction. Modern
+instruction-tuned local models handle each other's transcripts well,
+and a surprise wipe (especially when comparing models on the same
+question) is the bigger UX cost than theoretical incoherence. The
+context-token bar still resets on swap and the new model's
+`loaded_context_length` is re-fetched, so the visual warning stays
+accurate under the new ceiling. If the existing transcript exceeds
+the new model's context window, LM Studio silently truncates from
+the front — the token-aware trim follow-up (roadmap.md v0.11.x)
+addresses that automatically; for v0.11 the user can shrink
+`VOICEAGENT_MAX_HISTORY_TURNS`.
+
+### How conversation memory works (newcomer note)
+
+When voiceagent talks to LM Studio over the OpenAI-compatible
+`/chat/completions` endpoint, the server is **stateless** — every
+request stands alone, and the server forgets everything as soon as it
+sends the reply. The only way to give the model "memory" is for the
+**caller** to include the full prior conversation in every new request.
+That conversation is sent as a structured `messages` array:
+`[{role: "system", content: "…"}, {role: "user", content: "…"},
+{role: "assistant", content: "…"}, …]`.
+
+v0.11 fixes the previous single-turn behavior by serializing the
+visible transcript into the `messages` array on each new turn. The
+model now sees prior turns and can resolve follow-ups. Token economics
+matter: every turn you keep makes the next request longer, and every
+model has a hard limit on how many *tokens* (chunks of ~0.75 words
+each) it can read in one call — its **context window**. v0.11 ships a
+simple turn-count cap (default: last 20 user/assistant entries) to
+keep the prompt bounded, configurable via
+`VOICEAGENT_MAX_HISTORY_TURNS`. **The cap trims the visible transcript
+in place** — when an oldest pair scrolls out of the LLM's context, it
+also disappears from the chat pane, so what you see and what the
+model sees stay in lockstep. A token-aware trim that adapts
+automatically to the loaded model's `loaded_context_length` is on the
+v0.11.x roadmap; turn-count is good enough to unblock the multi-turn
+experience and ship.
+
+The chosen design matches LangChain's `ConversationBufferWindowMemory`
+and Semantic Kernel's `ChatHistoryTruncationReducer`. Most local-LLM
+desktop apps (LM Studio's own UI, Open WebUI, GPT4All) ship hard
+truncation with no built-in summarization, so v0.11's explicit
+turn-count cap is more conservative — i.e. more correct — than what
+those apps default to internally. Fancier alternatives surveyed and
+deliberately rejected: summary-buffer hybrid (LLM summarization mid-
+pipeline = unacceptable latency for voice), RAG-as-memory (embedding
++ vector store = overkill for a single-user assistant),
+MemGPT-style tiered memory (designed for weeks-of-continuity agents).
+
+### Added — `LmStudioClient.complete()` signature change
+
+- **Signature: `user_text: str` → `messages: list[dict[str, str]]`**.
+  The caller now owns the full message list — no auto-injection of
+  the system prompt. `messages=[]` raises `RuntimeError` early.
+  Streaming, usage callback, thinking-channel routing all unchanged.
+  This is a public-API break for direct callers; voiceagent's
+  in-tree use site is the only known one.
+
+### Added — `ConversationModel`
+
+- **`to_openai_messages(system_prompt, max_turns=None)`** —
+  serializes finalized user/assistant turns to the OpenAI message
+  format. Skips `role="system"` operational notices,
+  `role="status"` pipeline rows, drafts (`bubbleState="draft"`),
+  in-flight turns (`turnPending=True`), and empty-text rows. The
+  assistant's `thinkingText` (`reasoning_content` channel) is NOT
+  replayed as content — DeepSeek and OpenAI both explicitly document
+  that intermediate reasoning tokens should not round-trip into the
+  next turn unless the turn includes tool calls (out of scope until
+  v0.12 MCP).
+- **Pair-integrity guard.** If the cap lands on an odd cut, the
+  slice can lead with `assistant` (no preceding `user`), which the
+  model interprets as unfinished. The guard drops one more entry so
+  history always starts on `user` (or empty) — mirrors LangChain
+  `ConversationBufferWindowMemory`'s "drop a complete pair"
+  semantics.
+- **`clear()`** — `beginResetModel` / `endResetModel` wipe; no-op +
+  signal-silent on an already-empty model.
+
+### Added — `ConversationTurnCoordinator.clear()`
+
+Wraps `model.clear()` and resets the four internal per-turn fields
+the coordinator owns: `_streaming_assistant_index`,
+`_current_turn_user_bubble_present`, `_pending_status_log_states`,
+`_last_logged_status_state`. Emits `conversation_changed` only when
+rows actually existed pre-clear.
+
+### Added — `AppConfig.max_history_turns` + env var
+
+- New `AppConfig.max_history_turns: int = 20`.
+- Env override: `VOICEAGENT_MAX_HISTORY_TURNS`. Invalid values fall
+  back to default; negative values clamp to 0 (= unbounded).
+- README env-var reference left for a follow-up touch-up; the
+  config field carries the documentation in source.
+
+### Added — `VoiceController` history hook
+
+- **`chat_history_provider: Callable[[], list[dict]] | None`** —
+  attribute set by callers (window) to a closure that returns the
+  current conversation history as an OpenAI messages list.
+- **`max_history_turns: int = 20`** — set by `app.py` from
+  `AppConfig.max_history_turns`.
+- **`_handle_segment_ready`** captures the snapshot via the provider
+  on the GUI thread *before* `executor.submit(...)` — the
+  `ConversationModel` is read while the GUI thread is still the sole
+  mutator. Provider exceptions log + fall through to the
+  v0.10-equivalent single-turn payload.
+- **`_run_pipeline(audio_path, history_snapshot)`** appends
+  `{"role": "user", "content": <transcript>}` to the snapshot and
+  posts the full list. Empty-transcript path (v0.9.14) skips the
+  chat call entirely so a no-speech turn does not land in history.
+
+### Added — Cap-driven trim of the visible transcript
+
+`ConversationTurnCoordinator.set_max_history_turns(n)` plus a
+`_trim_to_history_cap` helper invoked at the end of every
+`on_assistant_response`. After a complete user/assistant pair lands,
+the helper counts finalized rows and drops oldest entries (rounded
+to a complete pair via the same pair-integrity guard) until the
+total fits the cap. The streaming-draft assistant index is adjusted
+to track its new row position when the front of the model is
+trimmed; status / system rows belonging to dropped turns disappear
+along with their parent pair.
+
+`MainWindow` wires `controller.max_history_turns` →
+`coordinator.set_max_history_turns(...)` once at construction.
+
+### Tests (363 → 442, +79)
+
+- `tests/test_chat.py` (+3) — `test_complete_posts_messages_verbatim_no_injection`
+  locks the v0.11 contract that the client never injects the system
+  prompt on top of the caller's list. `test_complete_raises_when_messages_empty`
+  guards the empty-list shape. All existing `complete("...")` callers
+  migrated to messages-list shape.
+- `tests/test_conversation_model.py` (+10) — `clear` (with/without
+  reset-signal observation), `to_openai_messages` round-trip, skip
+  thinking, skip drafts/pending/system/status, skip empty text, omit
+  empty system prompt, max-turns cap behavior, cap=0/None unbounded,
+  pair-integrity guard on odd cut.
+- `tests/test_conversation_turn_coordinator.py` (+10) — coordinator
+  `clear` resets all internal state, emits signal only when
+  non-empty. Trim-on-assistant-response: drops oldest pair when
+  cap exceeded, no-ops below cap, treats `cap=0` as unbounded,
+  drops per-turn status breadcrumbs along with their parent pair,
+  pair-integrity rounds excess to even, single
+  `conversation_changed` per landing despite the trim, negative
+  cap clamps to 0.
+- `tests/test_controller_history.py` (NEW, +10) — `_run_pipeline`
+  appends user turn after history; falls back when no provider; no
+  system message when chat client has empty prompt; provider list
+  not mutated; empty transcript skips chat call. Plus
+  `AppConfig.max_history_turns` env-var parsing (default, override,
+  invalid, negative-clamp).
+- `tests/test_mainwindow_integration.py` (+4) — provider wired to
+  window; serializes visible turns; model-switch preserves
+  conversation (per-model context counters reset only); cap
+  propagated from `AppConfig` → coordinator; visible transcript
+  trims when cap fires (with snapshot read confirming the model
+  and provider agree).
+- `tests/fakes.py` — `FakeChatClient` gained `system_prompt`
+  attribute + `complete()` keyword-args matching the real shape.
+
+### Replaced — Mute toolbar action → per-bubble ▶/🤫 toggle
+
+The toolbar Mute action and its underlying machinery (`audioMuted`
+Q_PROPERTY, `setAudioMuted` slot, `AudioPlayer.set_muted`,
+`muted_changed` signal, the worker's mute branch + counter) were
+retired. Muting mid-utterance is genuinely useless once the
+audio's been generated — the user wanted a "stop reading this turn
+NOW, leave the mic hot for the next thing I'm about to say"
+button.
+
+Each assistant bubble now carries an inline button that toggles
+between ▶ (when nothing is playing this row's audio) and 🤫 (when
+this row IS being read aloud — by the in-pipeline auto-play OR by
+a user-triggered replay). Click ▶ → `replayMessage(index)`. Click
+🤫 → `stopSpeaking()`, which calls `stop()` on both
+`controller.player` (in-pipeline) and `replay_player` (user
+replays) and resets a new `speakingRow: int` Q_PROPERTY back to
+-1. The voice connection is deliberately untouched so the next
+user turn can begin immediately.
+
+`speakingRow` tracks which row owns the currently-playing audio:
+
+- in-pipeline auto-play → most recent finalized assistant row
+  (resolved via `find_message_index("assistant", bubble_state="sent",
+  turn_pending=False)` on `playback_started`).
+- replay → the row index the user clicked, stashed in
+  `_pending_replay_row` before `play_file` so the
+  `playback_started` signal can pick it up.
+- both reset to -1 on `playback_finished` / `playback_failed`,
+  and on the explicit `stopSpeaking()` slot.
+
+### Fixed — Model-switch timeout (pre-v0.11 bug, hit during testing)
+
+`AppConfig.lm_studio_timeout_seconds` (default 10 s) was applied
+to every HTTP call including `POST /api/v1/models/load`, which
+LM Studio frequently takes 30-90+ seconds to complete (longer on
+first-load with cold disk). Result: model switches initiated from
+within voiceagent timed out with "timed out after 10 seconds"
+even though the same swap from LM Studio's own UI worked. Added
+`AppConfig.lm_studio_load_timeout_seconds` (default 300, env
+`LM_STUDIO_LOAD_TIMEOUT_SECONDS`), wired through to a per-call
+override on `_json_request` used only by the `/models/load`
+POST. Fast-path queries (list models, fetch context length,
+list-loaded, unload) keep the 10 s budget so unreachable-server
+errors still surface promptly.
+
+### Fixed — PortAudio teardown error surfacing as playback failure
+
+User stopped a long TTS playback mid-utterance. The worker was
+blocked inside `stream.write()`; `stop()` set `stop_event` then
+abandoned the still-blocked worker after 250 ms. ~21 s later the
+abandoned worker finally unblocked with `PortAudioError -9999`
+(host audio API teardown side-effect) and the catch-all
+exception handler emitted `playback_failed` → red error in the
+conversation pane for a turn that had already finished cleanly.
+Fix: in the playback worker's exception handler, suppress
+exceptions that fire after `stop_event.is_set()` OR after the
+worker has been superseded (`not _is_current_generation(gen)`).
+Real failures with a live, current worker still surface
+unchanged so genuine device errors aren't silently swallowed.
+
+### Added — session-rotated conversation log
+
+New `~/.local/state/voiceagent/logs/conversation.log` captures
+the full LLM context per turn (transcript, every entry of the
+`messages` list, assistant response, token usage, trim events,
+model swaps). Rotates by SESSION (each launch shifts the prior
+to `.1`, drops the oldest beyond `.5`), separate from the main
+`voiceagent.log` size-rotation. Useful when debugging multi-turn
+behavior — "what context did the model actually see for that
+turn?" — without bloating the main app log.
+
+### Note — visualtest gate
+
+`./voiceagent-visualtest.sh` continues to fail with
+`AttributeError: 'PySide6.QtGui.QWindow' object has no attribute
+'grabWindow'` on this branch. **Pre-existing on main** — confirmed
+by stashing v0.11 changes and running on a clean tree → identical
+failure. Caused by a PySide6 API drift (`grabWindow()` is on
+`QQuickWindow`, not `QWindow`); not addressed in this PR. The other
+three gates (pytest, compiletest, qatest) pass.
+
 ## 0.10.2 — 2026-04-29
 
 **First-party-surface review-feedback cleanup.** User did a thorough

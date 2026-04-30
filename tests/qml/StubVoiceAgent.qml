@@ -21,8 +21,6 @@ QtObject {
     property var ttsOptions: ["en_US-amy-low"]
     property string selectedSttModel: "tiny.en"
     property string selectedTtsModel: "en_US-amy-low"
-    property string modelStatus: "(ready)"
-    property string ttsStatus: "(ready)"
     property var llmUrls: ["http://localhost:1234"]
     property string currentLlmUrl: "http://localhost:1234"
     property string llmConnectionButtonText: "Connect"
@@ -44,13 +42,16 @@ QtObject {
     property bool talkReady: true
     property bool voiceConnectionEnabled: false
     property string micStatusLabel: "Idle"
-    property bool audioMuted: false
 
     // MainWindow reads
     property int sttInstalledCount: 1
     property int ttsInstalledCount: 1
     property string themeMode: "auto"
     property bool logVerboseMode: false
+    property int contextTokensUsed: 0
+    property int contextTokensCeiling: 0
+    // ConversationPane reads — drives the per-bubble ▶/🤫 toggle.
+    property int speakingRow: -1
 
     // Catalog models — empty placeholders since CatalogList isn't on
     // the rendered surface for these tests.
@@ -70,11 +71,11 @@ QtObject {
     function installTtsModel(name) {}
     function deleteTtsModel(name) {}
     function setThemeMode(mode) {}
-    function setAudioMuted(muted) {}
     function setLogVerboseMode(value) {}
+    function setVoiceConnectionEnabled(value) {}
+    function setThinkingExpanded(index, value) {}
     function replayMessage(index) {}
-    function pttPress() {}
-    function pttRelease() {}
+    function stopSpeaking() {}
 
     // Replay-failure signal — must match the production Python signal
     // name `replay_failed` exactly (not camelCased) so QML stubs

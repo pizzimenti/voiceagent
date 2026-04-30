@@ -26,8 +26,9 @@ Kirigami.ApplicationWindow {
         | Qt.WindowMaximizeButtonHint
         | Qt.WindowCloseButtonHint
     visible: true
-    title: i18nCtx.i18n("Voice Agent")
+    title: root.tr("Voice Agent")
     required property QtObject voiceAgent
+    readonly property bool hasVoiceAgent: voiceAgent !== null && voiceAgent !== undefined
 
     // CompactMode threshold raised from 35 → 40 grid units. v0.8.2 went
     // 25 → 35 to fix offscreen 1.0x captures, but the user's actual
@@ -46,11 +47,11 @@ Kirigami.ApplicationWindow {
     // we hide the conversation entirely and let the mic button fill the
     // window. gridUnit-scaled so the threshold respects Plasma scale.
     readonly property bool ultraCompactMode: compactMode && height < Kirigami.Units.gridUnit * 10
-    readonly property int sttInstalledCount: voiceAgent.sttInstalledCount
-    readonly property int ttsInstalledCount: voiceAgent.ttsInstalledCount
-    readonly property color micPulseColor: voiceAgent.talkReady ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
-    readonly property color micButtonColor: voiceAgent.voiceConnectionEnabled ? Kirigami.Theme.highlightColor : Kirigami.Theme.alternateBackgroundColor
-    readonly property bool micPulseActive: voiceAgent.voiceConnectionEnabled || voiceAgent.talkReady
+    readonly property int sttInstalledCount: root.hasVoiceAgent ? voiceAgent.sttInstalledCount : 0
+    readonly property int ttsInstalledCount: root.hasVoiceAgent ? voiceAgent.ttsInstalledCount : 0
+    readonly property color micPulseColor: (root.hasVoiceAgent && voiceAgent.talkReady) ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
+    readonly property color micButtonColor: (root.hasVoiceAgent && voiceAgent.voiceConnectionEnabled) ? Kirigami.Theme.highlightColor : Kirigami.Theme.alternateBackgroundColor
+    readonly property bool micPulseActive: root.hasVoiceAgent && (voiceAgent.voiceConnectionEnabled || voiceAgent.talkReady)
     // ultraCompact: hem the mic button against the window edge with no
     // extra padding. compact: a small breathing margin. medium and above:
     // standard spacing.
@@ -62,9 +63,16 @@ Kirigami.ApplicationWindow {
         return content;
     }
 
+    function tr(text) {
+        if (typeof i18nCtx !== "undefined" && i18nCtx) {
+            return i18nCtx.i18n(text);
+        }
+        return text;
+    }
+
     Kirigami.Action {
         id: modelManagerAction
-        text: i18nCtx.i18n("Voice Models")
+        text: root.tr("Voice Models")
         icon.name: "folder-cloud-symbolic"
         // Plasma's auto-tint of symbolic icons in toolbar slots
         // intermittently drops out — force textColor.
@@ -88,16 +96,16 @@ Kirigami.ApplicationWindow {
     Kirigami.Action {
         id: themeAction
         text: {
-            if (voiceAgent.themeMode === "auto") {
-                return i18nCtx.i18n("Auto");
+            if (!root.hasVoiceAgent || voiceAgent.themeMode === "auto") {
+                return root.tr("Auto");
             }
             if (voiceAgent.themeMode === "light") {
-                return i18nCtx.i18n("Light");
+                return root.tr("Light");
             }
-            return i18nCtx.i18n("Dark");
+            return root.tr("Dark");
         }
         icon.name: {
-            if (voiceAgent.themeMode === "auto") {
+            if (!root.hasVoiceAgent || voiceAgent.themeMode === "auto") {
                 return "preferences-desktop-theme-symbolic";
             }
             if (voiceAgent.themeMode === "light") {
@@ -112,6 +120,9 @@ Kirigami.ApplicationWindow {
         displayHint: Kirigami.DisplayHint.KeepVisible
         visible: !root.compactMode
         onTriggered: {
+            if (!root.hasVoiceAgent) {
+                return;
+            }
             const next = voiceAgent.themeMode === "auto" ? "light"
                        : voiceAgent.themeMode === "light" ? "dark"
                        : "auto";
@@ -119,29 +130,27 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    Kirigami.Action {
-        id: muteAction
-        text: voiceAgent.audioMuted ? i18nCtx.i18n("Unmute") : i18nCtx.i18n("Mute")
-        icon.name: voiceAgent.audioMuted ? "audio-volume-muted-symbolic" : "audio-volume-high-symbolic"
-        icon.color: Kirigami.Theme.textColor
-        enabled: voiceAgent.talkReady
-        onTriggered: voiceAgent.setAudioMuted(!voiceAgent.audioMuted)
-    }
+    // (The toolbar Mute action was removed in favor of an inline
+    //  ▶ / 🤫 toggle on each assistant bubble. See ConversationPane.qml.)
 
     // Verbose-log toggle, surfaced on the page header alongside theme /
-    // mute / model-manager so all stateful UI affordances live on one
+    // model-manager so all stateful UI affordances live on one
     // command surface rather than scattered across pane headers.
     // Hidden in compact mode (where the page header itself is hidden).
     Kirigami.Action {
         id: verboseLogAction
-        text: i18nCtx.i18n("Verbose")
-        icon.name: voiceAgent.logVerboseMode ? "view-visible-symbolic" : "view-hidden-symbolic"
+        text: root.tr("Verbose")
+        icon.name: (root.hasVoiceAgent && voiceAgent.logVerboseMode) ? "view-visible-symbolic" : "view-hidden-symbolic"
         icon.color: Kirigami.Theme.textColor
         // KeepVisible (no IconOnly): label is constant "Verbose"; the
         // open-eye / slashed-eye icon carries the on/off state.
         displayHint: Kirigami.DisplayHint.KeepVisible
         visible: !root.compactMode
-        onTriggered: voiceAgent.setLogVerboseMode(!voiceAgent.logVerboseMode)
+        onTriggered: {
+            if (root.hasVoiceAgent) {
+                voiceAgent.setLogVerboseMode(!voiceAgent.logVerboseMode);
+            }
+        }
     }
 
     // Cycle 9: replay-failure toast. MainWindow.replayMessage(int) emits
@@ -177,7 +186,7 @@ Kirigami.ApplicationWindow {
         transientParent: root
         modality: Qt.ApplicationModal
         flags: Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint
-        title: i18nCtx.i18n("Voice Models")
+        title: root.tr("Voice Models")
         visible: false
         width: Math.min(root.width - Kirigami.Units.gridUnit * 4, Kirigami.Units.gridUnit * 58)
         height: Math.min(root.height - Kirigami.Units.gridUnit * 4, Kirigami.Units.gridUnit * 42)
@@ -209,7 +218,7 @@ Kirigami.ApplicationWindow {
                         spacing: Kirigami.Units.mediumSpacing
 
                         Kirigami.Heading {
-                            text: i18nCtx.i18n("Voice Models")
+                            text: root.tr("Voice Models")
                             level: 2
                         }
 
@@ -219,14 +228,14 @@ Kirigami.ApplicationWindow {
 
                         ToolButton {
                             icon.name: "window-close"
-                            text: i18nCtx.i18n("Close")
+                            text: root.tr("Close")
                             onClicked: modelManagerWindow.close()
                         }
                     }
 
                     Label {
                         Layout.fillWidth: true
-                        text: i18nCtx.i18n("Install, remove, and switch local speech models here. Session selectors only show installed items.")
+                        text: root.tr("Install, remove, and switch local speech models here. Session selectors only show installed items.")
                         wrapMode: Text.WordWrap
                         color: Kirigami.Theme.disabledTextColor
                     }
@@ -238,13 +247,13 @@ Kirigami.ApplicationWindow {
 
                         Label {
                             Layout.fillWidth: true
-                            text: i18nCtx.i18n("%1 STT model(s) installed").arg(root.sttInstalledCount)
+                            text: root.tr("%1 STT model(s) installed").arg(root.sttInstalledCount)
                             font.weight: Font.DemiBold
                         }
 
                         Label {
                             Layout.fillWidth: true
-                            text: i18nCtx.i18n("%1 TTS voice(s) installed").arg(root.ttsInstalledCount)
+                            text: root.tr("%1 TTS voice(s) installed").arg(root.ttsInstalledCount)
                             font.weight: Font.DemiBold
                         }
                     }
@@ -254,8 +263,8 @@ Kirigami.ApplicationWindow {
                     id: managerTabs
                     Layout.fillWidth: true
 
-                    TabButton { text: i18nCtx.i18n("Speech To Text") }
-                    TabButton { text: i18nCtx.i18n("Text To Speech") }
+                    TabButton { text: root.tr("Speech To Text") }
+                    TabButton { text: root.tr("Text To Speech") }
                 }
 
                 StackLayout {
@@ -272,19 +281,19 @@ Kirigami.ApplicationWindow {
 
                         TextField {
                             Layout.fillWidth: true
-                            placeholderText: i18nCtx.i18n("Filter STT models")
+                            placeholderText: root.tr("Filter STT models")
                             text: modelManagerWindow.sttFilter
                             onTextChanged: modelManagerWindow.sttFilter = text
                         }
 
                         CatalogList {
                             id: sttCatalogView
-                            catalogModel: voiceAgent.sttCatalogModel
+                            catalogModel: root.hasVoiceAgent ? voiceAgent.sttCatalogModel : null
                             filterText: modelManagerWindow.sttFilter
-                            selectedName: voiceAgent.selectedSttModel
-                            onSelect: function(name) { voiceAgent.selectSttModel(name); }
-                            onInstall: function(name) { voiceAgent.installSttModel(name); }
-                            onRemove: function(name) { voiceAgent.deleteSttModel(name); }
+                            selectedName: root.hasVoiceAgent ? voiceAgent.selectedSttModel : ""
+                            onSelect: function(name) { if (root.hasVoiceAgent) voiceAgent.selectSttModel(name); }
+                            onInstall: function(name) { if (root.hasVoiceAgent) voiceAgent.installSttModel(name); }
+                            onRemove: function(name) { if (root.hasVoiceAgent) voiceAgent.deleteSttModel(name); }
                         }
                     }
 
@@ -297,19 +306,19 @@ Kirigami.ApplicationWindow {
 
                         TextField {
                             Layout.fillWidth: true
-                            placeholderText: i18nCtx.i18n("Filter TTS voices")
+                            placeholderText: root.tr("Filter TTS voices")
                             text: modelManagerWindow.ttsFilter
                             onTextChanged: modelManagerWindow.ttsFilter = text
                         }
 
                         CatalogList {
                             id: ttsCatalogView
-                            catalogModel: voiceAgent.ttsCatalogModel
+                            catalogModel: root.hasVoiceAgent ? voiceAgent.ttsCatalogModel : null
                             filterText: modelManagerWindow.ttsFilter
-                            selectedName: voiceAgent.selectedTtsModel
-                            onSelect: function(name) { voiceAgent.selectTtsModel(name); }
-                            onInstall: function(name) { voiceAgent.installTtsModel(name); }
-                            onRemove: function(name) { voiceAgent.deleteTtsModel(name); }
+                            selectedName: root.hasVoiceAgent ? voiceAgent.selectedTtsModel : ""
+                            onSelect: function(name) { if (root.hasVoiceAgent) voiceAgent.selectTtsModel(name); }
+                            onInstall: function(name) { if (root.hasVoiceAgent) voiceAgent.installTtsModel(name); }
+                            onRemove: function(name) { if (root.hasVoiceAgent) voiceAgent.deleteTtsModel(name); }
                         }
                     }
                 }
@@ -343,10 +352,9 @@ Kirigami.ApplicationWindow {
 
     pageStack.initialPage: Kirigami.Page {
         id: page
-        title: i18nCtx.i18n("Voice Agent")
+        title: root.tr("Voice Agent")
         actions: [
             themeAction,
-            muteAction,
             verboseLogAction,
             modelManagerAction
         ]
@@ -473,8 +481,8 @@ Kirigami.ApplicationWindow {
                 // v0.10 layer bundle). undefined-on-int property returns
                 // NaN through JS arithmetic; coercing to 0 keeps usageRatio
                 // sane and visible gated to "ceiling known and > 0".
-                readonly property int tokensUsed: (root.voiceAgent.contextTokensUsed || 0)
-                readonly property int tokensCeiling: (root.voiceAgent.contextTokensCeiling || 0)
+                readonly property int tokensUsed: root.hasVoiceAgent ? (root.voiceAgent.contextTokensUsed || 0) : 0
+                readonly property int tokensCeiling: root.hasVoiceAgent ? (root.voiceAgent.contextTokensCeiling || 0) : 0
                 readonly property real usageRatio: {
                     if (tokensCeiling <= 0) return 0;
                     return Math.min(1.0, tokensUsed / tokensCeiling);
@@ -507,7 +515,7 @@ Kirigami.ApplicationWindow {
                         Layout.fillWidth: true
                         horizontalAlignment: Text.AlignRight
                         visible: !root.ultraCompactMode
-                        text: i18nCtx.i18n("%1 / %2 tokens (%3%)")
+                        text: root.tr("%1 / %2 tokens (%3%)")
                             .arg(contextTokenStrip.tokensUsed)
                             .arg(contextTokenStrip.tokensCeiling)
                             .arg(Math.round(contextTokenStrip.usageRatio * 100))

@@ -1,6 +1,6 @@
 # voiceagent
 
-Push-to-talk KDE-friendly desktop voice assistant for local speech workflows.
+KDE-friendly desktop voice assistant for local speech workflows.
 
 ## Stack
 
@@ -37,10 +37,96 @@ Environment variables:
 - `VOICEAGENT_TTS_MODEL_ROOT` default: `$XDG_DATA_HOME/voiceagent/tts-models` or `~/.local/share/voiceagent/tts-models`
 - `TTS_MODEL` optional Piper voice name like `en_US-lessac-medium` or a path to a Piper model file
 - `TTS_EXTRA_ARGS` optional extra command-line flags for TTS
+- `VOICEAGENT_MAX_HISTORY_TURNS` default: `20` — how many user/assistant entries (≈ 10 pairs) the conversation pane keeps. See [Conversation memory](#conversation-memory) below.
 
-Whisper downloads, Hugging Face cache data, and Piper voices are stored under the app's XDG data directory by default. Logs are stored under `$XDG_STATE_HOME/voiceagent/logs` or `~/.local/state/voiceagent/logs`.
+Whisper downloads, Hugging Face cache data, and Piper voices are stored under the app's XDG data directory by default. Logs are stored under `$XDG_STATE_HOME/voiceagent/logs` or `~/.local/state/voiceagent/logs`:
+
+- `voiceagent.log` — main app log (Qt warnings, pipeline lifecycle, audio device events). Size-rotated: 1 MB × 4 files = 4 MB cap.
+- `conversation.log` — per-turn content shipped to / received from the LLM (full `messages` list, assistant response, token usage, model swaps, history trims). **Session-rotated**: each launch shifts the prior file to `.1`, drops the oldest beyond `.5`. Useful when debugging multi-turn behaviour ("what context did the model actually see for that turn?").
 
 Model downloads use `aria2c` with 10 parallel connections by default, and the app shows live progress and transfer speed while Whisper is loading.
+
+## Conversation memory
+
+When voiceagent talks to LM Studio, it speaks the OpenAI
+`/chat/completions` HTTP protocol. That endpoint is **stateless** —
+the server runs the model, returns the answer, and forgets everything
+before the next request arrives. Memory of prior turns is the
+caller's job: voiceagent has to re-send the entire conversation on
+every new turn, or the model sees each question as a brand-new chat.
+
+### What the conversation pane is, mechanically
+
+The chat pane in the window IS voiceagent's conversation memory.
+Every finalized user/assistant bubble you see there is also a row in
+the `messages` array that gets sent to LM Studio on the next turn.
+The serialized payload looks like:
+
+```json
+[
+  {"role": "system",    "content": "<your LM_STUDIO_SYSTEM_PROMPT>"},
+  {"role": "user",      "content": "what's the capital of France?"},
+  {"role": "assistant", "content": "Paris."},
+  {"role": "user",      "content": "what's the population?"}
+]
+```
+
+That's 4 messages → the model reads all four, then writes the next
+assistant turn. "what's the population?" resolves correctly because
+the model can see the prior pair. There is no other "memory store"
+behind the scenes — the chat pane is the source of truth.
+
+### The cap, and why the pane trims itself
+
+Every model has a hard limit on how many *tokens* (chunks of ~0.75
+words each) it can read in a single call — its **context window**. A
+7B model with an 8k window starts struggling around ~6,000 tokens of
+serialized transcript. Long conversations would eventually exceed
+that ceiling and either error or get silently truncated by LM Studio.
+
+`VOICEAGENT_MAX_HISTORY_TURNS` (default 20 = last 10 user/assistant
+pairs, system prompt always retained) caps how many entries
+voiceagent serializes. **The cap also trims the visible pane**: when
+a new pair lands and the conversation has more entries than the cap,
+the oldest pair (and any per-turn status breadcrumbs that belong to
+it) disappears from the chat pane at the same moment it leaves the
+LLM payload. The invariant is *what you see is what the model
+sees on the next turn* — no phantom history, no rows in the pane
+that the model has already lost track of.
+
+If a conversation that has been trimmed needs to recall something
+that scrolled off the top, the model will not be able to: that
+information is gone from both the pane and the prompt.
+
+### What changes when you swap models
+
+Switching the loaded LLM mid-session does **not** wipe the
+conversation. The transcript carries forward; you can ask the same
+follow-up to two models and compare. Modern instruction-tuned local
+models handle each other's transcripts well in practice.
+
+What does reset on a swap is the per-model context-token bar at the
+bottom of the window — voiceagent re-fetches the new model's
+`loaded_context_length` and the bar starts fresh against that
+ceiling.
+
+### Tuning
+
+- Lower the cap (`VOICEAGENT_MAX_HISTORY_TURNS=10`) if Whisper
+  artefacts (filler words, hallucinated phrases during silence)
+  start polluting recall, or if you're running a small-context
+  model where every token matters.
+- Raise the cap (`VOICEAGENT_MAX_HISTORY_TURNS=40`) on a
+  large-context model if you want longer recall and don't mind the
+  larger prompt size and slower per-turn latency.
+- `0` means unbounded — the pane and payload grow without limit.
+  LM Studio will eventually truncate from the front when the
+  context window fills; the visual ceiling bar will turn red as
+  you approach the limit.
+- A token-aware trim (count actual prompt tokens against the
+  loaded model's context window, drop oldest pairs until the
+  request fits) is on the v0.11.x roadmap. For now the simple
+  turn-count cap is the knob.
 
 ## Run
 

@@ -142,3 +142,68 @@ class ConversationModel(QAbstractListModel):
                 continue
             return index
         return -1
+
+    def clear(self) -> None:
+        if not self._messages:
+            return
+        self.beginResetModel()
+        self._messages.clear()
+        self.endResetModel()
+
+    def to_openai_messages(
+        self,
+        system_prompt: str,
+        max_turns: int | None = None,
+    ) -> list[dict[str, str]]:
+        """Serialize the visible conversation to the OpenAI chat-message
+        format consumed by `LmStudioClient.complete()`.
+
+        Includes ONLY finalized user/assistant turns (`role` in
+        `{"user", "assistant"}`, `bubbleState == "sent"`, NOT
+        `turnPending`). Skips:
+
+        - `role="system"` operational notices and `role="status"`
+          pipeline rows — those are UI-only artefacts, never history.
+        - Drafts and in-flight turns (`turnPending=True`) — the caller
+          owns the current turn's user message and appends it
+          explicitly after this snapshot.
+        - Empty-text rows.
+        - The assistant's `thinkingText` channel — `reasoning_content`
+          is not part of the assistant's OUTPUT turn; replaying it as
+          assistant content would confuse the model and waste tokens.
+
+        When `max_turns` is set, keeps only the last `max_turns` user +
+        assistant entries (so `max_turns=20` ≈ 10 user/assistant pairs).
+        Pairs are NOT split — the cap is applied to the post-filter
+        list of finalized rows, oldest-first dropped. The system
+        prompt is always retained.
+        """
+        history: list[dict[str, str]] = []
+        if system_prompt and system_prompt.strip():
+            history.append({"role": "system", "content": system_prompt.strip()})
+        finalized: list[dict[str, str]] = []
+        for message in self._messages:
+            role = message.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            if message.get("bubbleState") != "sent":
+                continue
+            if bool(message.get("turnPending")):
+                continue
+            text = message.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            finalized.append({"role": role, "content": text})
+        if max_turns is not None and max_turns > 0 and len(finalized) > max_turns:
+            finalized = finalized[-max_turns:]
+            # Pair-integrity guard. If the cap lands on an odd cut,
+            # the slice can lead with `assistant` (no preceding
+            # `user`), which the model can interpret as
+            # unfinished/stranded. Mirror LangChain
+            # `ConversationBufferWindowMemory`'s "drop a complete
+            # pair" semantics: drop one more entry so history starts
+            # on a user turn (or is empty).
+            if finalized and finalized[0].get("role") == "assistant":
+                finalized = finalized[1:]
+        history.extend(finalized)
+        return history

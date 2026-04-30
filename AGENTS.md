@@ -3,7 +3,7 @@
 ## Review guidelines
 
 - Treat startup hangs, blank windows, or network/model refresh work that blocks first paint as P1.
-- Treat regressions in the two supported layouts as P1: compact under 250px and stacked medium mode up to the window's maximum width (`Kirigami.Units.gridUnit * 49`). The window is non-resizable above that cap; the prior large horizontal-tiling layout has been removed.
+- Treat regressions in the supported responsive layouts as P1: compact under 250px, ultra-compact short windows, and medium mode from `Kirigami.Units.gridUnit * 40` upward. The prior large horizontal-tiling layout and the old maximum-width cap have been removed.
 - Treat clipping of the session controls, conversation pane, or microphone control at window edges as P1.
 - Treat conversation-turn lifecycle regressions as P1. A user turn should keep one bubble from draft transcription through sent/final text. Bubbles are reserved for final user and assistant content; assistant thinking/progress belongs in status text and the microphone control. The opt-in verbose log mode may surface pipeline status (Transcribing, Thinking, Generating voice, Speaking) inline as plain styled text — these are not bubbles and do not weaken the rule.
 - Treat message ordering regressions as P1. The finalized user bubble must remain above its corresponding assistant bubble.
@@ -63,7 +63,7 @@ correctly with Plasma 100% / 125% / 150% / 200%.
 
 | Mode | Trigger | Layout |
 | :--- | :--- | :--- |
-| **medium** | `width >= gridUnit * 40` | Side-by-side: `SessionSetupPane.qml` (Kirigami.FormLayout: Speech / Voice / LLM URL / Loaded Model) on the left, mic button (~gridUnit × 10 wide) on the right. `ConversationPane.qml` below. Page header: Mute, Voice Models, Theme, Verbose Log actions. |
+| **medium** | `width >= gridUnit * 40` | Side-by-side: `SessionSetupPane.qml` (Kirigami.FormLayout: Speech / Voice / LLM URL / Loaded Model) on the left, mic button (~gridUnit × 10 wide) on the right. `ConversationPane.qml` below. Page header: Theme, Verbose Log, Voice Models actions. (The Mute toolbar action was retired in v0.11; cutting active speech mid-utterance is the per-bubble ▶/🤫 toggle on each assistant row instead.) |
 | **compact** | `width < gridUnit * 40 && height >= gridUnit * 10` | SessionSetupPane hidden. `ConversationPane.qml` fills the page: conversation feed on top + mic button (gridUnit × 5 tall) at the bottom. Page header: drops Voice Models action; rest visible. |
 | **ultraCompact** | `compactMode && height < gridUnit * 10` | Conversation feed entirely hidden via `Layout.maximumHeight: 0` collapse. Mic button fills the window with zero padding (hemmed against the window edges). Page header may cramp at the smallest sizes — by design. |
 
@@ -98,7 +98,7 @@ correctly with Plasma 100% / 125% / 150% / 200%.
   1. Form labels fully visible at the gridUnit × 40 medium-mode floor (no left-clipping).
   2. Mic button bottom not clipped at minimum-height window.
   3. Conversation feed collapses smoothly (~250 ms) at the ultraCompact threshold; mic button slides up into the freed space.
-  4. Title bar shows "Voice Agent" + Mute action down to gridUnit × 18 width or so. Below that the WM title bar may overflow to "..." — that's fine.
+  4. Title bar shows "Voice Agent" + the page-header actions down to gridUnit × 18 width or so. Below that the WM title bar may overflow to "..." — that's fine.
   5. Mic status text wraps at narrow widths ("No model loaded" on two lines) instead of eliding.
 
 ## KDE/QML implementation memory

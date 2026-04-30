@@ -43,6 +43,13 @@ ListView {
     maximumFlickVelocity: 24000
     ScrollBar.vertical: ScrollBar {}
 
+    function tr(text) {
+        if (typeof i18nCtx !== "undefined" && i18nCtx) {
+            return i18nCtx.i18n(text);
+        }
+        return text;
+    }
+
     function _matches(name, filter) {
         if (!filter) {
             return true;
@@ -52,13 +59,13 @@ ListView {
 
     function _statusSummary(item) {
         if (item.installed && !item.managed) {
-            return i18nCtx.i18n("Custom path");
+            return catalogList.tr("Custom path");
         }
-        return item.installed ? i18nCtx.i18n("Installed") : i18nCtx.i18n("Available to download");
+        return item.installed ? catalogList.tr("Installed") : catalogList.tr("Available to download");
     }
 
     function _actionLabel(item) {
-        return item.installed ? i18nCtx.i18n("Remove") : i18nCtx.i18n("Install");
+        return item.installed ? catalogList.tr("Remove") : catalogList.tr("Install");
     }
 
     // Install / Remove acts on managed catalog entries. Two row shapes
@@ -133,14 +140,14 @@ ListView {
 
                 ToolButton {
                     visible: model.installed
-                    text: catalogList.selectedName === model.name ? i18nCtx.i18n("Current") : i18nCtx.i18n("Use")
+                    text: catalogList.selectedName === model.name ? catalogList.tr("Current") : catalogList.tr("Use")
                     enabled: catalogList.selectedName !== model.name
                     onClicked: catalogList.onSelect(model.name)
                 }
 
                 ToolButton {
                     visible: catalogList._actionVisible(model)
-                    text: catalogDelegate.downloading ? i18nCtx.i18n("Installing…") : catalogList._actionLabel(model)
+                    text: catalogDelegate.downloading ? catalogList.tr("Installing…") : catalogList._actionLabel(model)
                     enabled: !catalogDelegate.downloading
                     onClicked: {
                         if (model.installed) {

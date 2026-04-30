@@ -395,19 +395,60 @@ def test_complete_happy_path(monkeypatch):
 
     _install_fake_urlopen(monkeypatch, _serve)
 
-    assert client.complete("ping") == "hi there"
+    messages = [
+        {"role": "system", "content": "be helpful"},
+        {"role": "user", "content": "ping"},
+    ]
+    assert client.complete(messages) == "hi there"
     assert captured["url"] == "http://localhost:1234/v1/chat/completions"
     assert captured["body"]["model"] == "local-llm"
-    assert captured["body"]["messages"][0] == {
-        "role": "system",
-        "content": "be helpful",
-    }
-    assert captured["body"]["messages"][1] == {
-        "role": "user",
-        "content": "ping",
-    }
+    # v0.11 contract: messages list is posted verbatim — the client
+    # never injects a system prompt or reorders entries on top of what
+    # the caller built.
+    assert captured["body"]["messages"] == messages
     assert captured["body"]["stream"] is True
     assert captured["body"]["stream_options"] == {"include_usage": True}
+
+
+def test_complete_posts_messages_verbatim_no_injection(monkeypatch):
+    """Multi-turn caller-built history is posted exactly as provided."""
+    client = LmStudioClient(
+        base_url="http://localhost:1234",
+        model="local-llm",
+        # Even with a non-empty system_prompt configured on the client,
+        # the v0.11 contract is that the caller owns the messages list:
+        # no auto-injection on top.
+        system_prompt="THIS SHOULD NOT APPEAR",
+    )
+
+    captured: dict[str, Any] = {}
+
+    def _serve(req, timeout):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeSSEResponse([_content_chunk("ok")])
+
+    _install_fake_urlopen(monkeypatch, _serve)
+
+    messages = [
+        {"role": "system", "content": "you are local"},
+        {"role": "user", "content": "what is the capital of France?"},
+        {"role": "assistant", "content": "Paris."},
+        {"role": "user", "content": "what is the population?"},
+    ]
+    client.complete(messages)
+    assert captured["body"]["messages"] == messages
+    # Belt-and-braces: the client's stored system prompt must not
+    # appear anywhere in the posted payload.
+    serialized = json.dumps(captured["body"]["messages"])
+    assert "THIS SHOULD NOT APPEAR" not in serialized
+
+
+def test_complete_raises_when_messages_empty():
+    client = LmStudioClient(
+        base_url="http://localhost:1234", model="m", system_prompt="p"
+    )
+    with pytest.raises(RuntimeError, match="messages list is empty"):
+        client.complete([])
 
 
 def test_complete_streams_content_chunks_to_callback(monkeypatch):
@@ -423,7 +464,9 @@ def test_complete_streams_content_chunks_to_callback(monkeypatch):
             _content_chunk("world"),
         ]),
     )
-    result = client.complete("hi", on_content_chunk=received.append)
+    result = client.complete(
+        [{"role": "user", "content": "hi"}], on_content_chunk=received.append
+    )
     assert result == "Hello, world"
     assert received == ["Hello", ", ", "world"]
 
@@ -443,7 +486,7 @@ def test_complete_streams_thinking_chunks_to_callback(monkeypatch):
         ]),
     )
     result = client.complete(
-        "ignored",
+        [{"role": "user", "content": "ignored"}],
         on_content_chunk=content.append,
         on_thinking_chunk=thinking.append,
     )
@@ -464,7 +507,9 @@ def test_complete_invokes_on_usage_with_final_usage_dict(monkeypatch):
             _usage_chunk(prompt=120, completion=8),
         ]),
     )
-    client.complete("hi", on_usage=captured_usage.append)
+    client.complete(
+        [{"role": "user", "content": "hi"}], on_usage=captured_usage.append
+    )
     assert captured_usage == [
         {"prompt_tokens": 120, "completion_tokens": 8, "total_tokens": 128},
     ]
@@ -494,13 +539,13 @@ def test_complete_ignores_malformed_sse_payloads(monkeypatch):
             yield b"data: [DONE]\n"
 
     _install_fake_urlopen(monkeypatch, lambda req, timeout: _MixedSSE())
-    assert client.complete("hi") == "ok"
+    assert client.complete([{"role": "user", "content": "hi"}]) == "ok"
 
 
 def test_complete_raises_when_unconfigured():
     client = LmStudioClient(base_url="", model="m", system_prompt="p")
     with pytest.raises(RuntimeError, match="LLM URL is not configured"):
-        client.complete("hi")
+        client.complete([{"role": "user", "content": "hi"}])
 
 
 def test_complete_raises_when_model_missing(monkeypatch):
@@ -512,7 +557,7 @@ def test_complete_raises_when_model_missing(monkeypatch):
         monkeypatch, lambda req, timeout: _FakeResponse({"models": []})
     )
     with pytest.raises(RuntimeError, match="No LLM is currently loaded"):
-        client.complete("hi")
+        client.complete([{"role": "user", "content": "hi"}])
 
 
 def test_complete_wraps_url_error_with_timeout(monkeypatch):
@@ -528,7 +573,7 @@ def test_complete_wraps_url_error_with_timeout(monkeypatch):
 
     _install_fake_urlopen(monkeypatch, _raise)
     with pytest.raises(RuntimeError, match="timed out after 3 seconds"):
-        client.complete("hi")
+        client.complete([{"role": "user", "content": "hi"}])
 
 
 def test_complete_no_chunks_raises_empty_response(monkeypatch):
@@ -542,7 +587,7 @@ def test_complete_no_chunks_raises_empty_response(monkeypatch):
         monkeypatch, lambda req, timeout: _FakeSSEResponse([]),
     )
     with pytest.raises(RuntimeError, match="empty response"):
-        client.complete("hi")
+        client.complete([{"role": "user", "content": "hi"}])
 
 
 def test_complete_only_whitespace_chunks_raises_empty_response(monkeypatch):
@@ -559,7 +604,7 @@ def test_complete_only_whitespace_chunks_raises_empty_response(monkeypatch):
         ]),
     )
     with pytest.raises(RuntimeError, match="empty response"):
-        client.complete("hi")
+        client.complete([{"role": "user", "content": "hi"}])
 
 
 # --- model lifecycle helpers ---------------------------------------------
@@ -1360,3 +1405,94 @@ def test_fetch_loaded_context_length_returns_zero_when_endpoint_fails(monkeypatc
 def test_fetch_loaded_context_length_returns_zero_without_base_url():
     client = LmStudioClient(base_url="", model="m", system_prompt="p")
     assert client.fetch_loaded_context_length() == 0
+
+
+# --- load_timeout_seconds (separate timeout for /api/v1/models/load) -----
+
+
+def test_load_model_uses_load_timeout_for_load_post(monkeypatch):
+    """`/api/v1/models/load` must use `load_timeout_seconds`, not the
+    fast-path `timeout_seconds`. LM Studio model loads frequently take
+    much longer than the 10 s fast-path default; surfacing a spurious
+    timeout to the user is exactly the bug this guards against."""
+    client = LmStudioClient(
+        base_url="http://localhost:1234",
+        model="",
+        system_prompt="p",
+        timeout_seconds=10,
+        load_timeout_seconds=300,
+    )
+    seen_timeouts: list[tuple[str, str, int]] = []
+    load_fired = {"yes": False}
+    pre_load_payload = {"models": []}
+    post_load_payload = {
+        "models": [
+            {
+                "type": "llm",
+                "key": "alpha",
+                "loaded_instances": [{"id": "a1"}],
+            }
+        ]
+    }
+
+    def _handler(req, timeout):
+        seen_timeouts.append((req.full_url, req.get_method(), timeout))
+        if req.get_method() == "POST" and req.full_url.endswith("/models/load"):
+            load_fired["yes"] = True
+            return _FakeResponse({"status": "loaded"})
+        return _FakeResponse(post_load_payload if load_fired["yes"] else pre_load_payload)
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    assert client.load_model("alpha") == "alpha"
+    load_post = next(
+        (entry for entry in seen_timeouts if entry[1] == "POST" and entry[0].endswith("/models/load")),
+        None,
+    )
+    assert load_post is not None, "expected a /models/load POST"
+    assert load_post[2] == 300
+    # Other calls (list /api/v1/models pre/post-load snapshots) should
+    # keep the fast-path timeout, NOT inherit the long one.
+    other_calls = [
+        entry for entry in seen_timeouts
+        if not (entry[1] == "POST" and entry[0].endswith("/models/load"))
+    ]
+    assert other_calls, "expected at least one fast-path call"
+    assert all(entry[2] == 10 for entry in other_calls)
+
+
+def test_load_timeout_seconds_defaults_to_timeout_seconds_when_omitted():
+    """Backwards-compat: callers (and existing tests) that don't pass
+    `load_timeout_seconds` should see the same value used everywhere."""
+    client = LmStudioClient(
+        base_url="http://localhost:1234",
+        model="m",
+        system_prompt="p",
+        timeout_seconds=42,
+    )
+    assert client.load_timeout_seconds == 42
+
+
+def test_load_model_timeout_message_reports_load_timeout(monkeypatch):
+    """When `/models/load` itself times out, the error message must
+    quote the LOAD timeout, not the fast-path timeout — otherwise a
+    user reading "timed out after 10 seconds" sees a number that
+    doesn't match the actual budget the call had."""
+    client = LmStudioClient(
+        base_url="http://localhost:1234",
+        model="",
+        system_prompt="p",
+        timeout_seconds=10,
+        load_timeout_seconds=300,
+    )
+    pre_load_payload = {"models": []}
+
+    def _handler(req, timeout):
+        if req.get_method() == "POST" and req.full_url.endswith("/models/load"):
+            raise error.URLError(reason=socket.timeout("slow"))
+        return _FakeResponse(pre_load_payload)
+
+    _install_fake_urlopen(monkeypatch, _handler)
+
+    with pytest.raises(RuntimeError, match="timed out after 300 seconds"):
+        client.load_model("alpha")

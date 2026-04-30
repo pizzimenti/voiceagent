@@ -243,3 +243,163 @@ def test_update_message_emits_data_changed_for_thinking_expanded(model):
     roles = spy.at(0)[2]
     assert ConversationModel.ThinkingExpandedRole in roles
 
+
+# --- v0.11 multi-turn history surface ----------------------------------
+
+
+def test_clear_resets_messages_and_emits_reset(model):
+    model.append_message(_make_message("user", "hi"))
+    model.append_message(_make_message("assistant", "hello"))
+    reset_spy = QSignalSpy(model.modelReset)
+    model.clear()
+    assert model.rowCount() == 0
+    assert reset_spy.count() == 1
+
+
+def test_clear_on_empty_model_is_noop_no_signal(model):
+    reset_spy = QSignalSpy(model.modelReset)
+    model.clear()
+    assert reset_spy.count() == 0
+    assert model.rowCount() == 0
+
+
+def test_to_openai_messages_round_trip_user_assistant(model):
+    model.append_message(_make_message("user", "what is the capital of France?"))
+    model.append_message(_make_message("assistant", "Paris."))
+    model.append_message(_make_message("user", "what is the population?"))
+    model.append_message(_make_message("assistant", "About 2.1 million."))
+    out = model.to_openai_messages("you are local")
+    assert out == [
+        {"role": "system", "content": "you are local"},
+        {"role": "user", "content": "what is the capital of France?"},
+        {"role": "assistant", "content": "Paris."},
+        {"role": "user", "content": "what is the population?"},
+        {"role": "assistant", "content": "About 2.1 million."},
+    ]
+
+
+def test_to_openai_messages_skips_thinking_content(model):
+    """`reasoning_content` is the model's thinking channel — replaying
+    it as assistant `content` would confuse the model on the next turn.
+    `to_openai_messages` must serialize `text` only."""
+    model.append_message(_make_message("user", "hi"))
+    model.append_message(
+        _make_message("assistant", "hello", thinkingText="let me think about this")
+    )
+    out = model.to_openai_messages("")
+    assert out == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+
+
+def test_to_openai_messages_omits_empty_system_prompt(model):
+    model.append_message(_make_message("user", "hi"))
+    out = model.to_openai_messages("")
+    assert out == [{"role": "user", "content": "hi"}]
+    out_whitespace = model.to_openai_messages("   ")
+    assert out_whitespace == [{"role": "user", "content": "hi"}]
+
+
+def test_to_openai_messages_skips_drafts_and_pending_turns(model):
+    """Draft user bubbles, in-flight (turnPending=True) bubbles, and
+    streaming-draft assistants must NOT appear in serialized history."""
+    model.append_message(_make_message("user", "earlier"))
+    model.append_message(_make_message("assistant", "earlier reply"))
+    model.append_message(
+        _make_message("user", "draft text", bubbleState="draft", turnPending=True)
+    )
+    model.append_message(
+        _make_message("user", "in-flight", bubbleState="sent", turnPending=True)
+    )
+    model.append_message(
+        _make_message(
+            "assistant", "streaming…", bubbleState="draft", turnPending=True
+        )
+    )
+    out = model.to_openai_messages("sys")
+    assert out == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "earlier"},
+        {"role": "assistant", "content": "earlier reply"},
+    ]
+
+
+def test_to_openai_messages_skips_system_and_status_rows(model):
+    """`role='system'` operational notices and `role='status'` pipeline
+    rows are UI-only — they must never round-trip into LLM history."""
+    model.append_message(_make_message("user", "u1"))
+    model.append_message(
+        _make_message("system", "model loaded", level="status", bubbleState="plain")
+    )
+    model.append_message(
+        {
+            "role": "status",
+            "text": "Transcribing…",
+            "stateName": "transcribing",
+        }
+    )
+    model.append_message(_make_message("assistant", "a1"))
+    out = model.to_openai_messages("")
+    assert out == [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+    ]
+
+
+def test_to_openai_messages_skips_empty_text(model):
+    model.append_message(_make_message("user", "u1"))
+    model.append_message(_make_message("assistant", ""))
+    model.append_message(_make_message("user", "   "))
+    model.append_message(_make_message("assistant", "a2"))
+    out = model.to_openai_messages("")
+    assert out == [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a2"},
+    ]
+
+
+def test_to_openai_messages_respects_max_turns_cap(model):
+    for i in range(6):
+        model.append_message(_make_message("user", f"u{i}"))
+        model.append_message(_make_message("assistant", f"a{i}"))
+    # 12 finalized rows → cap to last 4 (= 2 user/assistant pairs).
+    out = model.to_openai_messages("sys", max_turns=4)
+    assert out == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u4"},
+        {"role": "assistant", "content": "a4"},
+        {"role": "user", "content": "u5"},
+        {"role": "assistant", "content": "a5"},
+    ]
+
+
+def test_to_openai_messages_max_turns_zero_or_none_uncapped(model):
+    for i in range(3):
+        model.append_message(_make_message("user", f"u{i}"))
+        model.append_message(_make_message("assistant", f"a{i}"))
+    out_none = model.to_openai_messages("", max_turns=None)
+    out_zero = model.to_openai_messages("", max_turns=0)
+    # Both treat the cap as "unbounded" — six finalized rows pass through.
+    assert len(out_none) == 6
+    assert len(out_zero) == 6
+
+
+def test_to_openai_messages_pair_integrity_guard_on_odd_cut(model):
+    """An odd `max_turns` could land the slice on an `assistant` head,
+    which the model interprets as unfinished/stranded. Mirror LangChain
+    `ConversationBufferWindowMemory`'s "drop a complete pair" — the
+    serialized history must always lead with `user` (or system, or be
+    empty). Drops one more entry to land on a user."""
+    for i in range(4):
+        model.append_message(_make_message("user", f"u{i}"))
+        model.append_message(_make_message("assistant", f"a{i}"))
+    # 8 finalized rows; max_turns=3 would slice [-3:] →
+    # ["assistant a2", "user u3", "assistant a3"], stranding an
+    # assistant at the head. Guard drops it.
+    out = model.to_openai_messages("", max_turns=3)
+    assert out == [
+        {"role": "user", "content": "u3"},
+        {"role": "assistant", "content": "a3"},
+    ]
+

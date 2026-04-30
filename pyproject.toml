@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voiceagent"
-version = "0.10.2"
-description = "Push-to-talk KDE-friendly desktop voice assistant"
+version = "0.11.0"
+description = "KDE-friendly desktop voice assistant"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 license = "MIT"

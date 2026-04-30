@@ -28,6 +28,13 @@ Pane {
     // to this pane's reserved mic slot via Loader.item.micAnchor.
     property alias micAnchor: micAnchorItem
 
+    function tr(text) {
+        if (typeof i18nCtx !== "undefined" && i18nCtx) {
+            return i18nCtx.i18n(text);
+        }
+        return text;
+    }
+
     function _stringIndex(options, value) {
         for (let i = 0; i < options.length; i += 1) {
             if (options[i] === value) {
@@ -46,7 +53,7 @@ Pane {
         spacing: Kirigami.Units.mediumSpacing
 
         Kirigami.Heading {
-            text: i18nCtx.i18n("Session Setup")
+            text: sessionPane.tr("Session Setup")
             level: 2
         }
 
@@ -77,14 +84,14 @@ Pane {
 
                     ComboBox {
                         id: sttSelector
-                        Kirigami.FormData.label: i18nCtx.i18n("Speech:")
+                        Kirigami.FormData.label: sessionPane.tr("Speech:")
                         Layout.fillWidth: false
                         Layout.preferredWidth: Kirigami.Units.gridUnit * 14
                         model: sessionPane.voiceAgent ? sessionPane.voiceAgent.sttOptions : []
                         currentIndex: sessionPane.voiceAgent
                             ? sessionPane._stringIndex(sessionPane.voiceAgent.sttOptions, sessionPane.voiceAgent.selectedSttModel)
                             : -1
-                        displayText: currentIndex >= 0 ? currentText : i18nCtx.i18n("No installed STT models")
+                        displayText: currentIndex >= 0 ? currentText : sessionPane.tr("No installed STT models")
                         onActivated: {
                             if (sessionPane.voiceAgent) {
                                 sessionPane.voiceAgent.selectSttModel(currentText);
@@ -94,14 +101,14 @@ Pane {
 
                     ComboBox {
                         id: ttsSelector
-                        Kirigami.FormData.label: i18nCtx.i18n("Voice:")
+                        Kirigami.FormData.label: sessionPane.tr("Voice:")
                         Layout.fillWidth: false
                         Layout.preferredWidth: Kirigami.Units.gridUnit * 14
                         model: sessionPane.voiceAgent ? sessionPane.voiceAgent.ttsOptions : []
                         currentIndex: sessionPane.voiceAgent
                             ? sessionPane._stringIndex(sessionPane.voiceAgent.ttsOptions, sessionPane.voiceAgent.selectedTtsModel)
                             : -1
-                        displayText: currentIndex >= 0 ? currentText : i18nCtx.i18n("No installed TTS voices")
+                        displayText: currentIndex >= 0 ? currentText : sessionPane.tr("No installed TTS voices")
                         onActivated: {
                             if (sessionPane.voiceAgent) {
                                 sessionPane.voiceAgent.selectTtsModel(currentText);
@@ -110,7 +117,7 @@ Pane {
                     }
 
                     RowLayout {
-                        Kirigami.FormData.label: i18nCtx.i18n("LLM URL:")
+                        Kirigami.FormData.label: sessionPane.tr("LLM URL:")
                         Layout.fillWidth: true
                         spacing: Kirigami.Units.smallSpacing
 
@@ -169,7 +176,7 @@ Pane {
                     }
 
                     ComboBox {
-                        Kirigami.FormData.label: i18nCtx.i18n("Loaded Model:")
+                        Kirigami.FormData.label: sessionPane.tr("Loaded Model:")
                         Layout.fillWidth: false
                         Layout.preferredWidth: Kirigami.Units.gridUnit * 16
                         enabled: sessionPane.voiceAgent
@@ -181,7 +188,14 @@ Pane {
                         currentIndex: sessionPane.voiceAgent
                             ? sessionPane._stringIndex(sessionPane.voiceAgent.llmModelOptions, sessionPane.voiceAgent.selectedLlmModel)
                             : -1
-                        displayText: currentIndex <= 0 ? i18nCtx.i18n("Select a loaded model") : currentText
+                        // `<= 0` (NOT `< 0`) because `llmModelOptions` is
+                        // `["", *self._llm.models]` — index 0 is the empty-
+                        // string sentinel for "no LLM loaded". Showing
+                        // `currentText` for index 0 would render an empty
+                        // string instead of the placeholder. The other
+                        // combos (STT/TTS) use `< 0` because their option
+                        // lists do not carry a leading "" sentinel.
+                        displayText: currentIndex <= 0 ? sessionPane.tr("Select a loaded model") : currentText
                         onActivated: {
                             if (sessionPane.voiceAgent) {
                                 sessionPane.voiceAgent.selectLlmModel(currentText);

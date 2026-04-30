@@ -25,7 +25,7 @@ from voiceagent.conversation_model import ConversationModel
 from voiceagent.conversation_turn_coordinator import ConversationTurnCoordinator
 from voiceagent.downloaders import format_bytes, format_transfer_rate
 from voiceagent.i18n import TranslatorContext
-from voiceagent.logging_utils import log_ui_timing
+from voiceagent.logging_utils import CONVERSATION_LOGGER_NAME, log_ui_timing
 from voiceagent.model_loader import WhisperModelLoader
 from voiceagent.models import AppState
 from voiceagent.services.llm_controller import LlmController
@@ -70,8 +70,8 @@ class MainWindow(QObject):
     """QObject bridge between the QML root window and the Python backend.
 
     Owns the Q_PROPERTYs QML binds to (theme mode, model selectors,
-    catalogs, conversation model, error / status state, context-token
-    counters, etc.) and the Slots QML invokes (model select / install
+    catalogs, conversation model, context-token counters, etc.) and
+    the Slots QML invokes (model select / install
     / remove, theme cycle, replay, set-thinking-expanded). State
     mutations route through the conversation coordinator, the LLM
     controller, or the model loaders — this class is mostly a property
@@ -103,6 +103,16 @@ class MainWindow(QObject):
     # second arg carries the model name the fetch was issued for, so
     # late-arriving results for a stale selection can be ignored.
     _context_length_fetched = Signal(int, str)
+
+    # Internal worker-thread → main-thread bridge for replay TTS
+    # synthesis. Piper synth is a 5-7 s blocking call; running it on
+    # the GUI thread froze the click handler, leaving the ▶/🤫
+    # toggle unresponsive and queueing additional click events that
+    # cascaded into stacked PortAudio workers and an eventual crash.
+    # The first arg is the row index the synth was issued for; the
+    # second is `(audio_path, error_message)` packed in a tuple so
+    # both success and failure paths fit one signal shape.
+    _replay_synth_completed = Signal(int, object)
 
     def __init__(
         self,
@@ -139,11 +149,96 @@ class MainWindow(QObject):
         self._turn_coordinator.conversation_changed.connect(
             self.conversation_changed
         )
-        self._error_message = ""
-        self._status_message = "Ready"
+        # When the coordinator's history-cap trim drops rows from the
+        # FRONT of the model, every row index above the dropped range
+        # shifts by `count`. Our `_speaking_row` is one such index; if
+        # we don't shift it in lockstep, the inline ▶/🤫 toggle
+        # renders on the wrong row after the trim fires. The
+        # coordinator already adjusts its own
+        # `_streaming_assistant_index` the same way; this connection
+        # extends that pattern to MainWindow's row tracker.
+        # CodeRabbit round-3 P1.
+        self._turn_coordinator.rows_dropped_from_front.connect(
+            self._on_rows_dropped_from_front
+        )
         self._llm = LlmController(self.controller.chat_client, self.settings, parent=self)
         self._shutting_down = False
         self._state = "idle"
+        # Track the model we last reacted to so we can short-circuit
+        # no-op `selected_model_changed` re-fires (LM Studio refresh,
+        # reconnect, URL change). Without this guard the
+        # context-tokens counters reset and a fresh
+        # `fetch_loaded_context_length` HTTP probe fires on every
+        # repeat, even when the loaded model genuinely hasn't changed.
+        # Seeded from the chat client's current model so an
+        # autoconnect that re-resolves the same name is silent.
+        self._last_selected_llm_model: str = self.controller.chat_client.model
+        # v0.11 multi-turn history. The coordinator owns the trim
+        # invariant ("visible transcript == what the LLM sees on the
+        # next call"); seed its cap from `AppConfig` via the
+        # controller. Conversation deliberately persists across LLM
+        # model swaps — modern instruction-tuned local models handle
+        # foreign transcripts well, and the user gets continuity
+        # rather than a surprise wipe when comparing models. The
+        # context-token bar visually warns when the prompt approaches
+        # the new model's loaded_context_length.
+        self._turn_coordinator.set_max_history_turns(
+            self.controller.max_history_turns
+        )
+        # Dedicated single-worker executor for replay TTS synthesis.
+        # Sized 1 — a second concurrent synth would race the same
+        # Piper invocation and produce stacked WAV temp files. The
+        # `replayMessage` slot submits a job here, and the future's
+        # done-callback bridges back to the GUI thread via
+        # `_replay_synth_completed`.
+        self._replay_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="voiceagent-replay-synth"
+        )
+        self._replay_executor_shutdown = False
+        # Tracks the in-flight replay synth future so a fresh
+        # `replayMessage` click can cancel a still-pending prior synth
+        # before queueing the new one. Without this, rapid spam-clicks
+        # accumulate jobs in the single-worker executor's queue and
+        # each one runs to completion just to be discarded by the
+        # cancellation check inside `_on_replay_synth_completed`.
+        # CodeRabbit round-3 P2.
+        self._replay_synth_future: Future[object] | None = None
+        # Monotonically increasing token bumped on each `replayMessage`
+        # click and each `stopSpeaking`. Replay synth jobs carry their
+        # spawning value through to `_on_replay_synth_completed`, which
+        # discards any payload whose token != current. Decouples
+        # cancellation from `_speaking_row` — the row index can shift
+        # under the synth via `_on_rows_dropped_from_front` without
+        # the completion check spuriously discarding because
+        # "speaking_row != original index". CodeRabbit round-4 P2.
+        self._replay_request_id: int = 0
+        self._replay_synth_completed.connect(self._on_replay_synth_completed)
+        # Row index of the assistant bubble whose TTS audio is currently
+        # being read aloud. -1 when nothing is playing. Drives the
+        # per-bubble ▶/🤫 toggle in the conversation pane: only the
+        # actively-speaking row shows 🤫 (which calls `stopSpeaking()`
+        # to cut the speech without touching the voice connection).
+        # Set when playback_started fires on either player; reset on
+        # finished / failed / explicit stop.
+        self._speaking_row: int = -1
+        # Which player currently OWNS the speaking row. Values:
+        # `"controller"` (in-pipeline auto-play), `"replay"`
+        # (user-triggered replay), or `""` (nothing playing).
+        # Without this, a late `playback_finished` from the
+        # `controller.player` (e.g. an in-pipeline auto-play that
+        # was abandoned mid-stream) could wipe a `_speaking_row`
+        # that belongs to a separate, still-running replay.
+        # CodeRabbit round-3 P2.
+        self._speaking_owner: str = ""
+        # Wire the controller's history snapshot provider so each
+        # voice turn captures the visible transcript on the GUI thread
+        # before the executor takes over. The closure reads
+        # `system_prompt` off the chat client (the v0.10 source-of-
+        # truth) and the cap off the controller (set from
+        # `AppConfig.max_history_turns`). With the coordinator's trim
+        # active, the model is already capped — `max_turns` here is a
+        # defensive backup.
+        self.controller.chat_history_provider = self._build_chat_history_messages
         # Token-usage state for the QML context-window readout. `used`
         # is the running prompt + completion tokens reported on the
         # latest LM Studio chunk-with-usage; `ceiling` is the loaded
@@ -181,7 +276,7 @@ class MainWindow(QObject):
             self._tts_catalog, self._tts_state_adapter, self
         )
 
-        self.controller.status_changed.connect(self._set_status_message)
+        self.controller.status_changed.connect(self._emit_ui_changed)
         self.controller.connection_changed.connect(self._handle_connection_changed)
         self.controller.live_transcript_changed.connect(self._sync_live_user_message)
         self.controller.transcript_changed.connect(self._append_user_message)
@@ -198,6 +293,32 @@ class MainWindow(QObject):
         self.replay_player.playback_started.connect(self.controller.handle_aux_playback_started)
         self.replay_player.playback_finished.connect(self.controller.handle_aux_playback_finished)
         self.replay_player.playback_failed.connect(self.controller.handle_aux_playback_failed)
+        # speakingRow tracking. The in-pipeline player belongs to the
+        # controller; the replay player is ours. Both feed the same
+        # `_speaking_row` field — only one path can be active at a
+        # time, and either player ending resets to -1.
+        self.controller.player.playback_started.connect(
+            self._on_main_playback_started
+        )
+        self.controller.player.playback_finished.connect(
+            self._on_main_playback_ended
+        )
+        self.controller.player.playback_failed.connect(
+            self._on_main_playback_failed
+        )
+        # Replay-side speakingRow: replayMessage sets _speaking_row +
+        # _speaking_owner synchronously the moment the user clicks ▶
+        # (so the toggle responds immediately), then dispatches synth
+        # on the _replay_executor. Playback_started carries no extra
+        # info we need — the row + owner are already correct. Only
+        # the end-of-playback resets matter on this signal, and only
+        # if "replay" still owns the row at that point.
+        self.replay_player.playback_finished.connect(
+            self._on_replay_playback_ended
+        )
+        self.replay_player.playback_failed.connect(
+            self._on_replay_playback_failed
+        )
         self.model_loader.ready_changed.connect(self._emit_ui_changed)
         self.model_loader.loading_changed.connect(self._emit_ui_changed)
         self.model_loader.status_changed.connect(self._apply_model_status)
@@ -241,7 +362,6 @@ class MainWindow(QObject):
         self._context_length_fetched.connect(self._on_context_length_fetched)
 
         self._restore_initial_selections()
-        self._apply_audio_mute_state(self.settings.value("audio_output_muted", False, bool))
         self._apply_state(self.controller.state.value)
         self._apply_theme_mode(self.settings.value("theme_mode", "auto", str) or "auto")
 
@@ -279,7 +399,7 @@ class MainWindow(QObject):
             self._window.requestActivate()
         if not self._llm.startup_connect_scheduled and self.currentLlmUrl:
             self._llm.mark_startup_connect_scheduled()
-            schedule_after_first_frame(self._window, self.autoconnectLlmServer)
+            schedule_after_first_frame(self._window, self._autoconnect_llm_server)
         # Defer the Piper `voices.json` network fetch until after QML
         # paints — see AGENTS.md's "keep network/model refreshes off the
         # first paint path" rule. The catalog starts populated with
@@ -322,6 +442,14 @@ class MainWindow(QObject):
         self._context_length_executor.shutdown(
             wait=False, cancel_futures=True
         )
+        # Same pattern for replay synthesis. A pending Piper synth
+        # would otherwise block exit for several seconds; cancel
+        # rather than wait. Set the flag BEFORE shutdown so a
+        # late-arriving replay click hits the early-return guard.
+        self._replay_executor_shutdown = True
+        self._replay_executor.shutdown(
+            wait=False, cancel_futures=True
+        )
         app = QApplication.instance()
         if app is not None:
             app.sendPostedEvents()
@@ -361,14 +489,6 @@ class MainWindow(QObject):
         current = self.tts_loader.selected_model or ""
         return current if current in self.ttsOptions else ""
 
-    @Property(str, notify=ui_changed)
-    def modelStatus(self) -> str:  # noqa: N802
-        if self.model_loader.is_loading:
-            return f"Downloading {self.model_loader.transcriber.backend_name} model"
-        if self.sttOptions:
-            return f"{len(self.sttOptions)} installed STT model(s)"
-        return "No STT models installed"
-
     @Property(bool, notify=ui_changed)
     def modelLoading(self) -> bool:  # noqa: N802
         return self.model_loader.is_loading
@@ -384,14 +504,6 @@ class MainWindow(QObject):
     @Property(str, notify=progress_changed)
     def modelProgressText(self) -> str:  # noqa: N802
         return self._model_progress_text
-
-    @Property(str, notify=ui_changed)
-    def ttsStatus(self) -> str:  # noqa: N802
-        if self.tts_loader.is_loading:
-            return f"Downloading {self.tts_loader.tts_service.backend_name} voice"
-        if self.ttsOptions:
-            return f"{len(self.ttsOptions)} installed TTS voice(s)"
-        return "No TTS voices installed"
 
     @Property(bool, notify=ui_changed)
     def ttsLoading(self) -> bool:  # noqa: N802
@@ -490,23 +602,20 @@ class MainWindow(QObject):
     def voiceConnectionEnabled(self) -> bool:  # noqa: N802
         return self.controller.voice_connection_enabled
 
-    @Property(str, notify=ui_changed)
-    def voiceConnectionLabel(self) -> str:  # noqa: N802
-        return "Voice Connection On" if self.controller.voice_connection_enabled else "Voice Connection Off"
-
-    @Property(bool, notify=ui_changed)
-    def audioMuted(self) -> bool:  # noqa: N802
-        return self.settings.value("audio_output_muted", False, bool)
+    @Property(int, notify=ui_changed)
+    def speakingRow(self) -> int:  # noqa: N802
+        """Row index of the assistant bubble whose audio is currently
+        being read aloud (in-pipeline auto-play OR user-triggered
+        replay). -1 when nothing is playing. The conversation pane's
+        per-bubble button uses this to toggle between ▶ (replay) and
+        🤫 (quiet — stop the active speech)."""
+        return self._speaking_row
 
     @Property(str, notify=ui_changed)
     def themeMode(self) -> str:  # noqa: N802
         stored = self.settings.value("theme_mode", "auto", str) or "auto"
         normalized = stored.strip().lower()
         return normalized if normalized in {"auto", "light", "dark"} else "auto"
-
-    @Property(str, notify=ui_changed)
-    def themeModeLabel(self) -> str:  # noqa: N802
-        return {"auto": "Auto", "light": "Light", "dark": "Dark"}.get(self.themeMode, "Auto")
 
     @Property(bool, notify=ui_changed)
     def logVerboseMode(self) -> bool:  # noqa: N802
@@ -515,22 +624,6 @@ class MainWindow(QObject):
     @Property(QObject, constant=True)
     def conversationModel(self) -> ConversationModel:  # noqa: N802
         return self._conversation_model
-
-    @Property(int, notify=conversation_changed)
-    def conversationMessageCount(self) -> int:  # noqa: N802
-        return self._conversation_model.rowCount()
-
-    @Property(str, notify=ui_changed)
-    def errorMessage(self) -> str:  # noqa: N802
-        return self._error_message
-
-    @Property(str, notify=ui_changed)
-    def statusMessage(self) -> str:  # noqa: N802
-        return self._status_message
-
-    @Property(str, notify=ui_changed)
-    def state(self) -> str:
-        return self._state
 
     @Slot(str)
     def selectSttModel(self, model_name: str) -> None:  # noqa: N802
@@ -578,10 +671,6 @@ class MainWindow(QObject):
     def persistCurrentLlmUrl(self) -> None:  # noqa: N802
         self._llm.persist_current_url()
 
-    @Slot(bool)
-    def refreshLlmModels(self, show_error: bool) -> None:  # noqa: N802
-        self._llm.refresh_models(show_error)
-
     @Slot(str)
     def selectLlmModel(self, model_name: str) -> None:  # noqa: N802
         self._llm.select_model(model_name)
@@ -591,24 +680,21 @@ class MainWindow(QObject):
         if self._llm.connection_busy and self._llm.server_connected:
             return
         if self._llm.server_connected:
-            self.disconnectLlmServer()
+            self._disconnect_llm_server()
             return
-        self.connectLlmServer(value, True)
+        self._connect_llm_server(value, True)
 
-    @Slot(str, bool)
-    def connectLlmServer(self, value: str, show_error: bool = True) -> None:  # noqa: N802
+    def _connect_llm_server(self, value: str, show_error: bool = True) -> None:
         self._llm.connect_server(value, show_error)
 
-    @Slot()
-    def disconnectLlmServer(self) -> None:  # noqa: N802
+    def _disconnect_llm_server(self) -> None:
         if self._llm.connection_busy or self._llm.model_busy:
             return
         if self.voiceConnectionEnabled:
             self.controller.stop_recording()
         self._llm.disconnect_server()
 
-    @Slot()
-    def autoconnectLlmServer(self) -> None:
+    def _autoconnect_llm_server(self) -> None:
         self._llm.autoconnect_server()
 
     @Slot(bool)
@@ -622,10 +708,48 @@ class MainWindow(QObject):
         self.controller.stop_recording()
         log_ui_timing(self._logger, "setVoiceConnectionEnabled.off", started)
 
-    @Slot(bool)
-    def setAudioMuted(self, enabled: bool) -> None:  # noqa: N802
-        self.settings.setValue("audio_output_muted", enabled)
-        self._apply_audio_mute_state(enabled)
+    @Slot()
+    def stopSpeaking(self) -> None:  # noqa: N802
+        """Cut the current speech mid-utterance. Stops both the
+        in-pipeline auto-play (`controller.player`) and the
+        user-triggered replay (`replay_player`). Does NOT touch the
+        voice connection — the mic stays in whatever state it was in
+        so the next user turn can begin immediately. The QML
+        per-bubble button calls this when the user taps 🤫.
+
+        `controller.cancel_playbacks()` does the actual main-player
+        stop AND resets `_playing_response` / `_aux_playback_active`,
+        which is required because the v0.11 teardown-error
+        suppression in `services/playback.py` swallows
+        `playback_finished` on stop-induced exits. Without that flag
+        reset, the mic-resume gate stayed stuck and "Listening" was
+        a lie (the user reported this exact symptom).
+        """
+        # Cancel an in-flight replay synth too. Without this, a
+        # not-yet-started synth in the executor's queue would burn
+        # through a full Piper run after stopSpeaking returned, then
+        # the completion handler would see the stale request and
+        # discard the audio — wasted work, and any FileHandler
+        # shutdown that happened between stop and synth-completion
+        # could surface as a noisy log error. CodeRabbit round-4
+        # nitpick. The completion handler short-circuits on
+        # `future.cancelled()` so this is safe.
+        synth_future = self._replay_synth_future
+        if synth_future is not None and not synth_future.done():
+            synth_future.cancel()
+        # Bump the request token. A synth job that was already
+        # running (cancel can't stop it) will complete with its
+        # original request_id; the completion handler's
+        # `request_id == self._replay_request_id` check will be
+        # False and the audio will be discarded. CodeRabbit round-4
+        # P2.
+        self._replay_request_id += 1
+        self.replay_player.stop()
+        self.controller.cancel_playbacks()
+        if self._speaking_row != -1 or self._speaking_owner:
+            self._speaking_row = -1
+            self._speaking_owner = ""
+            self.ui_changed.emit()
 
     @Slot(bool)
     def setLogVerboseMode(self, enabled: bool) -> None:  # noqa: N802
@@ -677,22 +801,190 @@ class MainWindow(QObject):
             self._logger.info("Replay skipped: TTS not available")
             self.replay_failed.emit(reason)
             return
+        # Toggle the row's button to 🤫 IMMEDIATELY so the click is
+        # responsive. Synth itself runs on the background executor —
+        # Piper takes 5-7 s for a typical reply, and running it on the
+        # GUI thread froze the click handler, queueing additional
+        # clicks that cascaded into stacked PortAudio workers and an
+        # eventual crash. If the user taps the same button while
+        # synth is still running, `stopSpeaking` will reset
+        # `_speaking_row`; the synth-completion handler sees the
+        # mismatch and discards the audio without starting playback.
+        self._speaking_row = index
+        self._speaking_owner = "replay"
+        self.ui_changed.emit()
+        # Mint a fresh request token. Synth completions check this
+        # value, not `_speaking_row` — `_speaking_row` can shift
+        # under the synth via `_on_rows_dropped_from_front` (history
+        # cap trim), so an index-based cancellation gate would
+        # spuriously discard an in-flight replay whose row just got
+        # reindexed. CodeRabbit round-4 P2.
+        self._replay_request_id += 1
+        request_id = self._replay_request_id
+        # Stop any concurrent in-pipeline auto-play. Without this,
+        # the user clicking ▶ on the freshly-finalized assistant row
+        # produces TWO audio streams: the auto-play we never asked
+        # to silence + the replay we just kicked off. Also closes
+        # the ownership-claim race CodeRabbit round-4 Major flagged
+        # in `_on_main_playback_started` — there's no longer a
+        # late playback_started arriving from the main player to
+        # overwrite our "replay" ownership.
+        #
+        # Route through `cancel_playbacks()`, NOT `player.stop()`
+        # directly: the v0.11 teardown-error suppression in
+        # `services/playback.py` swallows `playback_finished` on
+        # stop_event-induced exits, so a bare `player.stop()` here
+        # leaves `_playing_response` stuck `True` from the original
+        # auto-play. `_partial_skip_reason` then keeps gating mic
+        # resume even after the replay's aux audio finishes. Codex
+        # round-4 P1.
+        #
+        # Stop `replay_player` BEFORE `cancel_playbacks()` so the
+        # replay-on-replay path (replay A playing → user clicks ▶
+        # on row B) doesn't leak audio: `cancel_playbacks()`
+        # force-clears `_aux_playback_active` and may resume mic
+        # input via `_resume_listening_if_possible`. If A's replay
+        # audio is still streaming out of `replay_player` at that
+        # point, it bleeds into STT and corrupts the next turn.
+        # Same two-step pattern `stopSpeaking()` uses. Codex
+        # round-6 P1.
+        self.replay_player.stop()
+        self.controller.cancel_playbacks()
+        if self._replay_executor_shutdown:
+            return
+        # Cancel a still-pending prior synth before queueing the new
+        # one. The single-worker executor serializes jobs, so a rapid
+        # spam-click would otherwise stack the queue. Cancelling
+        # outright (when possible) keeps the queue at one job and
+        # lets `_handle_replay_synth_done` short-circuit on
+        # `future.cancelled()`. CodeRabbit round-3 P2.
+        previous_future = self._replay_synth_future
+        if previous_future is not None and not previous_future.done():
+            previous_future.cancel()
+        try:
+            future = self._replay_executor.submit(
+                self._run_replay_synth, request_id, text
+            )
+        except RuntimeError:
+            # Executor was shut down between the flag check above
+            # and the submit. Roll back the optimistic toggle.
+            if self._speaking_row == index:
+                self._speaking_row = -1
+                self._speaking_owner = ""
+                self.ui_changed.emit()
+            return
+        self._replay_synth_future = future
+        future.add_done_callback(self._handle_replay_synth_done)
+
+    def _run_replay_synth(self, request_id: int, text: str) -> tuple[int, object, object]:
+        """Run TTS synthesis on the executor thread. Returns a
+        (request_id, audio_path | None, error_message | None) triple.
+        `request_id` is the per-replay token minted by `replayMessage`;
+        the GUI-thread completion handler compares it to the current
+        `_replay_request_id` to decide whether the result is still
+        wanted. The try/except keeps the worker thread itself from
+        raising — the future's done-callback fires regardless and
+        bridges the result back to the GUI thread via
+        `_replay_synth_completed`.
+        """
         try:
             audio_path = self.tts_loader.tts_service.synthesize(text)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surfaced to the GUI
             self._logger.exception("Replay synthesis failed")
-            # Replay failures are unrelated to any active draft turn;
-            # don't let the error surface tear down a user bubble the
-            # user is currently dictating.
-            message = f"Replay failed: {exc}"
-            self._set_error_message(message, discard_draft=False)
-            # Also surface the failure as a transient toast. The error
-            # banner persists; the toast catches the user's attention
-            # at the moment of the click without occupying chrome.
-            self.replay_failed.emit(message)
+            return request_id, None, str(exc)
+        return request_id, audio_path, None
+
+    def _handle_replay_synth_done(self, future: Future) -> None:
+        # Runs on the executor thread (or sync on the owner thread
+        # when add_done_callback registers against an already-done
+        # future). Bridge across `_replay_synth_completed` so the
+        # GUI thread is the sole writer to `_speaking_row`.
+        # Cancelled futures: a fresh `replayMessage` cancelled this
+        # one before it completed. `future.result()` would raise
+        # `CancelledError`; we want to skip the emit entirely so
+        # the cancelled work doesn't trigger a stale completion
+        # path on the GUI thread. CodeRabbit round-3 P2.
+        if future.cancelled():
             return
-        if audio_path is not None:
-            self.replay_player.play_file(audio_path)
+        try:
+            request_id, audio_path, error_message = future.result()
+        except Exception as exc:  # pragma: no cover - defensive
+            self._replay_synth_completed.emit(-1, (None, str(exc)))
+            return
+        self._replay_synth_completed.emit(request_id, (audio_path, error_message))
+
+    @Slot(int, object)
+    def _on_replay_synth_completed(self, request_id: int, payload: object) -> None:
+        # Runs on the GUI thread (queued from the worker via
+        # `_replay_synth_completed`).
+        # Shutdown guard. If `MainWindow.shutdown()` already tore
+        # down the replay player + conversation model, a late-
+        # arriving completion that calls `play_file` would crash.
+        # CodeRabbit round-3 P2.
+        if self._replay_executor_shutdown or self._shutting_down:
+            audio_path, _ = payload  # type: ignore[misc]
+            if audio_path is not None:
+                try:
+                    Path(str(audio_path)).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return
+        audio_path, error_message = payload  # type: ignore[misc]
+        # Token check: is this still the latest replay the user asked
+        # for? If a fresh `replayMessage` (or `stopSpeaking`) bumped
+        # the token, this completion is stale — discard. Decoupled
+        # from `_speaking_row` so a trim-induced row shift can't
+        # spuriously look like cancellation. CodeRabbit round-4 P2.
+        is_current = request_id == self._replay_request_id
+        if error_message is not None:
+            # Stale failures: don't surface them. If replay A was
+            # superseded by replay B (or cancelled via stopSpeaking),
+            # a late exception from A's synth thread would otherwise
+            # show as a user-visible "Replay failed" toast for an
+            # abandoned request the user has already moved on from.
+            # The audio-dispatch path below already gates on
+            # `is_current`; the error path was the symmetric gap.
+            # CodeRabbit round-5 Major.
+            if not is_current:
+                return
+            wrapped = f"Replay failed: {error_message}"
+            self._set_error_message(wrapped, discard_draft=False)
+            self.replay_failed.emit(wrapped)
+            if self._speaking_owner == "replay":
+                self._speaking_row = -1
+                self._speaking_owner = ""
+                self.ui_changed.emit()
+            return
+        if audio_path is None:
+            if is_current and self._speaking_owner == "replay":
+                self._speaking_row = -1
+                self._speaking_owner = ""
+                self.ui_changed.emit()
+            return
+        # Stale completion: user clicked 🤫 (stopSpeaking) OR started
+        # a different replay while synth was running. Discard the
+        # audio without dispatching it to the player.
+        if not is_current:
+            try:
+                Path(str(audio_path)).unlink(missing_ok=True)
+            except OSError:
+                self._logger.exception(
+                    "Discarded replay audio cleanup failed path=%s",
+                    audio_path,
+                )
+            return
+        # `play_file` returns False when a concurrent supersede mints
+        # a newer generation between our entry and the worker
+        # registering its own thread (the AudioPlayer drops superseded
+        # play attempts entirely and unlinks the temp file). If that
+        # happens we'd otherwise leave `_speaking_row` pinned to the
+        # row forever, with no `playback_started` signal coming to
+        # bring it back. CodeRabbit round-3 Major.
+        dispatched = self.replay_player.play_file(audio_path)
+        if not dispatched and self._speaking_owner == "replay":
+            self._speaking_row = -1
+            self._speaking_owner = ""
+            self.ui_changed.emit()
 
     def _handle_inventory_change(self) -> None:
         self._refresh_stt_catalog_if_changed()
@@ -764,9 +1056,82 @@ class MainWindow(QObject):
         # Thin forwarder — coordinator owns ordering policy.
         self._turn_coordinator.on_log_message(text, level)
 
-    def _apply_audio_mute_state(self, enabled: bool) -> None:
-        self.controller.player.set_muted(enabled)
-        self.replay_player.set_muted(enabled)
+    def _on_main_playback_started(self, _path: str) -> None:
+        # In-pipeline auto-play: the speaking row is the most recent
+        # finalized assistant bubble. The pipeline appends the
+        # assistant turn to the model BEFORE invoking play_file, so
+        # this find is reliable.
+        #
+        # Ownership guard: don't overwrite "replay" ownership. If
+        # the user clicked ▶ on the freshly-finalized assistant row
+        # (the row this auto-play is for), `replayMessage` already
+        # stopped our `controller.player` and claimed
+        # `_speaking_owner = "replay"`. A late playback_started
+        # arriving from the now-stopped main player would otherwise
+        # clobber the replay's ownership, and the subsequent
+        # main-player playback_finished would clear `_speaking_row`
+        # mid-replay. CodeRabbit round-4 Major.
+        if self._speaking_owner == "replay":
+            return
+        self._speaking_row = self._conversation_model.find_message_index(
+            "assistant", bubble_state="sent", turn_pending=False
+        )
+        self._speaking_owner = "controller"
+        self.ui_changed.emit()
+
+    def _on_main_playback_ended(self, _path: str) -> None:
+        # Only reset if the controller still owns the row. A
+        # late-arriving finished signal from an abandoned in-pipeline
+        # worker that completed AFTER the user started a replay
+        # otherwise wipes the replay's row → 🤫 disappears mid-
+        # replay. CodeRabbit round-3 P2.
+        if self._speaking_owner == "controller":
+            self._speaking_row = -1
+            self._speaking_owner = ""
+            self.ui_changed.emit()
+
+    def _on_main_playback_failed(self, _path: str, _message: str) -> None:
+        if self._speaking_owner == "controller":
+            self._speaking_row = -1
+            self._speaking_owner = ""
+            self.ui_changed.emit()
+
+    def _on_replay_playback_ended(self, _path: str) -> None:
+        if self._speaking_owner == "replay":
+            self._speaking_row = -1
+            self._speaking_owner = ""
+            self.ui_changed.emit()
+
+    def _on_replay_playback_failed(self, _path: str, _message: str) -> None:
+        if self._speaking_owner == "replay":
+            self._speaking_row = -1
+            self._speaking_owner = ""
+            self.ui_changed.emit()
+
+    def _on_rows_dropped_from_front(self, count: int) -> None:
+        """Shift `_speaking_row` to track a coordinator front-trim.
+
+        When `_trim_to_history_cap` removes the oldest N rows from
+        the model, every row index above the dropped range shifts
+        down by N. Our `_speaking_row` is a row index into the same
+        model; if we don't shift it, the ▶/🤫 toggle renders on
+        the wrong row after the trim. If `_speaking_row` itself was
+        inside the dropped range, the bubble is gone — reset to -1.
+        Mirrors the same pattern the coordinator applies to its own
+        `_streaming_assistant_index`. CodeRabbit round-3 P1.
+        """
+        if count <= 0:
+            return
+        if self._speaking_row < 0:
+            return
+        if self._speaking_row < count:
+            # The speaking bubble itself was inside the dropped range;
+            # nothing to track. Clear ownership too — neither player
+            # owns a row that no longer exists.
+            self._speaking_row = -1
+            self._speaking_owner = ""
+        else:
+            self._speaking_row -= count
         self.ui_changed.emit()
 
     def _apply_theme_mode(self, mode: str) -> None:
@@ -784,7 +1149,6 @@ class MainWindow(QObject):
 
     def _apply_model_status(self, status: str) -> None:
         if self.model_loader.is_loading:
-            self._status_message = status
             self._append_log_message(status, "status")
         self.ui_changed.emit()
 
@@ -796,7 +1160,6 @@ class MainWindow(QObject):
 
     def _apply_tts_status(self, status: str) -> None:
         if self.tts_loader.is_loading:
-            self._status_message = status
             self._append_log_message(status, "status")
         self.ui_changed.emit()
 
@@ -830,25 +1193,14 @@ class MainWindow(QObject):
         # Per-turn ordering (promote-draft, dedupe, queue/flush of
         # verbose pipeline status rows, RECORDING/IDLE boundary
         # reset) lives in the coordinator. MainWindow only owns the
-        # `state` property + `ui_changed` notification here.
+        # derived-state repaint here.
         self._turn_coordinator.on_state_changed(state)
         self.ui_changed.emit()
 
-    def _set_status_message(self, message: str) -> None:
-        # Status text drives the mic-button label only. Pipeline activity
-        # routed through the conversation log goes via _apply_state's
-        # role="status" path, gated on logVerboseMode. Appending here
-        # would (a) defeat simple mode and (b) duplicate the role="status"
-        # row in verbose mode.
-        self._status_message = message
-        self.ui_changed.emit()
-
     def _set_error_message(self, message: str, *, discard_draft: bool = True) -> None:
-        # MainWindow only owns the `errorMessage` property text +
-        # `ui_changed` notification; the coordinator handles the
-        # discard-draft + append-log-row policy. discard_draft default
-        # documented at the coordinator's `on_error_message`.
-        self._error_message = message
+        # The coordinator owns the discard-draft + append-log-row
+        # policy. discard_draft default documented at its
+        # `on_error_message`.
         self._turn_coordinator.on_error_message(message, discard_draft=discard_draft)
         self.ui_changed.emit()
 
@@ -892,6 +1244,21 @@ class MainWindow(QObject):
         self.ui_changed.emit()
 
     def _on_llm_selected_model_changed(self, model: str) -> None:
+        # Short-circuit duplicate fires of the same model. LlmController
+        # already tries to gate this internally, but several paths
+        # (set_current_url, refresh_models, autoconnect retries) can
+        # legitimately re-emit with an unchanged value; we don't want
+        # to reset counters or queue a fresh context-length probe each
+        # time a refresh re-confirms the loaded model.
+        if model == self._last_selected_llm_model:
+            return
+        previous_model = self._last_selected_llm_model
+        self._last_selected_llm_model = model
+        # Genuine model swap — record it in the conversation log so the
+        # debug surface ties pre/post-swap turns to a clear boundary.
+        logging.getLogger(CONVERSATION_LOGGER_NAME).info(
+            "model-changed previous=%r new=%r", previous_model, model
+        )
         # When the loaded model changes, the previous ceiling no longer
         # applies. Reset immediately on the GUI thread; if a new model
         # is loaded, hop the (blocking) context-length probe to the
@@ -900,9 +1267,32 @@ class MainWindow(QObject):
         # Token usage from the previous model's last turn is meaningless
         # against the new (or absent) model; clear it too.
         self._context_tokens_used = 0
+        # v0.11 multi-turn history: the conversation persists across
+        # model swaps — the user gets continuity (e.g. ask the same
+        # question to two models and compare) rather than a surprise
+        # wipe. The new model's loaded_context_length is re-fetched
+        # via the bar above so the visual warning stays accurate
+        # under the new ceiling. If the existing transcript is too
+        # large for the new model, the LM Studio call will truncate
+        # from the front — the token-aware trim follow-up
+        # (roadmap.md v0.11.x) addresses that automatically; for
+        # v0.11 the user can shrink `VOICEAGENT_MAX_HISTORY_TURNS`.
         if model:
             self._submit_context_length_fetch(model)
         self.ui_changed.emit()
+
+    def _build_chat_history_messages(self) -> list[dict[str, str]]:
+        """Snapshot the visible conversation as an OpenAI-shaped messages
+        list. Invoked by `VoiceController` on the GUI thread immediately
+        before each pipeline future is submitted, so the read of the
+        underlying `ConversationModel` is consistent with the visible
+        transcript at submit time. The current turn's user message is
+        NOT included here — `_run_pipeline` appends it after STT.
+        """
+        return self._conversation_model.to_openai_messages(
+            system_prompt=self.controller.chat_client.system_prompt,
+            max_turns=self.controller.max_history_turns,
+        )
 
     def _submit_context_length_fetch(self, model: str) -> None:
         # `_shutting_down` is set BEFORE `_context_length_executor.shutdown()`
@@ -958,9 +1348,9 @@ class MainWindow(QObject):
     def _on_chat_thinking_chunk(self, text: str) -> None:
         # Thin forwarder — coordinator owns the streaming-thinking
         # bubble policy. `conversation_changed` propagates through the
-        # coordinator's own signal, but emitting here keeps the QML
-        # `conversationMessageCount` binding in lockstep with the chunk
-        # arrival even on the first chunk that promotes a draft row.
+        # coordinator's own signal, but emitting here also notifies any
+        # direct MainWindow observers when test doubles replace the
+        # coordinator method.
         self._turn_coordinator.on_chat_thinking_chunk(text)
         self.conversation_changed.emit()
 
@@ -975,7 +1365,6 @@ class MainWindow(QObject):
     def _on_llm_status_message(self, message: str) -> None:
         if not message:
             return
-        self._status_message = message
         self._append_log_message(message, "status")
         self.ui_changed.emit()
 

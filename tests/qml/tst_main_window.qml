@@ -49,8 +49,11 @@ TestCase {
         const page = window.pageStack.initialPage;
         verify(page !== null);
         const actions = page.actions || [];
-        verify(actions.length >= 4,
-            "page exposes at least 4 header actions; saw " + actions.length);
+        // Was 4 (theme + mute + verbose + model-manager) before the
+        // mute toolbar action was retired in favor of the inline
+        // ▶/🤫 toggle on each assistant bubble.
+        verify(actions.length >= 3,
+            "page exposes at least 3 header actions; saw " + actions.length);
     }
 
     function test_verbose_log_action_present() {
@@ -73,5 +76,11 @@ TestCase {
         }
         verify(foundVerboseLog,
             "verbose-log toggle action present on page-header actions");
+    }
+
+    function test_voice_agent_null_falls_back_to_inert_state() {
+        window.voiceAgent = null;
+        compare(window.sttInstalledCount, 0);
+        compare(window.ttsInstalledCount, 0);
     }
 }

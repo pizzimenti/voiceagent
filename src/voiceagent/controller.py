@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 import logging
 from pathlib import Path
@@ -8,7 +9,7 @@ import time
 from PySide6.QtCore import QObject, Signal, Slot, QTimer
 
 from voiceagent.backends import SpeechToTextBackend, TextToSpeechBackend
-from voiceagent.logging_utils import log_ui_timing
+from voiceagent.logging_utils import CONVERSATION_LOGGER_NAME, log_ui_timing
 from voiceagent.models import AppState, PipelineResult
 from voiceagent.services.audio import MicrophoneRecorder
 from voiceagent.services.chat import LmStudioClient
@@ -84,8 +85,30 @@ class VoiceController(QObject):
         self.player = player
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceagent")
         self.partial_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="voiceagent-partial")
+        # v0.11 multi-turn history. Callers wire this to a closure that
+        # snapshots the current `ConversationModel` state via
+        # `to_openai_messages(...)` — invoked on the GUI thread before
+        # we hand control to the executor, so the snapshot is consistent
+        # with the visible transcript at submit time. None during early
+        # construction (window has not wired it yet) and in tests that
+        # exercise the controller without a window: in both cases we
+        # fall through to a "system prompt + current user turn" payload
+        # built off `chat_client.system_prompt`, preserving v0.10
+        # single-turn behavior as the safety net.
+        self.chat_history_provider: Callable[[], list[dict[str, str]]] | None = None
+        # Conversation-history cap used by the provider closure window
+        # installs above. Default mirrors `AppConfig.max_history_turns`
+        # so tests that build the controller in isolation have a sane
+        # value without needing to plumb config through.
+        self.max_history_turns: int = 20
         self.state = AppState.IDLE
         self._logger = logging.getLogger(__name__)
+        # Dedicated conversation log: captures the full messages list
+        # posted to LM Studio + the assistant response, plus token
+        # usage. Lets a maintainer reach back into "what context did
+        # the model actually see for that turn" without bloating the
+        # main app log with every transcript.
+        self._conversation_logger = logging.getLogger(CONVERSATION_LOGGER_NAME)
         self._voice_connection_enabled = False
         # INVARIANT: only the owner thread writes `_active_pipeline_count`.
         # Executor-thread callbacks emit `_pipeline_count_delta` and
@@ -200,7 +223,11 @@ class VoiceController(QObject):
         self.executor.shutdown(wait=False, cancel_futures=True)
         self.partial_executor.shutdown(wait=False, cancel_futures=True)
 
-    def _run_pipeline(self, audio_path: Path) -> PipelineResult:
+    def _run_pipeline(
+        self,
+        audio_path: Path,
+        history_snapshot: list[dict[str, str]] | None = None,
+    ) -> PipelineResult:
         try:
             self._logger.info(
                 "Voice pipeline starting path=%s transcriber_loaded=%s tts_enabled=%s",
@@ -222,24 +249,50 @@ class VoiceController(QObject):
                     "Voice pipeline ending early — empty transcript path=%s",
                     audio_path,
                 )
+                self._conversation_logger.info(
+                    "turn-skipped reason=empty-transcript path=%s",
+                    audio_path,
+                )
                 return PipelineResult(
                     transcript="",
                     response="",
                     tts_audio_path=None,
                 )
             self.pipeline_state_changed.emit(AppState.THINKING.value, "Waiting for LM Studio")
+            self._conversation_logger.info("turn-start transcript=%r", transcript)
 
             def _on_usage(usage: dict) -> None:
                 prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
                 completion_tokens = int(usage.get("completion_tokens", 0) or 0)
                 self.chat_usage_changed.emit(prompt_tokens, completion_tokens)
+                self._conversation_logger.info(
+                    "turn-usage prompt_tokens=%d completion_tokens=%d",
+                    prompt_tokens,
+                    completion_tokens,
+                )
+
+            # Build the full messages list from the GUI-thread snapshot
+            # (multi-turn) or fall back to a single-turn payload built
+            # off the chat client's system prompt (v0.10 behavior, kept
+            # as a safety net for the no-provider case).
+            if history_snapshot is None:
+                messages: list[dict[str, str]] = []
+                if self.chat_client.system_prompt:
+                    messages.append(
+                        {"role": "system", "content": self.chat_client.system_prompt}
+                    )
+            else:
+                messages = list(history_snapshot)
+            messages.append({"role": "user", "content": transcript})
+            self._log_outgoing_messages(messages)
 
             response = self.chat_client.complete(
-                transcript,
+                messages,
                 on_content_chunk=self.chat_content_chunk.emit,
                 on_thinking_chunk=self.chat_thinking_chunk.emit,
                 on_usage=_on_usage,
             )
+            self._conversation_logger.info("turn-response response=%r", response)
 
             tts_audio_path = None
             if self.tts_service.enabled:
@@ -259,6 +312,24 @@ class VoiceController(QObject):
         finally:
             audio_path.unlink(missing_ok=True)
 
+    def _log_outgoing_messages(self, messages: list[dict[str, str]]) -> None:
+        """Log the full `messages` list about to ship to LM Studio.
+
+        Each entry is logged on its own line with `role` + `content` in
+        full. The conversation log is session-rotated, not size-rotated,
+        so a long transcript is not a problem — the next launch shifts
+        the file to `.1` and starts fresh.
+        """
+        self._conversation_logger.info(
+            "turn-messages count=%d", len(messages)
+        )
+        for index, message in enumerate(messages):
+            role = message.get("role", "?")
+            content = message.get("content", "")
+            self._conversation_logger.info(
+                "  [%d] role=%s content=%r", index, role, content
+            )
+
     def _handle_pipeline_done(self, future: Future[PipelineResult]) -> None:
         # Runs on the executor thread. MUST NOT mutate `_active_pipeline_count`
         # directly; route the delta through `_pipeline_count_delta` so the
@@ -268,6 +339,9 @@ class VoiceController(QObject):
             result = future.result()
         except Exception as exc:
             self.pipeline_failed.emit(str(exc))
+            self._conversation_logger.warning(
+                "turn-failed error=%s", exc
+            )
             return
 
         self.pipeline_completed.emit(result)
@@ -331,6 +405,36 @@ class VoiceController(QObject):
         self._aux_playback_active = False
         if self._voice_connection_enabled:
             self._schedule_input_resume_after_cooldown("aux_playback_failed")
+        self._resume_listening_if_possible()
+
+    def cancel_playbacks(self) -> None:
+        """User-driven stop. Stops the in-pipeline auto-play AND
+        manually resets `_playing_response` / `_aux_playback_active`
+        because the v0.11 teardown-error suppression in
+        `services/playback.py` deliberately swallows `playback_finished`
+        on stop_event-induced worker exits — without resetting these
+        flags here, both stay stuck `True` after the user presses
+        🤫, and `_resume_input_after_pipeline` then skips every
+        subsequent resume with "Skipping pipeline resume because
+        playback is active". The user reported this exact symptom:
+        mic stays in the "Listening" label state but isn't actually
+        hot. Schedules input resume so recording picks back up.
+
+        The aux player (`replay_player`) is owned by the window, so
+        the caller is responsible for `replay_player.stop()`. This
+        method only stops the controller-owned `self.player` and
+        clears the controller's state flags.
+        """
+        self._logger.info(
+            "User-driven playback cancel: clearing playing_response=%s aux_playback_active=%s",
+            self._playing_response,
+            self._aux_playback_active,
+        )
+        self.player.stop()
+        self._playing_response = False
+        self._aux_playback_active = False
+        if self._voice_connection_enabled:
+            self._schedule_input_resume_after_cooldown("user_stop_speaking")
         self._resume_listening_if_possible()
 
     def _apply_pipeline_error(self, message: str) -> None:
@@ -416,7 +520,24 @@ class VoiceController(QObject):
         )
         self.recorder.suspend_input()
         self._apply_state(AppState.TRANSCRIBING.value, "Detected silence, processing turn")
-        future = self.executor.submit(self._run_pipeline, audio_path)
+        # Snapshot conversation history on the GUI thread before the
+        # executor takes over. The provider walks the `ConversationModel`,
+        # which is mutated only on the GUI thread — capturing here is
+        # the only safe read site. Falling through to None hands the
+        # executor an empty list and `_run_pipeline` rebuilds a
+        # single-turn payload from the chat client's system prompt.
+        history_snapshot: list[dict[str, str]] | None
+        if self.chat_history_provider is not None:
+            try:
+                history_snapshot = list(self.chat_history_provider())
+            except Exception:
+                self._logger.exception(
+                    "chat_history_provider raised; falling back to single-turn"
+                )
+                history_snapshot = None
+        else:
+            history_snapshot = None
+        future = self.executor.submit(self._run_pipeline, audio_path, history_snapshot)
         future.add_done_callback(self._handle_pipeline_done)
 
     def _schedule_partial_check(self) -> None:

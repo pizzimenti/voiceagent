@@ -79,6 +79,11 @@ class FakeChatClient:
     def __init__(self) -> None:
         self.base_url = ""
         self.model = ""
+        # `system_prompt` is read by the v0.11 history-provider closure
+        # in MainWindow. Default to a non-empty value so tests that
+        # exercise `to_openai_messages` see the standard system+user+...
+        # shape; tests that need an empty prompt override it explicitly.
+        self.system_prompt: str = "you are local"
         # Default ceiling that `fetch_loaded_context_length` returns so
         # the integration tests can assert MainWindow honours the value
         # without standing up a real LM Studio. Tests can override this
@@ -86,7 +91,8 @@ class FakeChatClient:
         self.context_length_value: int = 0
         self.fetch_context_length_calls: int = 0
 
-    def complete(self, text: str) -> str:
+    def complete(self, messages, *, on_content_chunk=None,
+                 on_thinking_chunk=None, on_usage=None) -> str:
         return ""
 
     def set_base_url(self, url: str) -> None:
@@ -124,9 +130,6 @@ class FakePlayer(QObject):
     def play_file(self, path) -> bool:
         self.played_paths.append(path)
         return True
-
-    def set_muted(self, muted: bool) -> None:
-        self._muted = muted
 
 
 class FakeTranscriber:

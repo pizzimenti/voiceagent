@@ -822,3 +822,204 @@ def test_streaming_chunks_emit_conversation_changed(model_and_coordinator):
     # Empty chunks are silent.
     coord.on_chat_content_chunk("")
     assert spy.count() == 3
+
+
+# --- v0.11 multi-turn history surface --------------------------------
+
+
+def test_clear_resets_model_and_internal_state(model_and_coordinator):
+    """Clear wipes rows AND the streaming-draft pointer, the
+    user-bubble-anchor flag, and the verbose-log dedupe state — so the
+    next turn starts from a fully fresh per-turn machine."""
+    model, coord = model_and_coordinator(verbose=True)
+    coord.on_state_changed(AppState.TRANSCRIBING.value)
+    coord.on_user_transcript("u1")
+    coord.on_chat_content_chunk("partial answer")
+    assert model.rowCount() > 0
+    assert coord.current_turn_user_bubble_present
+    assert coord._streaming_assistant_index >= 0  # pyright: ignore[reportPrivateUsage]
+
+    coord.clear()
+
+    assert model.rowCount() == 0
+    assert coord.current_turn_user_bubble_present is False
+    assert coord._streaming_assistant_index == -1  # pyright: ignore[reportPrivateUsage]
+    assert coord.last_logged_status_state is None
+    assert list(coord.pending_status_log_states) == []
+
+
+def test_clear_emits_conversation_changed_when_rows_present(model_and_coordinator):
+    _model, coord = model_and_coordinator(verbose=False)
+    coord.on_user_transcript("u1")
+    spy = QSignalSpy(coord.conversation_changed)
+    coord.clear()
+    assert spy.count() == 1
+
+
+def test_clear_on_empty_transcript_is_silent(model_and_coordinator):
+    model, coord = model_and_coordinator(verbose=False)
+    spy = QSignalSpy(coord.conversation_changed)
+    coord.clear()
+    assert model.rowCount() == 0
+    assert spy.count() == 0
+
+
+# --- v0.11 trim-on-assistant-response --------------------------------
+
+
+def test_trim_drops_oldest_pair_after_cap_exceeded(model_and_coordinator):
+    """When `on_assistant_response` lands a pair beyond the cap,
+    the oldest user/assistant pair is dropped from the model."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(4)  # last 4 entries = 2 pairs
+    coord.on_user_transcript("u0")
+    coord.on_assistant_response("a0")
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    coord.on_user_transcript("u2")
+    coord.on_assistant_response("a2")  # this lands the 3rd pair → trim 1
+    rows = _all_rows(model)
+    assert [(r or {}).get("text") for r in rows] == ["u1", "a1", "u2", "a2"]
+
+
+def test_trim_emits_rows_dropped_from_front_signal(model_and_coordinator):
+    """Round-3 #4: the coordinator emits `rows_dropped_from_front`
+    with the count of rows just removed from the front of the model.
+    External row-index trackers (e.g. `MainWindow._speaking_row`)
+    rely on this to shift in lockstep with the trim — without it,
+    the inline ▶/🤫 toggle renders on the wrong row after a trim
+    fires."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(4)
+    spy = QSignalSpy(coord.rows_dropped_from_front)
+
+    # First 2 pairs land — no trim yet (count == cap).
+    for i in range(2):
+        coord.on_user_transcript(f"u{i}")
+        coord.on_assistant_response(f"a{i}")
+    assert spy.count() == 0
+
+    # 3rd pair pushes past the cap → trim drops 2 rows from the front.
+    coord.on_user_transcript("u2")
+    coord.on_assistant_response("a2")
+    assert spy.count() == 1
+    assert spy.at(0)[0] == 2
+
+    # 4th pair → trim again, drops another 2.
+    coord.on_user_transcript("u3")
+    coord.on_assistant_response("a3")
+    assert spy.count() == 2
+    assert spy.at(1)[0] == 2
+
+
+def test_trim_skipped_when_cap_zero(model_and_coordinator):
+    """`max_history_turns=0` is the unbounded-history sentinel —
+    trim must NOT fire."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(0)
+    for i in range(8):
+        coord.on_user_transcript(f"u{i}")
+        coord.on_assistant_response(f"a{i}")
+    assert model.rowCount() == 16
+
+
+def test_trim_does_not_fire_below_cap(model_and_coordinator):
+    """When the conversation hasn't reached the cap, nothing is
+    dropped on assistant-response landings."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(20)
+    coord.on_user_transcript("u0")
+    coord.on_assistant_response("a0")
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    assert model.rowCount() == 4
+
+
+def test_trim_drops_status_rows_belonging_to_removed_turns(model_and_coordinator):
+    """Per-turn status breadcrumbs (Transcribing, Thinking) that
+    landed inside a turn's window must be dropped along with the
+    user/assistant pair they belong to — they're meaningless once
+    their parent pair is gone."""
+    model, coord = model_and_coordinator(verbose=True)
+    coord.set_max_history_turns(2)  # last 2 entries = 1 pair
+    # Turn 1 with status breadcrumbs.
+    coord.on_state_changed(AppState.RECORDING.value)
+    coord.on_user_transcript("u0")
+    coord.on_state_changed(AppState.TRANSCRIBING.value)
+    coord.on_state_changed(AppState.THINKING.value)
+    coord.on_assistant_response("a0")
+    assert model.rowCount() > 2  # u0 + a0 + status rows
+    # Turn 2 lands → trim. Older status rows should also disappear.
+    coord.on_state_changed(AppState.RECORDING.value)
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    rows = _all_rows(model)
+    # Only the keep-window survives — turn 1's status rows are gone
+    # along with u0/a0.
+    texts = [(r or {}).get("text") for r in rows]
+    assert "u0" not in texts
+    assert "a0" not in texts
+
+
+def test_trim_pair_integrity_drops_complete_pair(model_and_coordinator):
+    """Excess of 1 (odd) is rounded up to 2 so we drop a complete
+    user/assistant pair, never a stranded single-side row."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(3)  # cap=3 means after a 4th row, drop 2
+    coord.on_user_transcript("u0")
+    coord.on_assistant_response("a0")
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    rows = _all_rows(model)
+    texts = [(r or {}).get("text") for r in rows]
+    # After (u0, a0, u1, a1), excess=1 → rounded to 2 → drop u0+a0.
+    # Window starts on a user, never on a stranded assistant.
+    assert texts == ["u1", "a1"]
+
+
+def test_trim_emits_conversation_changed_once_per_assistant_landing(
+    model_and_coordinator,
+):
+    """The on_assistant_response handler emits exactly one
+    `conversation_changed` even when the helper trims rows — the
+    trim itself does not double-emit."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(2)
+    coord.on_user_transcript("u0")
+    coord.on_assistant_response("a0")
+    coord.on_user_transcript("u1")
+    spy = QSignalSpy(coord.conversation_changed)
+    coord.on_assistant_response("a1")  # lands + trims u0/a0
+    # Exactly one signal: the on_assistant_response final emit. The
+    # trim helper deliberately doesn't fan out additional signals.
+    assert spy.count() == 1
+
+
+def test_set_max_history_turns_clamps_negative(model_and_coordinator):
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(-5)
+    # Negative clamps to 0 = unbounded.
+    for i in range(5):
+        coord.on_user_transcript(f"u{i}")
+        coord.on_assistant_response(f"a{i}")
+    assert model.rowCount() == 10
+
+
+def test_trim_at_cap_one_drops_all_finalized(model_and_coordinator):
+    """Codex P2 edge case: with `cap=1`, the pair-integrity rounding
+    pushes `excess` to equal `len(finalized)`. The earlier early-
+    return left the transcript growing unbounded — fix drops every
+    finalized row instead so the cap is actually enforced."""
+    model, coord = model_and_coordinator(verbose=False)
+    coord.set_max_history_turns(1)
+    coord.on_user_transcript("u0")
+    coord.on_assistant_response("a0")
+    # First pair lands → trim drops both (pair integrity beats
+    # keeping a single user turn at cap=1).
+    assert model.rowCount() == 0
+    coord.on_user_transcript("u1")
+    coord.on_assistant_response("a1")
+    # Same again — the visible transcript does NOT grow.
+    assert model.rowCount() == 0
+
+

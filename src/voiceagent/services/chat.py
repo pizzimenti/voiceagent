@@ -22,11 +22,28 @@ class LmStudioClient:
     completions with optional per-chunk callbacks for live UI updates.
     """
 
-    def __init__(self, base_url: str, model: str, system_prompt: str, timeout_seconds: int = 60) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        system_prompt: str,
+        timeout_seconds: int = 60,
+        load_timeout_seconds: int | None = None,
+    ) -> None:
         self.base_url = ""
         self.model = model
         self.system_prompt = system_prompt
         self.timeout_seconds = timeout_seconds
+        # `/api/v1/models/load` can legitimately take much longer than
+        # the fast-path timeout (30-90 s for typical local LLMs; longer
+        # on first-load with a cold disk). Falls back to
+        # `timeout_seconds` when not provided so existing callers
+        # (tests, legacy code) keep their previous behavior; the live
+        # app threads `AppConfig.lm_studio_load_timeout_seconds`
+        # (default 300 s) through.
+        self.load_timeout_seconds = (
+            load_timeout_seconds if load_timeout_seconds is not None else timeout_seconds
+        )
         self.set_base_url(base_url)
 
     @staticmethod
@@ -51,7 +68,13 @@ class LmStudioClient:
             return f"{self.base_url[:-3]}/api/v1"
         return f"{self.base_url}/api/v1"
 
-    def _json_request(self, url: str, payload: dict | None = None, method: str = "GET") -> dict:
+    def _json_request(
+        self,
+        url: str,
+        payload: dict | None = None,
+        method: str = "GET",
+        timeout_seconds: int | None = None,
+    ) -> dict:
         body = None
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")
@@ -61,19 +84,29 @@ class LmStudioClient:
             headers={"Content-Type": "application/json"},
             method=method,
         )
+        timeout = (
+            timeout_seconds if timeout_seconds is not None else self.timeout_seconds
+        )
         try:
-            with request.urlopen(req, timeout=self.timeout_seconds) as response:
+            with request.urlopen(req, timeout=timeout) as response:
                 return json.load(response)
         except error.HTTPError as exc:
             details = exc.read().decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"{method} {url} failed: HTTP {exc.code}. {details}".strip()) from exc
         except error.URLError as exc:
-            raise RuntimeError(f"{method} {url} failed: {self._format_url_error(exc)}") from exc
+            raise RuntimeError(
+                f"{method} {url} failed: {self._format_url_error(exc, timeout)}"
+            ) from exc
 
-    def _format_url_error(self, exc: error.URLError) -> str:
+    def _format_url_error(
+        self, exc: error.URLError, timeout_seconds: int | None = None
+    ) -> str:
         reason = getattr(exc, "reason", exc)
         if isinstance(reason, (TimeoutError, socket.timeout)):
-            return f"timed out after {self.timeout_seconds} seconds"
+            timeout = (
+                timeout_seconds if timeout_seconds is not None else self.timeout_seconds
+            )
+            return f"timed out after {timeout} seconds"
         return str(exc)
 
     def set_model(self, model: str) -> None:
@@ -191,9 +224,17 @@ class LmStudioClient:
 
         # Load FIRST. Previous models stay loaded until the server
         # confirms the new one — that way a failed load can't strand
-        # the user with no working LLM.
+        # the user with no working LLM. Use the long load timeout
+        # because LM Studio model loads frequently take 30-90 seconds
+        # (longer on first-load with a cold disk); the fast-path
+        # timeout would surface a spurious timeout to the user.
         payload = {"model": model_name}
-        response = self._json_request(f"{native_api_root}/models/load", payload=payload, method="POST")
+        response = self._json_request(
+            f"{native_api_root}/models/load",
+            payload=payload,
+            method="POST",
+            timeout_seconds=self.load_timeout_seconds,
+        )
         status = response.get("status")
         if status != "loaded":
             raise RuntimeError(f"LM Studio did not confirm model load for '{model_name}'.")
@@ -335,7 +376,7 @@ class LmStudioClient:
 
     def complete(
         self,
-        user_text: str,
+        messages: list[dict[str, str]],
         *,
         on_content_chunk=None,
         on_thinking_chunk=None,
@@ -351,20 +392,27 @@ class LmStudioClient:
         - `on_usage(usage_dict)` — fires once on the final chunk that
           carries `usage` (driven by `stream_options.include_usage`)
 
+        `messages` is the full conversation thread to post — the caller
+        owns the system prompt + history + current turn. The client
+        does NOT inject anything (system prompt or otherwise) on top.
+        v0.11 multi-turn history depends on this contract: the caller
+        accumulates prior turns in a `ConversationModel`,
+        `to_openai_messages()` serializes them, and the controller
+        appends the current user turn before calling here.
+
         Switching to streaming closes the v0.9.x timeout class —
         `timeout_seconds` is now a per-read gap, not a total-response
         cap, so multi-minute generations are fine as long as tokens
         keep arriving."""
         if not self.base_url:
             raise RuntimeError("LLM URL is not configured.")
+        if not messages:
+            raise RuntimeError("LLM messages list is empty.")
         model = self.ensure_model()
 
         payload = {
             "model": model,
-            "messages": [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_text},
-            ],
+            "messages": messages,
             "temperature": 0.2,
             "stream": True,
             "stream_options": {"include_usage": True},
