@@ -838,6 +838,17 @@ class MainWindow(QObject):
         # auto-play. `_partial_skip_reason` then keeps gating mic
         # resume even after the replay's aux audio finishes. Codex
         # round-4 P1.
+        #
+        # Stop `replay_player` BEFORE `cancel_playbacks()` so the
+        # replay-on-replay path (replay A playing → user clicks ▶
+        # on row B) doesn't leak audio: `cancel_playbacks()`
+        # force-clears `_aux_playback_active` and may resume mic
+        # input via `_resume_listening_if_possible`. If A's replay
+        # audio is still streaming out of `replay_player` at that
+        # point, it bleeds into STT and corrupts the next turn.
+        # Same two-step pattern `stopSpeaking()` uses. Codex
+        # round-6 P1.
+        self.replay_player.stop()
         self.controller.cancel_playbacks()
         if self._replay_executor_shutdown:
             return
