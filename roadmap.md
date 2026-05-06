@@ -3,130 +3,226 @@
 Scheduled work, in order. Each entry maps to a target minor version.
 Items move out of here into `CHANGELOG.md` once they ship.
 
-## v0.11 — Conversation history (multi-turn context)
+## v0.12 — Kokoro TTS engine (second backend)
 
 **Status:** next up.
 
 ### Why
 
-Voiceagent today is single-turn. `LmStudioClient.complete()` rebuilds
-`messages` from scratch on every call:
+Voiceagent ships with Piper today (`PiperTtsService`,
+`src/voiceagent/services/tts.py:24`). Piper is fast and ARM-friendly
+but its formant-coloured neural voices age poorly next to engines
+released in 2024-2025. The `TextToSpeechBackend` Protocol in
+`src/voiceagent/backends.py:42` already makes the surface pluggable —
+adding a second engine is new code, not a refactor.
 
-```python
-"messages": [
-    {"role": "system", "content": self.system_prompt},
-    {"role": "user", "content": user_text},
-],
-```
-
-(`src/voiceagent/services/chat.py:259-262`.) Nothing above the HTTP
-layer accumulates prior turns either — `controller.py:237` passes only
-the latest transcript, and `ConversationModel` exists for the UI but is
-not fed back into the prompt. Result: the model sees each turn as a
-fresh conversation, can't follow up on its own previous answer, can't
-resolve pronouns ("what about *that* one?"), and can't carry any
-working memory across turns.
-
-LM Studio's chat mode appears to "have memory" because its frontend
-replays the full `messages` thread on every call. The
-OpenAI-compatible `/chat/completions` endpoint is stateless — history
-is the **caller's** responsibility. We need to do what LM Studio's UI
-already does.
+Kokoro (hexgrad/kokoro-onnx, 1.0 in early 2025) is the right second
+backend: ~82M-parameter neural model, Apache 2.0 license, ONNX runtime
+(no PyTorch dependency), runs at roughly realtime on a modern desktop
+CPU, ~330 MB single-file model. Quality is dramatically above Piper
+while keeping the local-only / no-GPU posture voiceagent depends on.
+Engine comparison artifact:
+`/home/bradley/.claude/plans/give-me-a-table-squishy-frog.md`.
 
 ### Outcome
 
-User says "what's the capital of France?" → "Paris." → "what's the
-population?" — the second turn resolves correctly because the model
-sees both prior turns. (The original v0.11 plan also clear-wiped on
-model swap; that was retired during the PR after user feedback —
-modern instruction-tuned models handle each other's transcripts
-fine, and the surprise wipe was the bigger UX cost. See the v0.11.0
-CHANGELOG entry "Design choice — conversation persists across model
-swaps" for the final shipped behavior.)
+User opens Settings → TTS engine, picks "Kokoro", picks a Kokoro voice
+from the catalog dropdown, and the next assistant turn speaks in a
+markedly more natural voice. Piper users see no behaviour change —
+default stays `piper` until Kokoro's multilingual catalog is broad
+enough to flip the default.
 
 ### Scope
 
-One PR. Three surfaces:
+One PR. Four surfaces:
 
-**1. `services/chat.py:LmStudioClient.complete()`** — change signature
-to accept `messages: list[dict]` instead of `user_text: str`. Caller
-owns the full message list; the client just posts it. System prompt
-moves out of the client (or stays as a default the caller can
-override) — the client should not silently inject anything the caller
-didn't ask for. Streaming, usage callback, thinking-channel routing
-all unchanged.
+**1. New `services/kokoro_tts.py:KokoroTtsService`.** Implements the
+existing `TextToSpeechBackend` Protocol from `backends.py:42`. Mirrors
+`PiperTtsService`'s download / verify / synthesize lifecycle. Loads
+the Kokoro `.onnx` + voice-pack file(s) from
+`$VOICEAGENT_TTS_MODEL_ROOT/kokoro/` (subfolder per engine so Piper
+and Kokoro coexist on disk; existing Piper voices in `tts-models/`
+root continue to resolve via backwards-compatible lookup, no flag-day
+migration). Synthesizes to a temp WAV the same way Piper does —
+pipeline-side code in `controller.py:300` doesn't change. Reuse
+`AriaDownloader` for segmented downloads. Reuse the v0.8.x install
+hardening (`.aria2` sidecar trap, parallel-install guard, sha pin) —
+those live at the downloader / catalog layer, not inside the Piper
+service, so the new service inherits them for free.
 
-**2. `conversation_model.py:ConversationModel`** — add a
-`to_openai_messages(system_prompt: str) -> list[dict]` method that
-serializes the visible conversation to the OpenAI message format:
-`[{role: "system", content: <prompt>}, {role: "user", content: <t1>},
-{role: "assistant", content: <r1>}, ...]`. Skip thinking-channel
-content (it's not part of the assistant's *output* turn — feeding
-`reasoning_content` back as assistant content would confuse the model
-and waste tokens). Add a `clear()` method if one isn't already there,
-wired to the New Conversation action.
+**2. `AppConfig.tts_engine`** in `src/voiceagent/config.py`. New
+`Literal["piper", "kokoro"]` field, default `"piper"`. Persisted in
+QSettings the same way other engine choices are. Read at `app.py`
+construction time to wire the right service into `VoiceController`
+(`controller.py:76` already takes a `TextToSpeechBackend` Protocol —
+no controller changes needed).
 
-**3. `controller.py:_run_pipeline()`** — append the new user turn to
-the conversation, call `to_openai_messages()`, pass that to
-`complete()`, append the assistant response. Order matters: append
-user *before* the LLM call (so it's visible immediately and included
-in the prompt), append assistant *after* the call returns.
+**3. UI: engine selector + per-engine catalog.** New TTS-engine
+dropdown in the model selector area, alongside the existing voice
+dropdown. Switching the engine swaps the voice catalog underneath.
+The catalog asymmetry (Piper has 100+ voices, Kokoro ships ~10) is
+real — handle it by making the engine selector a top-level choice
+and the voice catalog scoped to the selected engine. The
+`CatalogStateProvider` per-backend adapter from the v0.10.x cycle
+already supports this shape.
 
-### History-budget policy
-
-Unbounded history will eventually exceed the loaded model's context
-window. v0.11 ships with a **simple turn-count cap** — keep the last
-`N` turns (default 20, i.e. 10 user + 10 assistant pairs), drop the
-oldest first, system prompt always retained. Configurable via
-`AppConfig.max_history_turns`.
-
-`fetch_loaded_context_length()` already exists at
-`services/chat.py:199`. A token-aware trim (count prompt tokens, drop
-oldest pairs until prompt+headroom fits) is the natural v0.11.x
-follow-up but **not** v0.11 — turn-count is good enough to unblock the
-multi-turn experience and ship.
-
-### Clear-on-model-switch — DROPPED (see CHANGELOG v0.11.0)
-
-The original plan called for clearing history on every model swap.
-Retired during the PR after user testing: continuity wins, and modern
-instruction-tuned local models handle each other's transcripts well
-enough that a surprise wipe was the worse UX. The
-context-token bar still resets on swap and the new model's
-`loaded_context_length` is re-fetched, so the visual warning stays
-accurate under the new ceiling. If a swap to a smaller-context model
-exceeds the new ceiling mid-session, LM Studio truncates from the
-front; the v0.11.x token-aware-trim follow-up handles this
-automatically.
+**4. Catalog source for Kokoro.** Piper uses
+`rhasspy/piper-voices`'s `voices.json` for catalog refresh. Kokoro's
+voice pack is shipped from a HuggingFace repo (likely
+`hexgrad/Kokoro-82M` — confirm the canonical repo and packaging
+when implementation starts; upstream layout has changed across
+1.x releases). Catalog refresh fetches the upstream manifest and
+pins SHAs the same way the Piper path does.
 
 ### Tests
 
-- `tests/test_chat.py` — `complete()` posts the exact `messages`
-  list it was given, no injection, no reordering.
-- `tests/test_conversation_model.py` —
-  `to_openai_messages()` round-trips a multi-turn convo correctly,
-  skips thinking content, respects the `max_history_turns` cap.
-- `tests/test_controller.py` — pipeline appends user-then-assistant
-  in the right order. (Model-change-clears-history was dropped per
-  above.)
+- `tests/test_kokoro_tts.py` — synthesize → WAV roundtrip on a
+  fixture voice; verify the file is a valid WAV with non-zero
+  samples and the expected sample rate.
+- `tests/test_kokoro_tts.py` — download + verify path with an
+  injected fake aria2 stub, mirroring `tests/test_tts.py` patterns.
+- `tests/test_config.py` — `tts_engine` field round-trips through
+  QSettings and defaults to `"piper"` for users upgrading.
+- `tests/test_app.py` (or wherever wiring is tested) — engine
+  selection wires the right service into `VoiceController`.
+- `tests/test_catalog_state.py` — switching engine in the UI swaps
+  the voice catalog without leaking entries from the other engine.
+
+### Streaming TTS — out of scope
+
+Sentence-streamed playback (speech starts mid-LLM-response) is a
+separate effort orthogonal to the engine swap. Bolting both into
+one PR doubles risk for no sequencing benefit. Track it as a
+v0.12.x or post-v0.14 follow-up. Kokoro chunk-streams natively, so
+when the streaming overhaul does happen Kokoro inherits it cleanly.
 
 ### Open questions and risks
 
-- **First-turn token cost is unchanged; later-turn costs grow.** A
-  10-turn convo with verbose answers can easily hit 4–8k prompt
-  tokens. The existing context-token bar (`v0.10.0`) already shows
-  this, so the user gets a visual cue before the model starts
-  truncating.
-- **Whisper transcripts are noisier than typed input.** Fillers,
-  half-words, and STT artefacts get permanently baked into history.
-  Acceptable for v0.11; a "edit / retry last turn" affordance is a
-  later UX improvement, not a blocker.
-- **Thinking content exclusion.** Confirmed above — assistant
-  history carries `content` only, not `reasoning_content`.
+- **espeak-ng dependency.** Kokoro uses espeak-ng for phonemization.
+  espeak-ng is on most desktop Linux installs but isn't a hard dep
+  of voiceagent today. PKGBUILD + README install notes need to add
+  it. Confirm exact phonemization integration when implementation
+  starts; some Kokoro distributions bundle a Misaki-based phonemizer
+  instead.
+- **Voice catalog UX asymmetry.** Piper's 100+ voices and Kokoro's
+  ~10 don't share a sensible single dropdown. Engine-selector-first
+  is the proposed shape — verify in implementation that it doesn't
+  regress the Piper user's existing flow.
+- **Multilingual coverage gap.** Kokoro is English-strongest; JP /
+  ZH support landed mid-2025 but the catalog beyond that is thin.
+  Default stays `piper` for non-English users until Kokoro's catalog
+  closes the gap. Document explicitly in the README.
+- **First-run download size.** Kokoro's model is ~330 MB vs. Piper's
+  20-60 MB per voice. Surface this clearly in the engine-selector UI
+  so users know what they're committing to.
+- **Disk layout migration.** Existing Piper voices in `tts-models/`
+  root (not `tts-models/piper/`) need backwards-compatible lookup,
+  not in-place migration. Avoid a flag day; leave user files alone.
+- **Voice-name collisions.** Engine-scoped catalog avoids ambiguity
+  at the UI layer. Keep storage paths engine-scoped too
+  (`tts-models/kokoro/...`, `tts-models/<piper-voice>.onnx`) so file
+  lookups can't cross.
 
-## v0.12 — Internet access via MCP (web search and beyond)
+## v0.13 — Chatterbox Turbo TTS engine (third backend, optional)
 
-**Status:** scheduled after v0.11.
+**Status:** scheduled after v0.12. The pluggable layer landed in
+v0.12 is what makes this cheap.
+
+### Why
+
+Kokoro covers the "better default voice" gap. Chatterbox Turbo
+(Resemble AI, mid-2025) covers the next axis: **voice cloning and
+expressive prosody**. Permissive license (base Chatterbox is MIT),
+voice cloning from a short reference clip, emotion / expressivity
+controls. "Turbo" is Resemble's latency-optimized variant designed
+to bring per-token cost down enough for interactive use. **Confirm
+the exact model name, license, and footprint when implementation
+starts** — these are 2025-current details and worth re-verifying
+before work begins.
+
+This is not a default-engine candidate. PyTorch runtime weight and
+larger model size make it heavier than Kokoro. It's the "if you want
+expressive voices or to clone your own" tier.
+
+### Outcome
+
+User picks "Chatterbox Turbo" in the engine selector, optionally
+provides a 6-30 s reference clip in Settings, and the next turn
+speaks in either the cloned voice or a chosen built-in expressive
+voice. Emotion / pace / expressivity sliders exposed in Settings if
+the upstream API supports them.
+
+### Scope
+
+One PR (or two if voice cloning grows enough UI to deserve its own).
+Surfaces:
+
+**1. New `services/chatterbox_tts.py:ChatterboxTtsService`.**
+Implements `TextToSpeechBackend`. Loads the Chatterbox Turbo model
+from `$VOICEAGENT_TTS_MODEL_ROOT/chatterbox/`. Synthesizes to a temp
+WAV like the others.
+
+**2. `AppConfig.tts_engine`** extended to
+`Literal["piper", "kokoro", "chatterbox"]`.
+
+**3. Voice-cloning UX.** New Settings section: "Reference voice"
+file picker with validation (length 6-30 s, mono / 16 kHz preferred,
+clear-format error otherwise), persisted at
+`$XDG_DATA_HOME/voiceagent/chatterbox-references/` so it survives
+across sessions. The reference clip *is* the "voice" in the catalog
+sense — the existing voice-dropdown becomes "reference clip" when
+Chatterbox is selected.
+
+**4. Expressivity controls (if supported).** Sliders for emotion /
+pace / exaggeration if Chatterbox Turbo's API exposes them. Skip if
+the API does not — don't fake controls that aren't real.
+
+**5. Optional-extras packaging.** PyTorch is heavy (~1 GB). Gate
+Chatterbox behind `pip install voiceagent[chatterbox]` and an
+equivalent flag in PKGBUILD `optdepends`. Piper / Kokoro users
+should not pay the dependency cost just because Chatterbox is
+listed in the engine selector — the engine entry only enables when
+the optional deps are present, and the UI shows an "install
+chatterbox extras" prompt otherwise.
+
+### Tests
+
+- `tests/test_chatterbox_tts.py` — synthesize roundtrip with a
+  fixture reference clip.
+- Reference-clip validation: too short, too long, wrong format —
+  all produce clear errors and don't crash the pipeline.
+- Engine-selection tests extended to cover the third value.
+- Optional-deps gating: with deps absent, engine entry is disabled
+  and shows install prompt; with deps present, engine works.
+
+### Open questions and risks
+
+- **License re-verification.** Confirm Chatterbox Turbo's license
+  is permissive (Apache / MIT) and doesn't carry NC restrictions
+  before starting work. Base Chatterbox is MIT; "Turbo" may have
+  its own terms. **Hard blocker if the license is non-commercial
+  or attribution-restrictive — pivot to a different cloning engine
+  in that case (re-evaluate XTTS successors if Coqui's lineage
+  lands with permissive terms).**
+- **PyTorch dependency.** ~1 GB of installed deps. Gated behind
+  optional-extras packaging as above.
+- **Model size.** ~500 MB-1 GB depending on packaging — surface in
+  the engine-selector UI same as Kokoro.
+- **Reference-clip privacy.** Cloned voices are sensitive — store
+  reference clips locally only, never log them, document in the
+  README that they don't leave the machine.
+- **Quality vs. CPU speed tradeoff.** Chatterbox Turbo is the faster
+  variant precisely because expressivity and quality are slightly
+  reduced. If users complain about latency the non-Turbo variant is
+  the next dial — Turbo is the right v1 default for this engine
+  slot.
+- **Streaming inheritance.** If the streaming-TTS overhaul has
+  shipped by v0.13, verify Chatterbox's streaming path works the
+  same way. If not, both can stream once the overhaul lands.
+
+## v0.14 — Internet access via MCP (web search and beyond)
+
+**Status:** scheduled after v0.13.
 
 **Detailed plan:** working draft below; refined when implementation starts.
 
@@ -240,14 +336,15 @@ Once MCP is plumbed, adding more capabilities is config-only:
 This is the main reason MCP is the right shape rather than a one-off
 `web_search` function.
 
-### Dependency on v0.11
+### Dependency on v0.11 (satisfied)
 
-v0.12 *requires* v0.11 to be in. The MCP agent loop assumes the caller
-owns a running `messages` list (so it can append tool-call /
-tool-result messages between iterations). v0.11 is what gives us that
-list in the first place — without it, every MCP iteration would lose
-the prior conversation and the agent loop would be a single-turn-only
-feature, defeating the point.
+The MCP agent loop assumes the caller owns a running `messages` list
+so it can append tool-call / tool-result messages between iterations.
+v0.11 (multi-turn conversation history) is what gives us that list —
+without it every MCP iteration would lose the prior conversation and
+the agent loop would be a single-turn-only feature, defeating the
+point. v0.11 shipped in `63dc1cd`, so this dependency is already
+satisfied; v0.14 picks up cleanly when its turn comes.
 
 ## v1.0 — Stable-release housekeeping
 
@@ -284,5 +381,5 @@ ding before a stable release.
 
 ### Other v1.0 items
 
-(Reserved — add as the v0.11.x → v0.12 cycle surfaces other
+(Reserved — add as the v0.12 → v0.14 cycle surfaces other
 "good for a release-candidate" cleanups.)
