@@ -448,10 +448,27 @@ class MainWindow(QObject):
                 stored_engine,
                 active_engine,
             )
-            schedule_after_first_frame(
-                self._window,
-                lambda: self.selectTtsEngine(stored_engine),
-            )
+            if stored_engine == "chatterbox" and not self._chatterbox_extras_available():
+                # Chatterbox previously selected but extras now missing.
+                # Reset QSettings to piper to keep the UI honest and
+                # prevent looping back into this same branch on every
+                # subsequent launch.
+                self._logger.warning(
+                    "QSettings asks for Chatterbox engine but extras "
+                    "are not installed; reverting to piper"
+                )
+                self.settings.setValue("selected_tts_engine", "piper")
+                self.ui_changed.emit()
+            else:
+                # Call _perform_tts_engine_swap directly rather than
+                # selectTtsEngine: the latter has a same-engine guard
+                # that would short-circuit here (QSettings already says
+                # `stored_engine`, so `selectedTtsEngine == stored_engine`).
+                # The desync is precisely what we are trying to resolve.
+                schedule_after_first_frame(
+                    self._window,
+                    lambda eng=stored_engine: self._perform_tts_engine_swap(eng),
+                )
 
     def shutdown(self) -> None:
         if self._shutting_down:
