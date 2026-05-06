@@ -124,7 +124,16 @@ Pane {
                         currentIndex: sessionPane.voiceAgent
                             ? sessionPane._stringIndex(sessionPane.voiceAgent.ttsOptions, sessionPane.voiceAgent.selectedTtsModel)
                             : -1
-                        displayText: currentIndex >= 0 ? currentText : sessionPane.tr("No installed TTS voices")
+                        displayText: {
+                            if (currentIndex >= 0) return currentText;
+                            // The model can be a JS array (voiceAgent.ttsOptions
+                            // is `Property("QVariantList", ...)`); use .length
+                            // rather than `.count` for plain JS arrays.
+                            var hasOptions = model && (model.length || 0) > 0;
+                            return hasOptions
+                                ? sessionPane.tr("Select a voice")
+                                : sessionPane.tr("No installed TTS voices");
+                        }
                         onActivated: {
                             if (sessionPane.voiceAgent) {
                                 sessionPane.voiceAgent.selectTtsModel(currentText);

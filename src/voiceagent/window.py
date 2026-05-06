@@ -989,6 +989,18 @@ class MainWindow(QObject):
         # turn synthesizes via the new engine.
         self.controller.set_tts_service(new_service)
 
+        # Sync selections: if the per-engine remembered voice didn't
+        # match (first-ever swap to this engine, or the saved name was
+        # uninstalled in the meantime), fall back to the first
+        # installed voice so the ComboBox has a sensible currentIndex.
+        # Without this, the ComboBox `currentIndex` resolves to -1 and
+        # `displayText` shows the "no voice selected" placeholder text
+        # even though the catalog itself is populated and the user has
+        # voices installed — a major UX trap (see swap-chain
+        # reproduction: chatterbox→piper with no `selected_tts_model_piper`
+        # in QSettings).
+        self._sync_installed_selections()
+
         # Trigger the deferred remote-catalog refresh on the new
         # loader. The user just opted into a new engine — surface
         # what's available without making them wait until the next

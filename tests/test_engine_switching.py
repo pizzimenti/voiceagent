@@ -134,3 +134,126 @@ def test_chatterbox_model_root_is_under_tts_model_root(monkeypatch, tmp_path):
     expected = (tmp_path / "tts" / "chatterbox").resolve()
     actual = Path(tts.model_root).resolve()
     assert actual == expected
+
+
+# ---------------------------------------------------------------------
+# Runtime swap tests — exercise `MainWindow._perform_tts_engine_swap`
+# end-to-end so per-engine voice memory + first-installed fallback
+# remain visible to QA after future refactors.
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def _swap_window(qapp, tmp_path, monkeypatch):
+    """Build a MainWindow against fakes + temp Piper voice dir, with
+    the QML load patched out so the headless test env doesn't need
+    Kirigami modules. Returns the live `MainWindow` instance.
+    """
+    import voiceagent.window as window_mod
+    from voiceagent.controller import VoiceController
+    from voiceagent.model_loader import WhisperModelLoader
+    from voiceagent.tts_loader import TtsVoiceLoader
+    from voiceagent.services.tts import PiperTtsService
+    from tests.fakes import (
+        FakeRecorder, FakeChatClient, FakePlayer, FakeTranscriber,
+    )
+
+    # Temp dirs for the engines so we don't touch the real user state.
+    tts_root = tmp_path / "tts-models"
+    tts_root.mkdir()
+    # Plant 4 fake Piper voices so available_items is non-empty.
+    for name in ("voice-a", "voice-b", "voice-c", "voice-d"):
+        (tts_root / f"{name}.onnx").write_bytes(b"fake")
+        (tts_root / f"{name}.onnx.json").write_text("{}")
+
+    refs_root = tmp_path / "chatterbox-references"
+    refs_root.mkdir()
+
+    monkeypatch.setenv("VOICEAGENT_TTS_MODEL_ROOT", str(tts_root))
+    monkeypatch.setenv("VOICEAGENT_CHATTERBOX_REFERENCES_ROOT", str(refs_root))
+    # Engine env stays unset so AppConfig.from_env defaults to piper —
+    # mirrors the user's actual launch configuration.
+    monkeypatch.delenv("VOICEAGENT_TTS_ENGINE", raising=False)
+
+    _force_extras(monkeypatch, present=True)
+
+    piper = PiperTtsService(
+        command=["piper"], model_path=None, extra_args=[]
+    )
+    piper.model_root = tts_root
+    transcriber = FakeTranscriber(model_root=tmp_path / "stt")
+    controller = VoiceController(
+        recorder=FakeRecorder(),
+        transcriber=transcriber,
+        chat_client=FakeChatClient(),
+        tts_service=piper,
+        player=FakePlayer(),
+    )
+    model_loader = WhisperModelLoader(transcriber)
+    tts_loader = TtsVoiceLoader(piper)
+
+    # Patch the QML-load gate: in this env Kirigami isn't available, so
+    # `engine.load(...)` returns no rootObjects and MainWindow raises.
+    # We don't need actual rendering for these state-machine tests.
+    real_init = window_mod.MainWindow.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        try:
+            real_init(self, *args, **kwargs)
+        except RuntimeError as exc:
+            if "Failed to load QML" not in str(exc):
+                raise
+            self._window = None
+
+    monkeypatch.setattr(window_mod.MainWindow, "__init__", _patched_init)
+
+    win = window_mod.MainWindow(controller, model_loader, tts_loader)
+    return win
+
+
+def test_swap_chatterbox_then_back_to_piper_preserves_installed_voices(_swap_window):
+    """Regression: after chatterbox→piper swap with no remembered voice,
+    the user must see installed voices in the dropdown rather than the
+    `displayText: "No installed TTS voices"` placeholder. The swap
+    needs to call `_sync_installed_selections` so a sensible default
+    is selected when `selected_tts_model_<engine>` is unset.
+    """
+    win = _swap_window
+
+    # Initial: piper, 4 voices installed, none selected yet.
+    assert win.tts_loader.tts_service.backend_name == "Piper"
+    assert len(win.ttsOptions) == 4
+
+    # Swap to chatterbox — references_root is empty so seed default.
+    win._perform_tts_engine_swap("chatterbox")
+    assert win.tts_loader.tts_service.backend_name == "Chatterbox"
+
+    # Swap back to piper.
+    win._perform_tts_engine_swap("piper")
+    assert win.tts_loader.tts_service.backend_name == "Piper"
+
+    # The catalog must still surface 4 installed voices …
+    assert len(win.ttsOptions) == 4
+
+    # … AND a voice must be selected so QML's
+    # `displayText: currentIndex >= 0 ? currentText : "No installed …"`
+    # branch lands on `currentText`, not the placeholder.
+    selected = win.selectedTtsModel
+    assert selected, (
+        f"swap-to-piper left no voice selected (selectedTtsModel={selected!r}); "
+        "ComboBox would render the misleading 'No installed TTS voices' "
+        "placeholder text. _sync_installed_selections must run after the swap."
+    )
+    assert selected in win.ttsOptions
+
+
+def test_swap_to_chatterbox_seeds_default_voice_when_empty(_swap_window):
+    """When references_root is empty, swapping to chatterbox must
+    seed the bundled default reference clip and select it.
+    """
+    win = _swap_window
+    win._perform_tts_engine_swap("chatterbox")
+    assert win.tts_loader.tts_service.backend_name == "Chatterbox"
+    options = list(win.ttsOptions)
+    assert "default" in options, options
+    assert win.selectedTtsModel == "default"
