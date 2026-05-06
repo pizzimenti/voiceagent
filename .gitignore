@@ -21,6 +21,8 @@ htmlcov/
 *.mp3
 *.ogg
 *.flac
+# Bundled default Chatterbox reference clip ships in the package.
+!src/voiceagent/assets/default-reference.wav
 *.log
 *.aria2
 logs/

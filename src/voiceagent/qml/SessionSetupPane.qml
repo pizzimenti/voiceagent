@@ -100,6 +100,22 @@ Pane {
                     }
 
                     ComboBox {
+                        id: ttsEngineSelector
+                        Kirigami.FormData.label: sessionPane.tr("Engine:")
+                        Layout.fillWidth: false
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                        model: sessionPane.voiceAgent ? sessionPane.voiceAgent.ttsEngineOptions : []
+                        currentIndex: sessionPane.voiceAgent
+                            ? sessionPane._stringIndex(sessionPane.voiceAgent.ttsEngineOptions, sessionPane.voiceAgent.selectedTtsEngine)
+                            : -1
+                        onActivated: {
+                            if (sessionPane.voiceAgent) {
+                                sessionPane.voiceAgent.selectTtsEngine(currentText);
+                            }
+                        }
+                    }
+
+                    ComboBox {
                         id: ttsSelector
                         Kirigami.FormData.label: sessionPane.tr("Voice:")
                         Layout.fillWidth: false

@@ -20,6 +20,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication
 
 from voiceagent.catalog_model import CatalogModel
+from voiceagent.config import AppConfig
 from voiceagent.controller import VoiceController
 from voiceagent.conversation_model import ConversationModel
 from voiceagent.conversation_turn_coordinator import ConversationTurnCoordinator
@@ -32,6 +33,8 @@ from voiceagent.services.llm_controller import LlmController
 from voiceagent.services.playback import AudioPlayer
 from voiceagent.startup_deferral import schedule_after_first_frame
 from voiceagent.tts_loader import TtsVoiceLoader
+
+_TTS_ENGINE_OPTIONS: tuple[str, ...] = ("piper", "chatterbox")
 
 
 class _CatalogStateAdapter:
@@ -275,6 +278,11 @@ class MainWindow(QObject):
         self._tts_catalog_model = CatalogModel(
             self._tts_catalog, self._tts_state_adapter, self
         )
+        # Set when `selectTtsEngine` is invoked while a pipeline is
+        # active. The one-shot listener on `pipeline_state_changed`
+        # consumes it on the next IDLE transition. None when no swap
+        # is queued — the listener disconnects itself once it fires.
+        self._pending_tts_engine: str | None = None
 
         self.controller.status_changed.connect(self._emit_ui_changed)
         self.controller.connection_changed.connect(self._handle_connection_changed)
@@ -489,6 +497,22 @@ class MainWindow(QObject):
         current = self.tts_loader.selected_model or ""
         return current if current in self.ttsOptions else ""
 
+    @Property("QVariantList", constant=True)
+    def ttsEngineOptions(self) -> list[str]:  # noqa: N802
+        """Engines the user can pick in the Session Setup pane.
+
+        v0.12 introduced the engine selector for the Piper ↔ Chatterbox
+        swap. The list is constant for the process lifetime — adding a
+        new engine is a code change, not a runtime mutation.
+        """
+        return list(_TTS_ENGINE_OPTIONS)
+
+    @Property(str, notify=ui_changed)
+    def selectedTtsEngine(self) -> str:  # noqa: N802
+        stored = self.settings.value("selected_tts_engine", "piper", str) or "piper"
+        normalized = str(stored).strip().lower()
+        return normalized if normalized in _TTS_ENGINE_OPTIONS else "piper"
+
     @Property(bool, notify=ui_changed)
     def modelLoading(self) -> bool:  # noqa: N802
         return self.model_loader.is_loading
@@ -644,7 +668,275 @@ class MainWindow(QObject):
         if model_name not in self.ttsOptions:
             return
         self.settings.setValue("selected_tts_model", model_name)
+        # Per-engine memory: a user who flips Piper → Chatterbox → Piper
+        # gets their last-used voice on each side restored on the next
+        # swap, rather than a "first installed voice" fallback. The
+        # generic `selected_tts_model` key remains the active selection
+        # for whichever engine is live; the `_<engine>` keys are per-
+        # engine snapshots restored by `_perform_tts_engine_swap`.
+        engine = self.selectedTtsEngine
+        self.settings.setValue(f"selected_tts_model_{engine}", model_name)
         self.tts_loader.select_model(model_name)
+        self.ui_changed.emit()
+
+    @Slot(str, str, result=str)
+    def importChatterboxReference(self, source_path: str, name: str) -> str:  # noqa: N802
+        """Import a user-supplied audio file into the Chatterbox
+        references directory. Returns the saved name on success or
+        an empty string on failure (with `replay_failed` emitted for
+        the toast hook). Only valid when the live engine is Chatterbox;
+        callers should hide the UI affordance otherwise.
+        """
+        if self.selectedTtsEngine != "chatterbox":
+            self._logger.info("importChatterboxReference ignored: engine=%s", self.selectedTtsEngine)
+            return ""
+        service = getattr(self.tts_loader, "tts_service", None)
+        importer = getattr(service, "import_reference_clip", None)
+        if importer is None:
+            self.replay_failed.emit(
+                self._translator.i18n("Voice import is only available with the Chatterbox engine.")
+            )
+            return ""
+        try:
+            cleaned = source_path
+            if cleaned.startswith("file://"):
+                cleaned = cleaned[len("file://"):]
+            saved = importer(Path(cleaned), name or Path(cleaned).stem)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.exception("Chatterbox reference import failed: %s", exc)
+            self.replay_failed.emit(
+                self._translator.i18n("Could not import reference clip: ") + str(exc)
+            )
+            return ""
+        # Refresh catalog so QML rebinds to the new entry, and select it.
+        new_catalog = list(service.available_items())
+        self._tts_catalog = new_catalog
+        self._tts_catalog_model.replace_names(new_catalog)
+        new_name = saved.stem
+        service.set_selected_item(new_name)
+        self.tts_loader.select_model(new_name)
+        self.settings.setValue("selected_tts_model_chatterbox", new_name)
+        self.ui_changed.emit()
+        return new_name
+
+    @Slot(result=str)
+    def useChatterboxBundledDefault(self) -> str:  # noqa: N802
+        """Copy the bundled Piper-synthesized default reference clip
+        into the references directory and select it as the active
+        voice. Returns the saved name (`"default"`) on success, empty
+        string on failure.
+        """
+        if self.selectedTtsEngine != "chatterbox":
+            return ""
+        service = getattr(self.tts_loader, "tts_service", None)
+        seeder = getattr(service, "seed_default_reference", None)
+        if seeder is None:
+            return ""
+        try:
+            seeded = seeder()
+        except Exception as exc:  # noqa: BLE001
+            self._logger.exception("seed_default_reference failed: %s", exc)
+            self.replay_failed.emit(
+                self._translator.i18n("Could not seed default voice: ") + str(exc)
+            )
+            return ""
+        if seeded is None:
+            self.replay_failed.emit(
+                self._translator.i18n("Bundled default reference clip is missing.")
+            )
+            return ""
+        new_catalog = list(service.available_items())
+        self._tts_catalog = new_catalog
+        self._tts_catalog_model.replace_names(new_catalog)
+        service.set_selected_item("default")
+        self.tts_loader.select_model("default")
+        self.settings.setValue("selected_tts_model_chatterbox", "default")
+        self.ui_changed.emit()
+        return "default"
+
+    @Slot(str)
+    def selectTtsEngine(self, engine_name: str) -> None:  # noqa: N802
+        """Swap the live TTS engine. Same-engine and unknown engine
+        no-op. Chatterbox without extras emits `replay_failed` (the
+        QML toast hook) and aborts. Piper-side is always available.
+        Live swaps wait for `controller.state == AppState.IDLE` so we
+        don't pull the rug out from under an in-flight pipeline.
+        """
+        normalized = (engine_name or "").strip().lower()
+        if normalized not in _TTS_ENGINE_OPTIONS:
+            return
+        if normalized == self.selectedTtsEngine:
+            return
+        if normalized == "chatterbox" and not self._chatterbox_extras_available():
+            reason = self._translator.i18n(
+                "Chatterbox engine is not installed. Install with "
+                "`pip install voiceagent[chatterbox]` to enable it."
+            )
+            self._logger.info("Engine swap rejected: chatterbox extras missing")
+            self.replay_failed.emit(reason)
+            return
+        if self.controller.state == AppState.IDLE:
+            self._perform_tts_engine_swap(normalized)
+            return
+        # Pipeline mid-flight: stash and wait for the next IDLE
+        # transition. A one-shot listener decouples the slot return
+        # from the actual swap so the QML ComboBox can re-bind cleanly.
+        self._logger.info(
+            "Deferring TTS engine swap until pipeline is idle pending=%s state=%s",
+            normalized,
+            self.controller.state.value,
+        )
+        self._pending_tts_engine = normalized
+        self.controller.pipeline_state_changed.connect(
+            self._on_pipeline_state_for_engine_swap
+        )
+
+    def _on_pipeline_state_for_engine_swap(self, state: str, _status: str) -> None:
+        if state != AppState.IDLE.value:
+            return
+        try:
+            self.controller.pipeline_state_changed.disconnect(
+                self._on_pipeline_state_for_engine_swap
+            )
+        except (RuntimeError, TypeError):
+            # Already disconnected (re-entrant safety): swallow.
+            pass
+        pending = self._pending_tts_engine
+        self._pending_tts_engine = None
+        if pending is None:
+            return
+        self._perform_tts_engine_swap(pending)
+
+    @staticmethod
+    def _chatterbox_extras_available() -> bool:
+        """Probe for the optional Chatterbox extras. Mirror of the
+        equivalent helper in `app.py` so the UI gate (here) and the
+        startup factory (there) agree on which engines are usable.
+        `huggingface_hub` is a hard dep so it's not in the probe list.
+        """
+        import importlib.util
+
+        for name in ("onnxruntime", "transformers", "librosa", "soundfile"):
+            if importlib.util.find_spec(name) is None:
+                return False
+        return True
+
+    def _build_tts_service_for_engine(self, engine: str):
+        """Construct a fresh TTS service for `engine`. Re-derives its
+        configuration via `AppConfig.from_env()` so any env-var changes
+        the user made post-launch (e.g. swapping `TTS_COMMAND`) are
+        picked up. Does NOT mutate `model_root` for Chatterbox — the
+        service constructor takes the explicit per-engine subdirectory.
+        """
+        config = AppConfig.from_env()
+        if engine == "chatterbox":
+            from voiceagent.services.chatterbox_tts import ChatterboxTtsService
+
+            return ChatterboxTtsService(
+                model_root=config.tts_model_root / "chatterbox",
+                references_root=config.chatterbox_references_root,
+                selected_item=config.tts_model,
+            )
+        from voiceagent.services.tts import PiperTtsService
+
+        service = PiperTtsService(
+            command=config.tts_command,
+            model_path=config.tts_model,
+            extra_args=config.tts_extra_args,
+        )
+        service.model_root = config.tts_model_root
+        return service
+
+    def _perform_tts_engine_swap(self, engine: str) -> None:
+        """Tear down the live TTS loader/service and stand up fresh
+        ones for `engine`. Restores the per-engine remembered voice
+        from QSettings so the user's last selection on either side
+        survives a round-trip swap. Re-points the catalog model's
+        state adapter so per-row state queries hit the new backend.
+        Mirrors v0.12 Kokoro reference design.
+        """
+        self._logger.info("Performing TTS engine swap engine=%s", engine)
+        self.settings.setValue("selected_tts_engine", engine)
+
+        # Build the new service + loader before tearing the old one
+        # down, so a constructor failure doesn't leave the window with
+        # neither a working old loader nor a working new one.
+        new_service = self._build_tts_service_for_engine(engine)
+
+        # Chatterbox first-run UX: when the user switches to Chatterbox
+        # and the references catalog is empty, seed the bundled default
+        # reference clip so the engine works out of the box. Users can
+        # later record/import additional clips via Settings → Voices.
+        # The full A+B+C first-run modal prompt lands in v0.12.1.
+        if engine == "chatterbox" and hasattr(new_service, "seed_default_reference"):
+            try:
+                if not new_service.available_items():
+                    seeded = new_service.seed_default_reference()
+                    if seeded is not None:
+                        new_service.set_selected_item("default")
+            except Exception:
+                self._logger.exception("Chatterbox default-reference seed failed")
+
+        new_loader = TtsVoiceLoader(new_service)
+
+        old_loader = self.tts_loader
+        try:
+            old_loader.shutdown()
+        except Exception:
+            self._logger.exception("Old TTS loader shutdown failed during engine swap")
+
+        # Restore the per-engine remembered voice. If the value is
+        # not in the new service's catalog (uninstalled / first run),
+        # `select_model(None)` leaves the loader in the
+        # "no-selection" state and `_sync_installed_selections`
+        # later picks the first installed voice if any.
+        remembered = self.settings.value(
+            f"selected_tts_model_{engine}", "", str
+        ) or ""
+        if remembered and remembered in new_service.available_items():
+            new_service.set_selected_item(remembered)
+            new_loader.select_model(remembered)
+
+        self.tts_loader = new_loader
+        self._tts_state_adapter = _CatalogStateAdapter(
+            loader=new_loader, backend=new_service
+        )
+        # CatalogModel stores the adapter on `_state` (verified
+        # against `catalog_model.py` — the kokoro reference docstring
+        # called this `_state_adapter` but the live attribute is
+        # `_state`). Re-pointing here means subsequent per-row reads
+        # hit the new backend without rebuilding the QAbstractListModel.
+        self._tts_catalog_model._state = self._tts_state_adapter
+        new_catalog = list(new_service.available_items())
+        self._tts_catalog = new_catalog
+        self._tts_catalog_model.replace_names(new_catalog)
+
+        # Wire all the same loader signals on the new instance.
+        new_loader.ready_changed.connect(self._emit_ui_changed)
+        new_loader.loading_changed.connect(self._emit_ui_changed)
+        new_loader.status_changed.connect(self._apply_tts_status)
+        new_loader.progress_changed.connect(self._apply_tts_progress)
+        new_loader.item_loading_changed.connect(self._on_tts_item_loading_changed)
+        new_loader.item_progress_changed.connect(self._on_tts_item_progress_changed)
+        new_loader.error_changed.connect(self._set_error_message)
+        new_loader.selection_changed.connect(self._emit_ui_changed)
+        new_loader.load_completed.connect(self._handle_inventory_change)
+        new_loader.delete_completed.connect(self._handle_inventory_change)
+        new_loader.catalog_changed.connect(self._on_tts_catalog_changed)
+
+        # Hand the controller the new service so the next pipeline
+        # turn synthesizes via the new engine.
+        self.controller.set_tts_service(new_service)
+
+        # Trigger the deferred remote-catalog refresh on the new
+        # loader. The user just opted into a new engine — surface
+        # what's available without making them wait until the next
+        # process launch.
+        if not new_loader.catalog_refresh_scheduled and self._window is not None:
+            schedule_after_first_frame(
+                self._window, new_loader.refresh_catalog_async
+            )
+
         self.ui_changed.emit()
 
     @Slot(str)

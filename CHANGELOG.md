@@ -2,6 +2,47 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.12.0 — 2026-05-06
+
+**Chatterbox TTS engine.** Voiceagent ships Piper (default) and now
+also Chatterbox (Resemble AI's zero-shot voice cloning model) as an
+optional second engine. Install via `pip install voiceagent[chatterbox]`.
+Both engines coexist behind a runtime engine selector in the main
+window — switch without restarting; per-engine voice selection is
+remembered across swaps.
+
+Chatterbox is voice-cloning only — there are no built-in voices. On
+first switch to Chatterbox, voiceagent auto-seeds a bundled default
+reference clip (a Piper-synthesized neutral voice, ~150 KiB, shipped
+in the package) so the engine works out of the box. Backend slots
+for file-import (`importChatterboxReference`) and use-bundled-default
+(`useChatterboxBundledDefault`) are wired and callable from QML.
+
+Reference clips live at `$VOICEAGENT_CHATTERBOX_REFERENCES_ROOT`
+(default `~/.local/share/voiceagent/chatterbox-references/`).
+
+The richer first-run UX — a modal A/B/C dialog (record-from-mic,
+import-file, use-bundled-default) plus a "Manage reference voices"
+Settings pane — is queued for v0.12.1. v0.12.0 lands the engine and
+its synthesis path; v0.12.1 layers the polished voice-management UI
+on top.
+
+The Chatterbox engine targets the `q4`-quantized variant of
+`ResembleAI/chatterbox-turbo-ONNX` (pure ONNX runtime, no PyTorch
+dependency, ~700 MB on disk) and runs at ~1.35× realtime on a
+Ryzen 5 8640HS CPU. 24 kHz mono output.
+
+### Notes
+- Chatterbox extras require Python ≥ 3.11 (matches voiceagent's own pin).
+- GPU acceleration is not available on AMD integrated GPUs (Phoenix /
+  RDNA3 iGPU) due to ONNX Runtime not having a Vulkan execution
+  provider; CPU inference is the only path on those machines today.
+- Watermarking (Resemble's PerthImplicitWatermarker) is disabled by
+  default to avoid an extra dep; can be enabled by setting
+  `VOICEAGENT_CHATTERBOX_WATERMARK=1`.
+- The `huggingface_hub` upper pin is bumped from `<1` to `<2` to keep
+  the venv coherent with `transformers` 5.x's hub requirements.
+
 ## 0.11.1 — 2026-05-06
 
 **Qt 6.11 compatibility + Kokoro engine scaffolding (shelved).** Manjaro

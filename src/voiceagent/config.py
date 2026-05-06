@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import os
 from pathlib import Path
 import shlex
 import sys
+from typing import Literal
 
 from voiceagent.paths import default_stt_model_root, default_tts_model_root
+
+_VALID_TTS_ENGINES: frozenset[str] = frozenset({"piper", "chatterbox"})
 
 
 @dataclass(slots=True)
@@ -31,6 +35,8 @@ class AppConfig:
     tts_extra_args: list[str]
     stt_model_root: Path
     tts_model_root: Path
+    chatterbox_references_root: Path
+    tts_engine: Literal["piper", "chatterbox"] = "piper"
     sample_rate: int = 16_000
     # Conversation-history cap fed into `ConversationModel.to_openai_messages`.
     # Counts finalized user + assistant rows, so the default `20` keeps the
@@ -65,6 +71,23 @@ class AppConfig:
         except ValueError:
             max_history_turns = 20
         max_history_turns = max(0, max_history_turns)
+        raw_engine = (os.environ.get("VOICEAGENT_TTS_ENGINE", "") or "").strip().lower()
+        if not raw_engine:
+            tts_engine: Literal["piper", "chatterbox"] = "piper"
+        elif raw_engine in _VALID_TTS_ENGINES:
+            tts_engine = raw_engine  # type: ignore[assignment]
+        else:
+            logging.getLogger(__name__).warning(
+                "Unknown VOICEAGENT_TTS_ENGINE=%r; falling back to 'piper'",
+                raw_engine,
+            )
+            tts_engine = "piper"
+        chatterbox_references_root = Path(
+            os.environ.get(
+                "VOICEAGENT_CHATTERBOX_REFERENCES_ROOT",
+                str(Path.home() / ".local/share/voiceagent/chatterbox-references"),
+            )
+        ).expanduser()
         return cls(
             lm_studio_base_url=os.environ.get("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1").rstrip("/"),
             lm_studio_model=os.environ.get("LM_STUDIO_MODEL", "").strip(),
@@ -82,5 +105,7 @@ class AppConfig:
             tts_extra_args=shlex.split(os.environ.get("TTS_EXTRA_ARGS", "")),
             stt_model_root=stt_model_root,
             tts_model_root=tts_model_root,
+            chatterbox_references_root=chatterbox_references_root,
+            tts_engine=tts_engine,
             max_history_turns=max_history_turns,
         )
