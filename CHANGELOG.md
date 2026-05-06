@@ -2,6 +2,30 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.11.1 — 2026-05-06
+
+**Qt 6.11 compatibility + Kokoro engine scaffolding (shelved).** Manjaro
+and Arch pushed Qt 6.11 system-wide; voiceagent's `PySide6>=6.10,<6.11`
+pin meant the venv-side PySide refused to load the system-side
+6.11-built Kirigami plugin, blocking the app from launching. Bump the
+upper bound to `<6.12` so the venv can pull a Qt-6.11-compatible
+PySide.
+
+A second strand of work for v0.12 — adding **Kokoro** as a second TTS
+engine — landed in this branch as a draft and was then shelved without
+being merged into the user-visible UI. Upstream `kokoro-onnx` (`<3.14`)
+and `misaki` (`<3.13`) don't yet support Python 3.14, which is the
+current Manjaro / Arch default. Shipping the engine selector with a
+"Kokoro option that doesn't install on your Python" was rejected as a
+half-working feature. The `KokoroTtsService` skeleton (single-bundle
+download, sidecar trap, lazy import, default voice catalog, `synthesize`
+plumbing) is preserved as a reference comment in
+`src/voiceagent/services/kokoro_tts.py` for future use; nothing imports
+it. The engine-selector architecture (live runtime swap, factory
+branch, `set_tts_service`, per-engine voice memory) will land alongside
+v0.13's second-engine work, when the second engine is one that actually
+installs on a current Manjaro Python.
+
 ## 0.11.0 — 2026-04-29
 
 **Multi-turn conversation history.** Voiceagent up to v0.10.x was
