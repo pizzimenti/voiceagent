@@ -1,5 +1,7 @@
 import QtQuick
+import QtCore
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import QtQuick.Window
 import org.kde.kirigami 2.20 as Kirigami
@@ -304,6 +306,52 @@ Kirigami.ApplicationWindow {
                         Layout.bottomMargin: Kirigami.Units.largeSpacing
                         spacing: Kirigami.Units.smallSpacing
 
+                        // Chatterbox-specific voice setup row. Visible only
+                        // when the active engine is Chatterbox; the engine
+                        // is voice-cloning-only and ships no built-in
+                        // voices, so the catalog stays empty until the user
+                        // adds a reference clip.
+                        Kirigami.InlineMessage {
+                            Layout.fillWidth: true
+                            visible: root.hasVoiceAgent && voiceAgent.selectedTtsEngine === "chatterbox"
+                            type: Kirigami.MessageType.Information
+                            text: root.tr("Chatterbox is voice-cloning only — no built-in voices. Add a reference clip below, or load the bundled default voice.")
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: root.hasVoiceAgent && voiceAgent.selectedTtsEngine === "chatterbox"
+                            spacing: Kirigami.Units.smallSpacing
+
+                            Button {
+                                text: root.tr("Record from mic…")
+                                icon.name: "audio-input-microphone"
+                                enabled: false  // option A — wired in v0.12.1
+                                ToolTip.visible: hovered
+                                ToolTip.text: root.tr("Microphone-record reference clip — coming in v0.12.1")
+                            }
+
+                            Button {
+                                text: root.tr("Import audio file…")
+                                icon.name: "document-open"
+                                onClicked: chatterboxImportDialog.open()
+                            }
+
+                            Button {
+                                text: root.tr("Use bundled default")
+                                icon.name: "audio-volume-medium"
+                                onClicked: {
+                                    if (root.hasVoiceAgent) {
+                                        var saved = voiceAgent.useChatterboxBundledDefault();
+                                        if (saved !== "") {
+                                            // tts catalog refreshes via the
+                                            // Slot's ui_changed.emit().
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         TextField {
                             Layout.fillWidth: true
                             placeholderText: root.tr("Filter TTS voices")
@@ -322,6 +370,27 @@ Kirigami.ApplicationWindow {
                         }
                     }
                 }
+            }
+        }
+
+        FileDialog {
+            id: chatterboxImportDialog
+            title: root.tr("Choose a reference audio file")
+            currentFolder: StandardPaths.standardLocations(StandardPaths.MusicLocation)[0]
+            nameFilters: [
+                root.tr("Audio files (*.wav *.mp3 *.flac *.ogg *.m4a *.aac)"),
+                root.tr("All files (*)"),
+            ]
+            onAccepted: {
+                if (!root.hasVoiceAgent) return;
+                var url = String(selectedFile);
+                // Derive a default name from the file's basename.
+                var basename = url.substring(url.lastIndexOf("/") + 1);
+                var dot = basename.lastIndexOf(".");
+                var stem = dot > 0 ? basename.substring(0, dot) : basename;
+                var saved = voiceAgent.importChatterboxReference(url, stem);
+                // No special handling on success — the catalog refresh
+                // happens inside the Slot via ui_changed.
             }
         }
     }

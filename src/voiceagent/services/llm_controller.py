@@ -453,6 +453,24 @@ class LlmController(QObject):
                 loaded_models = snapshot_client.list_loaded_models()
             except RuntimeError:
                 loaded_models = []
+            # LM Studio bug workaround (May 2026): the native
+            # `/api/v1/models` endpoint can report `loaded_instances:
+            # []` for every model even when one is actually serving
+            # chat completions. When that happens, fall back to the
+            # first OpenAI `/v1/models` entry that the native API also
+            # marks as `type: llm` (excludes embeddings). The model
+            # dropdown then shows a sane default instead of going
+            # blank. See chat.py:refresh_loaded_model for the same
+            # pattern on the other detection path.
+            if not loaded_models and models:
+                try:
+                    llm_keys = snapshot_client._llm_keys_from_native()
+                except Exception:
+                    llm_keys = set()
+                for candidate in models:
+                    if not llm_keys or candidate in llm_keys:
+                        loaded_models = [candidate]
+                        break
             return {
                 "ok": True,
                 "models": models,
