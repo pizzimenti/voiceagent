@@ -117,6 +117,15 @@ class MainWindow(QObject):
     # both success and failure paths fit one signal shape.
     _replay_synth_completed = Signal(int, object)
 
+    # Internal worker-thread → main-thread bridge for the Chatterbox
+    # reference-voice recorder. `_chatterbox_record_progress` ticks
+    # ~10 Hz with `(seconds_elapsed, seconds_total)`. `_chatterbox_record_finished`
+    # fires once with `(saved_name, success, error_message)` — empty
+    # `saved_name` + non-empty error means the record failed; non-empty
+    # `saved_name` + empty error means success.
+    _chatterbox_record_progress = Signal(float, float)
+    _chatterbox_record_finished = Signal(str, bool, str)
+
     def __init__(
         self,
         controller: VoiceController,
@@ -422,6 +431,28 @@ class MainWindow(QObject):
                 self._window, self.tts_loader.refresh_catalog_async
             )
 
+        # Sync the live TTS engine with the user's last QSettings choice.
+        # `build_shared_services` (in app.py) reads `config.tts_engine`
+        # which only consults the env var; it does not see QSettings.
+        # If the user previously picked a different engine in the UI we
+        # would otherwise show a banner saying "engine X selected" while
+        # the actual service is still engine Y. Swap on first frame so
+        # the divergence resolves before the user opens any pane.
+        stored_engine = self.selectedTtsEngine
+        active_engine = getattr(
+            self.tts_loader.tts_service, "backend_name", ""
+        ).lower()
+        if stored_engine and stored_engine != active_engine:
+            self._logger.info(
+                "TTS engine startup desync: QSettings=%s service=%s — swapping",
+                stored_engine,
+                active_engine,
+            )
+            schedule_after_first_frame(
+                self._window,
+                lambda: self.selectTtsEngine(stored_engine),
+            )
+
     def shutdown(self) -> None:
         if self._shutting_down:
             return
@@ -717,6 +748,9 @@ class MainWindow(QObject):
         self.tts_loader.select_model(new_name)
         self.settings.setValue("selected_tts_model_chatterbox", new_name)
         self.ui_changed.emit()
+        self.replay_failed.emit(
+            self._translator.i18n("Reference voice imported as %1: ").replace("%1", new_name)
+        )
         return new_name
 
     @Slot(result=str)
@@ -752,6 +786,16 @@ class MainWindow(QObject):
         self.tts_loader.select_model("default")
         self.settings.setValue("selected_tts_model_chatterbox", "default")
         self.ui_changed.emit()
+        # Reuse the existing `replay_failed` toast pipe (it is the only
+        # passive-notification surface QML wires up today). The message
+        # body distinguishes success from failure; tone-wise this is a
+        # success notification, but going through the same channel
+        # avoids adding a parallel signal+QML handler for a one-shot
+        # confirmation. Rename the signal in a future cycle if more
+        # success surfaces accumulate.
+        self.replay_failed.emit(
+            self._translator.i18n("Default Chatterbox voice installed.")
+        )
         return "default"
 
     @Slot(str)
