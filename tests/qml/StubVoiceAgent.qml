@@ -76,10 +76,4 @@ QtObject {
     function setThinkingExpanded(index, value) {}
     function replayMessage(index) {}
     function stopSpeaking() {}
-
-    // Replay-failure signal — must match the production Python signal
-    // name `replay_failed` exactly (not camelCased) so QML stubs
-    // exercise the same binding shape MainWindow.qml uses to wire the
-    // passive-notification toast (`voiceAgent.replay_failed.connect(...)`).
-    signal replay_failed(string reason)
 }

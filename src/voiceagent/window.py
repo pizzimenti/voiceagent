@@ -86,18 +86,6 @@ class MainWindow(QObject):
     ui_changed = Signal()
     progress_changed = Signal()
     conversation_changed = Signal()
-    # Fires when `replayMessage` cannot produce audio (synthesis raised
-    # or the selected TTS voice is not yet `is_available`). QML wires
-    # this to `Kirigami.ApplicationWindow.showPassiveNotification(...)`
-    # so the user gets a transient toast instead of a silent failure.
-    # The string payload is the human-readable reason. Exception-derived
-    # text is left in English source (exception messages aren't
-    # translatable). Static readiness reasons are wrapped through the
-    # `i18nCtx.i18n(...)` shim Python-side via `self._translator` so all
-    # translatable copy lives behind the same shim, swappable for a
-    # real `KLocalizedContext` later.
-    replay_failed = Signal(str)
-
     # Internal worker-thread → main-thread bridge for the LM Studio
     # context-length fetch. Layer 5 / 6 design: when the selected LLM
     # model changes, hop a `fetch_loaded_context_length()` HTTP call off
@@ -731,9 +719,9 @@ class MainWindow(QObject):
     def importChatterboxReference(self, source_path: str, name: str) -> str:  # noqa: N802
         """Import a user-supplied audio file into the Chatterbox
         references directory. Returns the saved name on success or
-        an empty string on failure (with `replay_failed` emitted for
-        the toast hook). Only valid when the live engine is Chatterbox;
-        callers should hide the UI affordance otherwise.
+        an empty string on failure (logged + appended to the
+        conversation log). Only valid when the live engine is
+        Chatterbox; callers should hide the UI affordance otherwise.
         """
         if self.selectedTtsEngine != "chatterbox":
             self._logger.info("importChatterboxReference ignored: engine=%s", self.selectedTtsEngine)
@@ -741,8 +729,12 @@ class MainWindow(QObject):
         service = getattr(self.tts_loader, "tts_service", None)
         importer = getattr(service, "import_reference_clip", None)
         if importer is None:
-            self.replay_failed.emit(
-                self._translator.i18n("Voice import is only available with the Chatterbox engine.")
+            # Defensive — should not happen if the QML button is gated
+            # on `selectedTtsEngine === "chatterbox"`. Log only; user
+            # never reaches this path under normal flow.
+            self._logger.warning(
+                "importChatterboxReference invoked but service has no "
+                "import_reference_clip (engine=%s)", self.selectedTtsEngine
             )
             return ""
         try:
@@ -752,8 +744,8 @@ class MainWindow(QObject):
             saved = importer(Path(cleaned), name or Path(cleaned).stem)
         except Exception as exc:  # noqa: BLE001
             self._logger.exception("Chatterbox reference import failed: %s", exc)
-            self.replay_failed.emit(
-                self._translator.i18n("Could not import reference clip: ") + str(exc)
+            self._append_log_message(
+                f"Could not import reference clip: {exc}", "error"
             )
             return ""
         # Refresh catalog so QML rebinds to the new entry, and select it.
@@ -765,9 +757,8 @@ class MainWindow(QObject):
         self.tts_loader.select_model(new_name)
         self.settings.setValue("selected_tts_model_chatterbox", new_name)
         self.ui_changed.emit()
-        self.replay_failed.emit(
-            self._translator.i18n("Reference voice imported as %1: ").replace("%1", new_name)
-        )
+        # No success notification — the catalog list updating + voice
+        # ComboBox switching to the new entry is the visible feedback.
         return new_name
 
     @Slot(result=str)
@@ -775,7 +766,7 @@ class MainWindow(QObject):
         """Copy the bundled Piper-synthesized default reference clip
         into the references directory and select it as the active
         voice. Returns the saved name (`"default"`) on success, empty
-        string on failure.
+        string on failure (logged + appended to conversation log).
         """
         if self.selectedTtsEngine != "chatterbox":
             return ""
@@ -787,13 +778,13 @@ class MainWindow(QObject):
             seeded = seeder()
         except Exception as exc:  # noqa: BLE001
             self._logger.exception("seed_default_reference failed: %s", exc)
-            self.replay_failed.emit(
-                self._translator.i18n("Could not seed default voice: ") + str(exc)
+            self._append_log_message(
+                f"Could not seed default voice: {exc}", "error"
             )
             return ""
         if seeded is None:
-            self.replay_failed.emit(
-                self._translator.i18n("Bundled default reference clip is missing.")
+            self._append_log_message(
+                "Bundled default reference clip is missing.", "error"
             )
             return ""
         new_catalog = list(service.available_items())
@@ -803,23 +794,15 @@ class MainWindow(QObject):
         self.tts_loader.select_model("default")
         self.settings.setValue("selected_tts_model_chatterbox", "default")
         self.ui_changed.emit()
-        # Reuse the existing `replay_failed` toast pipe (it is the only
-        # passive-notification surface QML wires up today). The message
-        # body distinguishes success from failure; tone-wise this is a
-        # success notification, but going through the same channel
-        # avoids adding a parallel signal+QML handler for a one-shot
-        # confirmation. Rename the signal in a future cycle if more
-        # success surfaces accumulate.
-        self.replay_failed.emit(
-            self._translator.i18n("Default Chatterbox voice installed.")
-        )
+        # No success notification — the catalog list updating + voice
+        # ComboBox switching to "default" is the visible feedback.
         return "default"
 
     @Slot(str)
     def selectTtsEngine(self, engine_name: str) -> None:  # noqa: N802
         """Swap the live TTS engine. Same-engine and unknown engine
-        no-op. Chatterbox without extras emits `replay_failed` (the
-        QML toast hook) and aborts. Piper-side is always available.
+        no-op. Chatterbox without extras logs the rejection to the
+        conversation pane and aborts. Piper-side is always available.
         Live swaps wait for `controller.state == AppState.IDLE` so we
         don't pull the rug out from under an in-flight pipeline.
         """
@@ -829,12 +812,12 @@ class MainWindow(QObject):
         if normalized == self.selectedTtsEngine:
             return
         if normalized == "chatterbox" and not self._chatterbox_extras_available():
-            reason = self._translator.i18n(
-                "Chatterbox engine is not installed. Install with "
-                "`pip install voiceagent[chatterbox]` to enable it."
-            )
             self._logger.info("Engine swap rejected: chatterbox extras missing")
-            self.replay_failed.emit(reason)
+            self._append_log_message(
+                "Chatterbox engine is not installed. Install with "
+                "`pip install voiceagent[chatterbox]` to enable it.",
+                "error",
+            )
             return
         if self.controller.state == AppState.IDLE:
             self._perform_tts_engine_swap(normalized)
@@ -1158,13 +1141,15 @@ class MainWindow(QObject):
         # command + path). Without it, replay can call into a
         # half-installed voice and raise into the QML binding.
         if not self.tts_loader.tts_service.is_available:
-            # Cycle 9: surface a transient toast so the click isn't
-            # silent. Keep the log too — the toast doesn't replace it.
-            reason = self._translator.i18n(
-                "Replay unavailable: the selected voice is not ready."
-            )
+            # Surface the click silently-failing through the
+            # conversation log so the user can see why playback didn't
+            # happen. Logger entry is for diagnostics; the conversation
+            # log is the user-visible surface.
             self._logger.info("Replay skipped: TTS not available")
-            self.replay_failed.emit(reason)
+            self._append_log_message(
+                "Replay unavailable: the selected voice is not ready.",
+                "error",
+            )
             return
         # Toggle the row's button to 🤫 IMMEDIATELY so the click is
         # responsive. Synth itself runs on the background executor —
@@ -1313,8 +1298,9 @@ class MainWindow(QObject):
             if not is_current:
                 return
             wrapped = f"Replay failed: {error_message}"
+            # `_set_error_message` already routes the wrapped reason to
+            # the conversation log via the turn coordinator.
             self._set_error_message(wrapped, discard_draft=False)
-            self.replay_failed.emit(wrapped)
             if self._speaking_owner == "replay":
                 self._speaking_row = -1
                 self._speaking_owner = ""
