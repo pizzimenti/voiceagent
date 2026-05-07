@@ -77,14 +77,19 @@ ColumnLayout {
         ]
     }
 
-    Kirigami.InlineMessage {
+    // Downloading state — uses a Frame instead of Kirigami.InlineMessage
+    // because InlineMessage is designed for text + action-button rows.
+    // Putting a ProgressBar inside its content slot collapsed the bar
+    // to a hairline + left tall whitespace below the message. A plain
+    // Frame with a ColumnLayout inside renders correctly and still
+    // looks integrated with the surrounding UI.
+    Frame {
         Layout.fillWidth: true
         visible: chatterboxPane.hasVoiceAgent
             && chatterboxPane.voiceAgent.chatterboxEngineDownloading
-        type: Kirigami.MessageType.Information
+        padding: Kirigami.Units.largeSpacing
 
-        ColumnLayout {
-            Layout.fillWidth: true
+        contentItem: ColumnLayout {
             spacing: Kirigami.Units.smallSpacing
 
             Label {

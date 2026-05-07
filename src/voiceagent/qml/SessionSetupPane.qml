@@ -201,7 +201,7 @@ Pane {
                     }
 
                     ComboBox {
-                        Kirigami.FormData.label: sessionPane.tr("Loaded Model:")
+                        Kirigami.FormData.label: sessionPane.tr("LLM Model:")
                         Layout.fillWidth: false
                         Layout.preferredWidth: Kirigami.Units.gridUnit * 16
                         enabled: sessionPane.voiceAgent

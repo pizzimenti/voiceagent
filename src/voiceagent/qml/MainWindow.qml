@@ -537,21 +537,23 @@ Kirigami.ApplicationWindow {
                 }
             }
 
-            // Version + build identifier. Stays visible across the
-            // bottom of every layout so the user can confirm at a
-            // glance that they're running the latest pull (the build
-            // counter bumps on every committed change). Hidden in
-            // ultraCompactMode where there is no spare height.
-            Label {
-                Layout.fillWidth: true
-                Layout.alignment: Qt.AlignBottom | Qt.AlignRight
-                visible: !root.ultraCompactMode && root.hasVoiceAgent
-                horizontalAlignment: Text.AlignRight
-                text: root.hasVoiceAgent ? root.voiceAgent.versionLabel : ""
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                color: Kirigami.Theme.disabledTextColor
-                opacity: 0.7
-            }
+        }
+
+        // Version + build identifier — pinned to the bottom-right
+        // page corner via direct anchors (rather than living in
+        // `pageContent`'s margined ColumnLayout) so its padding is
+        // independent of `pageContentMargin`. Hidden in
+        // ultraCompactMode where there is no spare height.
+        Label {
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.rightMargin: Kirigami.Units.smallSpacing
+            anchors.bottomMargin: Kirigami.Units.smallSpacing
+            visible: !root.ultraCompactMode && root.hasVoiceAgent
+            text: root.hasVoiceAgent ? root.voiceAgent.versionLabel : ""
+            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            color: Kirigami.Theme.disabledTextColor
+            opacity: 0.7
         }
     }
 }
