@@ -115,6 +115,12 @@ class MainWindow(QObject):
     _chatterbox_record_progress = Signal(float, float)
     _chatterbox_record_finished = Signal(str, bool, str)
 
+    # Engine-model download (the shared 4-component q4 ONNX bundle).
+    # Distinct from the per-voice recorder above. Emits component-
+    # progress ticks (1..4 of 4) and a single finished signal.
+    _chatterbox_engine_download_progress = Signal(int, int)
+    _chatterbox_engine_download_finished = Signal(bool, str)
+
     def __init__(
         self,
         controller: VoiceController,
@@ -297,6 +303,19 @@ class MainWindow(QObject):
         )
         self._chatterbox_record_finished.connect(
             self._on_chatterbox_record_finished
+        )
+
+        # Engine-model download state (shared across all chatterbox
+        # voices). The download fetches ~700 MB from HuggingFace; the
+        # banner in ChatterboxTtsConfigPane.qml drives this lifecycle.
+        self._chatterbox_engine_download_thread: threading.Thread | None = None
+        self._chatterbox_engine_downloading = False
+        self._chatterbox_engine_download_progress_value = 0.0
+        self._chatterbox_engine_download_progress.connect(
+            self._on_chatterbox_engine_download_progress
+        )
+        self._chatterbox_engine_download_finished.connect(
+            self._on_chatterbox_engine_download_finished
         )
 
         self.controller.status_changed.connect(self._emit_ui_changed)
@@ -540,6 +559,17 @@ class MainWindow(QObject):
     @Property(int, notify=ui_changed)
     def ttsInstalledCount(self) -> int:  # noqa: N802
         return sum(1 for name in self._tts_catalog if self._is_tts_downloaded(name))
+
+    @Property(str, constant=True)
+    def versionLabel(self) -> str:  # noqa: N802
+        """Human-readable version + build identifier surfaced in the
+        UI footer so the user can confirm at a glance which build is
+        running. The build counter (`voiceagent.__build__`) bumps on
+        every commit that changes behavior — useful when a back-to-
+        back fix series makes "did I pull?" non-obvious.
+        """
+        from voiceagent import __version__, __build__
+        return f"v{__version__} build {__build__}"
 
     @Property(str, notify=ui_changed)
     def selectedSttModel(self) -> str:  # noqa: N802
@@ -989,6 +1019,116 @@ class MainWindow(QObject):
             service.set_selected_item(name)
             self.tts_loader.select_model(name)
             self.settings.setValue("selected_tts_model_chatterbox", name)
+        self.ui_changed.emit()
+
+    # ------------------------------------------------------------------
+    # Chatterbox engine-model download (the shared 4-component q4 ONNX
+    # bundle, ~700 MB on first fetch). Distinct from per-voice import /
+    # mic-record above. The engine state is one-per-engine; the QML
+    # banner above the voice catalog drives this lifecycle.
+    # ------------------------------------------------------------------
+
+    @Property(bool, notify=ui_changed)
+    def chatterboxEngineReady(self) -> bool:  # noqa: N802
+        service = getattr(self.tts_loader, "tts_service", None)
+        return bool(getattr(service, "is_engine_ready", False))
+
+    @Property(bool, notify=ui_changed)
+    def chatterboxEngineDownloading(self) -> bool:  # noqa: N802
+        return self._chatterbox_engine_downloading
+
+    @Property(float, notify=ui_changed)
+    def chatterboxEngineDownloadProgress(self) -> float:  # noqa: N802
+        """0.0 → 1.0 fraction of the model download that has completed.
+        Approximate (per-component, since `huggingface_hub.hf_hub_download`
+        doesn't expose per-byte progress in a stable callback API).
+        """
+        return self._chatterbox_engine_download_progress_value
+
+    @Slot()
+    def downloadChatterboxModel(self) -> None:  # noqa: N802
+        """Kick off the shared model bundle download in a worker thread.
+        Idempotent — no-op if a download is already in flight or the
+        model is already on disk.
+        """
+        if self.selectedTtsEngine != "chatterbox":
+            return
+        if self._chatterbox_engine_downloading:
+            return
+        service = getattr(self.tts_loader, "tts_service", None)
+        downloader = getattr(service, "download_engine_model", None)
+        if downloader is None:
+            self._append_log_message(
+                "Chatterbox engine is not active; cannot download model.",
+                "error",
+            )
+            return
+        if getattr(service, "is_engine_ready", False):
+            return
+        self._chatterbox_engine_downloading = True
+        self._chatterbox_engine_download_progress_value = 0.0
+        self.ui_changed.emit()
+        self._chatterbox_engine_download_thread = threading.Thread(
+            target=self._download_chatterbox_engine_worker,
+            args=(downloader,),
+            name="chatterbox-engine-download",
+            daemon=True,
+        )
+        self._chatterbox_engine_download_thread.start()
+
+    def _download_chatterbox_engine_worker(self, downloader) -> None:
+        from voiceagent.downloaders import DownloadProgress
+
+        def _progress(progress: DownloadProgress) -> None:
+            # Component-progress = total_bytes is the approximated
+            # full size; completed_bytes accumulates as each of the
+            # 4 components finishes. We forward both as ints so the
+            # Signal type matches.
+            try:
+                self._chatterbox_engine_download_progress.emit(
+                    int(progress.completed_bytes),
+                    int(progress.total_bytes),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            downloader(progress_callback=_progress)
+        except Exception as exc:  # noqa: BLE001
+            self._chatterbox_engine_download_finished.emit(
+                False, str(exc)
+            )
+            return
+        self._chatterbox_engine_download_finished.emit(True, "")
+
+    def _on_chatterbox_engine_download_progress(
+        self, completed_bytes: int, total_bytes: int,
+    ) -> None:
+        if total_bytes <= 0:
+            self._chatterbox_engine_download_progress_value = 0.0
+        else:
+            self._chatterbox_engine_download_progress_value = min(
+                1.0, max(0.0, completed_bytes / total_bytes)
+            )
+        self.ui_changed.emit()
+
+    def _on_chatterbox_engine_download_finished(
+        self, success: bool, error: str,
+    ) -> None:
+        self._chatterbox_engine_downloading = False
+        self._chatterbox_engine_download_progress_value = 1.0 if success else 0.0
+        if not success:
+            if error:
+                self._append_log_message(
+                    f"Chatterbox model download failed: {error}",
+                    "error",
+                )
+        # The catalog model's per-row state queries `is_item_available`
+        # against the live service; with the engine now ready, the
+        # voice rows transition from "Reference saved" to "Ready"
+        # automatically once a refresh re-evaluates them. Force a
+        # row-state refresh on every catalog entry so QML re-reads.
+        self._tts_catalog_model.modelReset.emit()
         self.ui_changed.emit()
 
     @Slot(str)

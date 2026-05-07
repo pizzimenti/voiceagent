@@ -9,8 +9,13 @@ import org.kde.kirigami 2.20 as Kirigami
 Kirigami.ApplicationWindow {
     id: root
 
-    width: 512
-    height: 512
+    // Default launch size is exactly the compact-mode threshold so
+    // first paint lands in the wide layout (form column + mic to the
+    // right). Shrinking horizontally by even one pixel drops to
+    // compactMode (the single-column layout). Height is sized for the
+    // session-setup form + a few rows of conversation log.
+    width: Kirigami.Units.gridUnit * 40
+    height: Kirigami.Units.gridUnit * 30
     // Floors are intentionally aggressive: the user wants the option
     // to shrink to a postage-stamp mic-only widget. Below ~6 grid
     // units (~108 px @1.0x) the WM's title bar may itself cramp or
@@ -530,6 +535,22 @@ Kirigami.ApplicationWindow {
                         }
                     }
                 }
+            }
+
+            // Version + build identifier. Stays visible across the
+            // bottom of every layout so the user can confirm at a
+            // glance that they're running the latest pull (the build
+            // counter bumps on every committed change). Hidden in
+            // ultraCompactMode where there is no spare height.
+            Label {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignBottom | Qt.AlignRight
+                visible: !root.ultraCompactMode && root.hasVoiceAgent
+                horizontalAlignment: Text.AlignRight
+                text: root.hasVoiceAgent ? root.voiceAgent.versionLabel : ""
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                color: Kirigami.Theme.disabledTextColor
+                opacity: 0.7
             }
         }
     }

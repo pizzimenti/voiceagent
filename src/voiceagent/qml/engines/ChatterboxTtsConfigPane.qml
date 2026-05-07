@@ -46,6 +46,77 @@ ColumnLayout {
         text: chatterboxPane.tr("Chatterbox is voice-cloning only — no built-in voices. Record a reference clip from your microphone, or import an existing audio file.")
     }
 
+    // Engine-state banner. Three visual states:
+    //   1. Model NOT downloaded → warning banner + "Download model" button
+    //      with the ~700 MB size disclosure.
+    //   2. Model DOWNLOADING → information banner + progress bar.
+    //   3. Model READY → positive banner (low-prominence; the catalog
+    //      voices below are the real interaction surface once the
+    //      engine is set up).
+    //
+    // The model is shared across all reference voices in the catalog,
+    // which is why this affordance is engine-level (above the catalog)
+    // rather than per-voice.
+    Kirigami.InlineMessage {
+        Layout.fillWidth: true
+        visible: chatterboxPane.hasVoiceAgent
+            && !chatterboxPane.voiceAgent.chatterboxEngineReady
+            && !chatterboxPane.voiceAgent.chatterboxEngineDownloading
+        type: Kirigami.MessageType.Warning
+        text: chatterboxPane.tr("Chatterbox model not downloaded — synthesis will fail until the ~700 MB ONNX bundle is fetched.")
+        actions: [
+            Kirigami.Action {
+                text: chatterboxPane.tr("Download model")
+                icon.name: "download"
+                onTriggered: {
+                    if (chatterboxPane.hasVoiceAgent) {
+                        chatterboxPane.voiceAgent.downloadChatterboxModel();
+                    }
+                }
+            }
+        ]
+    }
+
+    Kirigami.InlineMessage {
+        Layout.fillWidth: true
+        visible: chatterboxPane.hasVoiceAgent
+            && chatterboxPane.voiceAgent.chatterboxEngineDownloading
+        type: Kirigami.MessageType.Information
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: Kirigami.Units.smallSpacing
+
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: chatterboxPane.tr("Downloading Chatterbox model… %1%").replace(
+                    "%1",
+                    chatterboxPane.hasVoiceAgent
+                        ? Math.round(chatterboxPane.voiceAgent.chatterboxEngineDownloadProgress * 100).toString()
+                        : "0")
+            }
+
+            ProgressBar {
+                Layout.fillWidth: true
+                from: 0.0
+                to: 1.0
+                value: chatterboxPane.hasVoiceAgent
+                    ? chatterboxPane.voiceAgent.chatterboxEngineDownloadProgress
+                    : 0.0
+            }
+        }
+    }
+
+    Kirigami.InlineMessage {
+        Layout.fillWidth: true
+        visible: chatterboxPane.hasVoiceAgent
+            && chatterboxPane.voiceAgent.chatterboxEngineReady
+            && !chatterboxPane.voiceAgent.chatterboxEngineDownloading
+        type: Kirigami.MessageType.Positive
+        text: chatterboxPane.tr("Chatterbox model ready.")
+    }
+
     RowLayout {
         Layout.fillWidth: true
         spacing: Kirigami.Units.smallSpacing

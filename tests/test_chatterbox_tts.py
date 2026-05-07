@@ -105,14 +105,21 @@ def test_catalog_sorted_stable(model_root, references_root):
 
 
 # ---------------------------------------------------------------------
-# is_item_available — both sides must be present
+# Two-layer state: per-voice (reference clip) vs per-engine (model).
+# `is_item_available` is reference-clip-only; engine state is exposed
+# separately via `is_engine_ready`. The catalog UI uses the per-voice
+# check to decide Install/Remove visibility, while the engine banner
+# above the catalog drives the model-download flow.
 # ---------------------------------------------------------------------
 
 
-def test_is_item_available_false_when_model_missing(monkeypatch, service, references_root):
+def test_is_item_available_true_when_reference_clip_present(
+    monkeypatch, service, references_root,
+):
     (references_root / "alice.wav").write_bytes(b"RIFF")
+    # Engine state is irrelevant to per-voice availability.
     monkeypatch.setattr(service, "_model_present", lambda: False, raising=False)
-    assert service.is_item_available("alice") is False
+    assert service.is_item_available("alice") is True
 
 
 def test_is_item_available_false_when_reference_clip_missing(monkeypatch, service):
@@ -120,10 +127,22 @@ def test_is_item_available_false_when_reference_clip_missing(monkeypatch, servic
     assert service.is_item_available("alice") is False
 
 
-def test_is_item_available_true_when_both_present(monkeypatch, service, references_root):
-    (references_root / "alice.wav").write_bytes(b"RIFF")
+def test_is_engine_ready_tracks_model_presence(monkeypatch, service):
+    monkeypatch.setattr(service, "_model_present", lambda: False, raising=False)
+    assert service.is_engine_ready is False
     monkeypatch.setattr(service, "_model_present", lambda: True, raising=False)
-    assert service.is_item_available("alice") is True
+    assert service.is_engine_ready is True
+
+
+def test_is_item_downloadable_always_false(service, references_root):
+    """Voices are user-supplied (mic record / file import) and never
+    downloads — the per-voice Install button is always hidden in the
+    Chatterbox catalog UI. The engine model has its own download
+    affordance separate from the voice list.
+    """
+    assert service.is_item_downloadable("alice") is False
+    (references_root / "alice.wav").write_bytes(b"RIFF")
+    assert service.is_item_downloadable("alice") is False
 
 
 # ---------------------------------------------------------------------

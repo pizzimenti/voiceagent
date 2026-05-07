@@ -110,10 +110,23 @@ class ChatterboxTtsService(TextToSpeechBackend):
 
     @property
     def is_available(self) -> bool:
+        # "Synthesizable right now" — both the user-supplied reference
+        # clip AND the shared engine model must be present. Used by
+        # the replay path / talk-ready calculation.
         name = self._selected_item
         if not name:
             return False
-        return self.is_item_available(name)
+        return self._reference_path(name).exists() and self._model_present()
+
+    @property
+    def is_engine_ready(self) -> bool:
+        """The shared 4-component ONNX model bundle is on disk. Distinct
+        from voice (reference clip) presence — engine readiness applies
+        to all voices in the catalog at once. Drives the UI banner that
+        prompts the user to download the model, separate from the per-
+        voice catalog rows.
+        """
+        return self._model_present()
 
     @property
     def selected_item(self) -> str | None:
@@ -122,6 +135,22 @@ class ChatterboxTtsService(TextToSpeechBackend):
     # ------------------------------------------------------------------ #
     # Backend protocol — catalog                                          #
     # ------------------------------------------------------------------ #
+    #
+    # Two-layer state model: per-voice (reference clip) and per-engine
+    # (model bundle). The CatalogList delegate's `installed` /
+    # `downloadable` / `managed` roles describe per-voice state only —
+    # a voice is "installed" iff its reference clip is on disk,
+    # regardless of whether the shared engine model has been
+    # downloaded. The engine state surfaces separately through the
+    # `is_engine_ready` property and the engine-download UI in
+    # `ChatterboxTtsConfigPane.qml`.
+    #
+    # Why split: a freshly-imported voice is fully "owned" by the user
+    # (file is on disk, ready to be cloned) but cannot synthesize until
+    # the 700 MB model arrives. Conflating both into `is_item_available`
+    # made the catalog misreport imported voices as "Available to
+    # download" with an Install button that confusingly fetched the
+    # engine model.
 
     def available_items(self) -> list[str]:
         self.references_root.mkdir(parents=True, exist_ok=True)
@@ -132,20 +161,20 @@ class ChatterboxTtsService(TextToSpeechBackend):
         return sorted(entries, key=str.lower)
 
     def is_item_available(self, item_name: str) -> bool:
+        # Per-voice readiness only (reference clip on disk). Engine
+        # state is checked separately at synth time.
         if not item_name:
             return False
-        return self._reference_path(item_name).exists() and self._model_present()
+        return self._reference_path(item_name).exists()
 
     def is_item_managed(self, item_name: str) -> bool:
         return self.is_item_available(item_name)
 
     def is_item_downloadable(self, item_name: str) -> bool:
-        # The reference clip itself is user-supplied (mic record / file
-        # import / bundled default — handled in window.py). What this
-        # service *can* download is the shared model bundle, which is
-        # the gating dependency for any voice. Report downloadable
-        # whenever the model bundle is missing.
-        return not self._model_present()
+        # Voices are user-supplied (mic record / file import) — never
+        # downloads. The shared engine-model download surfaces through
+        # `download_engine_model` and the QML engine-state banner.
+        return False
 
     def set_selected_item(self, item_name: str | None) -> None:
         if not item_name:
@@ -317,11 +346,25 @@ class ChatterboxTtsService(TextToSpeechBackend):
         item_name: str,
         progress_callback: Callable[[DownloadProgress], None] | None = None,
     ) -> None:
-        # The reference clip is user-supplied; this method only fetches
-        # the shared 4-component model bundle. Any voice name that
-        # arrives here triggers the same fetch and short-circuits once
-        # the bundle is on disk.
+        # Voices are user-supplied (mic record / file import); the
+        # `download_item` Protocol entry exists for the
+        # `_ItemBackend` interface. Defer to `download_engine_model`
+        # so any latent caller still triggers the right fetch — but
+        # `is_item_downloadable` returns False for all voices, so the
+        # CatalogList Install button is hidden and this path is no
+        # longer reachable from the UI under normal flow.
         del item_name
+        self.download_engine_model(progress_callback=progress_callback)
+
+    def download_engine_model(
+        self,
+        progress_callback: Callable[[DownloadProgress], None] | None = None,
+    ) -> None:
+        """Fetch the shared 4-component q4 ONNX model bundle from
+        HuggingFace. Idempotent — short-circuits if the components are
+        already cached. Wired up by the QML engine-state banner via
+        `MainWindow.downloadChatterboxModel()`.
+        """
         if self._model_present():
             return
 

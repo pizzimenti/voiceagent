@@ -65,18 +65,25 @@ QtObject {
     property string sttConfigPaneFile: "WhisperSttConfigPane.qml"
 
     // Chatterbox engine identity + reference-recorder state. Read by
-    // ChatterboxTtsConfigPane.qml's recording dialog.
+    // ChatterboxTtsConfigPane.qml's recording dialog and engine banner.
     property string selectedTtsEngine: "piper"
     property bool chatterboxRecordingActive: false
     property real chatterboxRecordingProgress: 0.0
     property string chatterboxRecordingName: ""
+    property bool chatterboxEngineReady: false
+    property bool chatterboxEngineDownloading: false
+    property real chatterboxEngineDownloadProgress: 0.0
+
+    // Footer label.
+    property string versionLabel: "v0.0.0 build 0"
 
     // Chatterbox slot-shaped no-ops. Tests that don't open the
-    // recording dialog never call these, but the stub keeps the
-    // surface complete.
+    // recording dialog or engine banner never call these, but the
+    // stub keeps the surface complete.
     function importChatterboxReference(path, name) { return ""; }
     function startChatterboxRecording(name, seconds) {}
     function cancelChatterboxRecording() {}
+    function downloadChatterboxModel() {}
 
     // Slot-shaped no-ops covering both SessionSetupPane click handlers
     // and MainWindow header actions.
