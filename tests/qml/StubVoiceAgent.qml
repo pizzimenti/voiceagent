@@ -75,6 +75,7 @@ QtObject {
     property real chatterboxEngineDownloadProgress: 0.0
     property var chatterboxDtypeOptions: ["q4", "q4f16", "fp16", "fp32"]
     property string selectedChatterboxDtype: "q4"
+    property string chatterboxEngineDownloadProgressLabel: ""
 
     // Footer label.
     property string versionLabel: "v0.0.0 build 0"

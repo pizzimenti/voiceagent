@@ -60,6 +60,20 @@ _COMPONENTS = (
 # in a stable callback API.
 _APPROX_TOTAL_BYTES_Q4 = 700 * 1024 * 1024
 
+# Approximate full-bundle sizes per quantization variant. Sourced from
+# the file listing on `ResembleAI/chatterbox-turbo-ONNX` as of May 2026
+# — the four ONNX components plus their `_data` weight sidecars.
+# Used as the denominator for the download progress UI; per-component
+# completion reads the actual on-disk file size from the HF cache so
+# progress numbers stay correct even if a future repo update shifts a
+# variant's footprint.
+_APPROX_BUNDLE_BYTES: dict[str, int] = {
+    "q4":    700 * 1024 * 1024,
+    "q4f16": 750 * 1024 * 1024,
+    "fp16": 1400 * 1024 * 1024,
+    "fp32": 2500 * 1024 * 1024,
+}
+
 
 class ChatterboxTtsService(TextToSpeechBackend):
     backend_name = "Chatterbox"
@@ -414,7 +428,9 @@ class ChatterboxTtsService(TextToSpeechBackend):
             ) from exc
 
         callback = progress_callback or (lambda progress: None)
-        total_bytes = _APPROX_TOTAL_BYTES_Q4
+        total_bytes = _APPROX_BUNDLE_BYTES.get(
+            self._dtype, _APPROX_TOTAL_BYTES_Q4,
+        )
         # Initial tick so progress UIs render before the first
         # component returns.
         callback(
@@ -426,34 +442,44 @@ class ChatterboxTtsService(TextToSpeechBackend):
         )
 
         self.model_root.mkdir(parents=True, exist_ok=True)
-        component_count = len(_COMPONENTS)
-        for index, component in enumerate(_COMPONENTS, start=1):
+        completed_bytes = 0
+        for component in _COMPONENTS:
             filename = self._filename_for(component, self._dtype)
             try:
-                hf_hub_download(
+                graph_path = hf_hub_download(
                     self.HF_REPO, subfolder="onnx", filename=filename
                 )
             except Exception as exc:
                 raise RuntimeError(
                     f"Chatterbox download failed for {filename}: {exc}"
                 ) from exc
+            try:
+                completed_bytes += Path(graph_path).stat().st_size
+            except OSError:
+                pass
             # The external-data sidecar is optional for some dtypes;
             # absence is not an error.
             try:
-                hf_hub_download(
+                data_path = hf_hub_download(
                     self.HF_REPO,
                     subfolder="onnx",
                     filename=f"{filename}_data",
                 )
+                try:
+                    completed_bytes += Path(data_path).stat().st_size
+                except OSError:
+                    pass
             except Exception as exc:
                 self._logger.debug(
                     "no _data sidecar for %s (%s)", filename, exc
                 )
-            completed = int(total_bytes * index / component_count)
+            # Keep total honest if our approximation underestimated:
+            # the user shouldn't see "750 MB / 700 MB" mid-download.
+            running_total = max(total_bytes, completed_bytes)
             callback(
                 DownloadProgress(
-                    completed_bytes=completed,
-                    total_bytes=total_bytes,
+                    completed_bytes=completed_bytes,
+                    total_bytes=running_total,
                     download_speed_bytes_per_second=0,
                 )
             )

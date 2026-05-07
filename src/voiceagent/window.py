@@ -312,6 +312,8 @@ class MainWindow(QObject):
         self._chatterbox_engine_download_thread: threading.Thread | None = None
         self._chatterbox_engine_downloading = False
         self._chatterbox_engine_download_progress_value = 0.0
+        self._chatterbox_engine_download_completed_bytes = 0
+        self._chatterbox_engine_download_total_bytes = 0
         self._chatterbox_engine_download_progress.connect(
             self._on_chatterbox_engine_download_progress
         )
@@ -1057,6 +1059,19 @@ class MainWindow(QObject):
         """
         return self._chatterbox_engine_download_progress_value
 
+    @Property(str, notify=ui_changed)
+    def chatterboxEngineDownloadProgressLabel(self) -> str:  # noqa: N802
+        """`"NN MB / NNN MB"` style readout for the download progress
+        UI. Bytes come from per-component file stat after each
+        `hf_hub_download` returns; total uses the per-dtype estimate
+        (kept in sync with actual when the estimate undershoots).
+        """
+        completed = self._chatterbox_engine_download_completed_bytes
+        total = self._chatterbox_engine_download_total_bytes
+        if total <= 0:
+            return ""
+        return f"{completed / 1024 / 1024:.0f} MB / {total / 1024 / 1024:.0f} MB"
+
     @Property("QVariantList", constant=True)
     def chatterboxDtypeOptions(self) -> list[str]:  # noqa: N802
         """Supported model precision variants. Higher precision = better
@@ -1156,6 +1171,8 @@ class MainWindow(QObject):
     def _on_chatterbox_engine_download_progress(
         self, completed_bytes: int, total_bytes: int,
     ) -> None:
+        self._chatterbox_engine_download_completed_bytes = max(0, completed_bytes)
+        self._chatterbox_engine_download_total_bytes = max(0, total_bytes)
         if total_bytes <= 0:
             self._chatterbox_engine_download_progress_value = 0.0
         else:

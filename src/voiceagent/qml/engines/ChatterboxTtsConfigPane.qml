@@ -63,9 +63,27 @@ ColumnLayout {
             Layout.alignment: Qt.AlignVCenter
         }
 
+        // dtype → human-readable label with approximate full-bundle
+        // size. Sizes track _APPROX_BUNDLE_BYTES on the Python side
+        // (chatterbox_tts.py) — keep them in sync if upstream sizes
+        // shift.
+        function _dtypeLabel(dtype) {
+            switch (dtype) {
+                case "q4":    return chatterboxPane.tr("q4 (~700 MB)");
+                case "q4f16": return chatterboxPane.tr("q4f16 (~750 MB)");
+                case "fp16":  return chatterboxPane.tr("fp16 (~1.4 GB)");
+                case "fp32":  return chatterboxPane.tr("fp32 (~2.5 GB)");
+                default:      return dtype;
+            }
+        }
+
         ComboBox {
             id: dtypeSelector
             Layout.fillWidth: true
+            // ComboBox with a textRole-friendly model: the model contains
+            // raw dtype names; the delegate + display rendering use the
+            // `_dtypeLabel` helper so labels include size disclosure
+            // without changing the value the Slot receives.
             model: chatterboxPane.hasVoiceAgent
                 ? chatterboxPane.voiceAgent.chatterboxDtypeOptions
                 : []
@@ -83,6 +101,16 @@ ColumnLayout {
             // graph. Re-enabled once the engine state settles.
             enabled: chatterboxPane.hasVoiceAgent
                 && !chatterboxPane.voiceAgent.chatterboxEngineDownloading
+            displayText: parent._dtypeLabel(currentText)
+            delegate: ItemDelegate {
+                width: dtypeSelector.width
+                contentItem: Label {
+                    text: dtypeSelector.parent._dtypeLabel(modelData)
+                    elide: Text.ElideRight
+                    verticalAlignment: Text.AlignVCenter
+                }
+                highlighted: dtypeSelector.highlightedIndex === index
+            }
             onActivated: {
                 if (chatterboxPane.hasVoiceAgent) {
                     chatterboxPane.voiceAgent.selectChatterboxDtype(currentText);
@@ -108,7 +136,18 @@ ColumnLayout {
             && !chatterboxPane.voiceAgent.chatterboxEngineReady
             && !chatterboxPane.voiceAgent.chatterboxEngineDownloading
         type: Kirigami.MessageType.Warning
-        text: chatterboxPane.tr("Chatterbox model not downloaded — synthesis will fail until the ~700 MB ONNX bundle is fetched.")
+        text: {
+            var dtype = chatterboxPane.hasVoiceAgent
+                ? chatterboxPane.voiceAgent.selectedChatterboxDtype
+                : "q4";
+            var size = "~700 MB";
+            if (dtype === "q4f16") size = "~750 MB";
+            else if (dtype === "fp16") size = "~1.4 GB";
+            else if (dtype === "fp32") size = "~2.5 GB";
+            return chatterboxPane.tr(
+                "Chatterbox model not downloaded — synthesis will fail until the %1 ONNX bundle is fetched."
+            ).replace("%1", size);
+        }
         actions: [
             Kirigami.Action {
                 text: chatterboxPane.tr("Download model")
@@ -140,11 +179,23 @@ ColumnLayout {
             Label {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
-                text: chatterboxPane.tr("Downloading Chatterbox model… %1%").replace(
-                    "%1",
-                    chatterboxPane.hasVoiceAgent
-                        ? Math.round(chatterboxPane.voiceAgent.chatterboxEngineDownloadProgress * 100).toString()
-                        : "0")
+                text: {
+                    if (!chatterboxPane.hasVoiceAgent) {
+                        return chatterboxPane.tr("Downloading Chatterbox model…");
+                    }
+                    var pct = Math.round(
+                        chatterboxPane.voiceAgent.chatterboxEngineDownloadProgress * 100
+                    ).toString();
+                    var bytes = chatterboxPane.voiceAgent.chatterboxEngineDownloadProgressLabel;
+                    if (bytes && bytes !== "") {
+                        return chatterboxPane.tr(
+                            "Downloading Chatterbox model… %1% — %2"
+                        ).replace("%1", pct).replace("%2", bytes);
+                    }
+                    return chatterboxPane.tr(
+                        "Downloading Chatterbox model… %1%"
+                    ).replace("%1", pct);
+                }
             }
 
             ProgressBar {
