@@ -36,6 +36,7 @@ from voiceagent.startup_deferral import schedule_after_first_frame
 from voiceagent.tts_loader import TtsVoiceLoader
 
 _TTS_ENGINE_OPTIONS: tuple[str, ...] = ("piper", "chatterbox")
+_CHATTERBOX_DTYPES: tuple[str, ...] = ("q4", "q4f16", "fp16", "fp32")
 
 
 class _CatalogStateAdapter:
@@ -860,7 +861,7 @@ class MainWindow(QObject):
 
     @Slot(str, float)
     def startChatterboxRecording(  # noqa: N802
-        self, name: str, seconds: float = 15.0,
+        self, name: str, seconds: float = 60.0,
     ) -> None:
         """Start a fixed-duration mic capture in a worker thread. The
         worker emits `_chatterbox_record_progress` ticks ~10 Hz and a
@@ -976,6 +977,17 @@ class MainWindow(QObject):
             )
             return
 
+        # If the user re-records over an existing voice name, the prior
+        # speaker-features cache is now stale (computed against the old
+        # audio). The service's invalidator wipes every dtype's cache
+        # so the next synth recomputes against the new clip.
+        invalidator = getattr(service, "invalidate_speaker_features_cache", None)
+        if invalidator is not None:
+            try:
+                invalidator(name)
+            except Exception:  # noqa: BLE001
+                pass
+
         self._chatterbox_record_finished.emit(name, True, "")
 
     def _on_chatterbox_record_progress(
@@ -1044,6 +1056,46 @@ class MainWindow(QObject):
         doesn't expose per-byte progress in a stable callback API).
         """
         return self._chatterbox_engine_download_progress_value
+
+    @Property("QVariantList", constant=True)
+    def chatterboxDtypeOptions(self) -> list[str]:  # noqa: N802
+        """Supported model precision variants. Higher precision = better
+        tonal fidelity (especially pitch — q4 quantization rounds away
+        the high-frequency tail of speaker embeddings) at the cost of
+        disk + RAM.
+        """
+        return list(_CHATTERBOX_DTYPES)
+
+    @Property(str, notify=ui_changed)
+    def selectedChatterboxDtype(self) -> str:  # noqa: N802
+        service = getattr(self.tts_loader, "tts_service", None)
+        return getattr(service, "dtype", _CHATTERBOX_DTYPES[0])
+
+    @Slot(str)
+    def selectChatterboxDtype(self, dtype: str) -> None:  # noqa: N802
+        """Switch the active model variant. Each variant lives at its
+        own filename in the HF cache, so swapping does NOT delete the
+        previously-downloaded variant — flipping back to it is free.
+        Persists to QSettings so subsequent launches honor the choice.
+        """
+        if self.selectedTtsEngine != "chatterbox":
+            return
+        if self._chatterbox_engine_downloading:
+            return
+        normalized = (dtype or "").strip().lower()
+        if normalized not in _CHATTERBOX_DTYPES:
+            return
+        service = getattr(self.tts_loader, "tts_service", None)
+        setter = getattr(service, "set_dtype", None)
+        if setter is None or normalized == getattr(service, "dtype", None):
+            return
+        setter(normalized)
+        self.settings.setValue("chatterbox_dtype", normalized)
+        # Engine readiness is per-dtype (different model files); force
+        # the catalog model to re-render so any voice rows whose state
+        # depends on engine readiness re-evaluate.
+        self._tts_catalog_model.modelReset.emit()
+        self.ui_changed.emit()
 
     @Slot()
     def downloadChatterboxModel(self) -> None:  # noqa: N802
@@ -1213,10 +1265,16 @@ class MainWindow(QObject):
             # `tts_model_root` is Piper-specific (defaults to
             # `<data>/tts/piper/`) under the v0.12.1 hierarchical layout;
             # the Chatterbox model cache has its own engine-scoped root.
+            stored_dtype = self.settings.value(
+                "chatterbox_dtype", _CHATTERBOX_DTYPES[0], str,
+            )
+            if stored_dtype not in _CHATTERBOX_DTYPES:
+                stored_dtype = _CHATTERBOX_DTYPES[0]
             return ChatterboxTtsService(
                 model_root=default_chatterbox_model_root(),
                 references_root=config.chatterbox_references_root,
                 selected_item=config.tts_model,
+                dtype=stored_dtype,
             )
         from voiceagent.services.tts import PiperTtsService
 

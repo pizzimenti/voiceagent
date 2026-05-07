@@ -46,6 +46,51 @@ ColumnLayout {
         text: chatterboxPane.tr("Chatterbox is voice-cloning only — no built-in voices. Record a reference clip from your microphone, or import an existing audio file.")
     }
 
+    // Model precision selector. Each variant downloads independently
+    // (HF cache keys per filename) so flipping among them is free
+    // once each has been fetched. q4 is smallest / fastest-load;
+    // q4f16 typically the fastest at inference on x86 with F16C+AVX-512;
+    // fp16 a balanced option; fp32 reference-quality but largest.
+    // Voice-clone pitch fidelity in particular benefits from higher
+    // precision because pitch lives in the high-frequency tail of
+    // the speaker embedding that aggressive quantization rounds away.
+    RowLayout {
+        Layout.fillWidth: true
+        spacing: Kirigami.Units.smallSpacing
+
+        Label {
+            text: chatterboxPane.tr("Model precision:")
+            Layout.alignment: Qt.AlignVCenter
+        }
+
+        ComboBox {
+            id: dtypeSelector
+            Layout.fillWidth: true
+            model: chatterboxPane.hasVoiceAgent
+                ? chatterboxPane.voiceAgent.chatterboxDtypeOptions
+                : []
+            currentIndex: {
+                if (!chatterboxPane.hasVoiceAgent) return -1;
+                var opts = chatterboxPane.voiceAgent.chatterboxDtypeOptions;
+                var sel = chatterboxPane.voiceAgent.selectedChatterboxDtype;
+                for (var i = 0; i < opts.length; i++) {
+                    if (opts[i] === sel) return i;
+                }
+                return 0;
+            }
+            // Disable while a download is in flight — switching dtype
+            // mid-download would orphan the worker on a wrong-variant
+            // graph. Re-enabled once the engine state settles.
+            enabled: chatterboxPane.hasVoiceAgent
+                && !chatterboxPane.voiceAgent.chatterboxEngineDownloading
+            onActivated: {
+                if (chatterboxPane.hasVoiceAgent) {
+                    chatterboxPane.voiceAgent.selectChatterboxDtype(currentText);
+                }
+            }
+        }
+    }
+
     // Engine-state banner. Three visual states:
     //   1. Model NOT downloaded → warning banner + "Download model" button
     //      with the ~700 MB size disclosure.
@@ -216,7 +261,7 @@ ColumnLayout {
         closePolicy: Popup.NoAutoClose
 
         property string errorText: ""
-        readonly property real recordingSeconds: 15.0
+        readonly property real recordingSeconds: 60.0
         readonly property bool isRecording: chatterboxPane.hasVoiceAgent
             && chatterboxPane.voiceAgent.chatterboxRecordingActive
 

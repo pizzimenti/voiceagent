@@ -81,16 +81,22 @@ class ChatterboxTtsService(TextToSpeechBackend):
     # truncated waveform rather than a hang.
     MAX_NEW_TOKENS = 1024
 
+    # User-selectable model precision variants. Higher precision = better
+    # tonal fidelity (q4 quantization rounds away high-frequency tail of
+    # speaker embeddings, where pitch lives) at the cost of disk + RAM.
+    SUPPORTED_DTYPES: tuple[str, ...] = ("q4", "q4f16", "fp16", "fp32")
+
     def __init__(
         self,
         model_root: Path,
         references_root: Path,
         selected_item: str | None = None,
+        dtype: str | None = None,
     ) -> None:
         self.model_root = Path(model_root)
         self.references_root = Path(references_root)
         self._selected_item = selected_item
-        self._dtype = self.DEFAULT_DTYPE
+        self._dtype = dtype if dtype in self.SUPPORTED_DTYPES else self.DEFAULT_DTYPE
         self._logger = _logger
         # Cached ONNX sessions + tokenizer. `None` until first synth
         # (or first explicit `_load_models` call). The lock serializes
@@ -99,6 +105,30 @@ class ChatterboxTtsService(TextToSpeechBackend):
         self._tokenizer: Any | None = None
         self._load_lock = threading.Lock()
         self.references_root.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def dtype(self) -> str:
+        return self._dtype
+
+    def set_dtype(self, value: str) -> None:
+        """Switch the active model variant. Invalidates the cached
+        sessions (different .onnx graph at the new precision) and the
+        tokenizer (per-dtype cache key). Subsequent synth calls
+        re-resolve against the new variant; if it isn't downloaded the
+        synth raises and the engine-download UI fires.
+        """
+        if value not in self.SUPPORTED_DTYPES:
+            self._logger.warning(
+                "ignoring unsupported chatterbox dtype %r (allowed: %s)",
+                value, ", ".join(self.SUPPORTED_DTYPES),
+            )
+            return
+        if value == self._dtype:
+            return
+        self._dtype = value
+        with self._load_lock:
+            self._sessions = None
+            self._tokenizer = None
 
     # ------------------------------------------------------------------ #
     # Backend protocol — properties                                       #
@@ -214,9 +244,6 @@ class ChatterboxTtsService(TextToSpeechBackend):
         np, ort, transformers_mod, librosa, soundfile = self._import_extras()
         sessions, tokenizer = self._load_models()
 
-        audio_values, _ = librosa.load(str(ref_path), sr=self.SAMPLE_RATE)
-        audio_values = audio_values[np.newaxis, :].astype(np.float32)
-
         input_ids = tokenizer(text, return_tensors="np")["input_ids"].astype(np.int64)
 
         rep_penalty = _RepetitionPenaltyLogitsProcessor(np, penalty=1.2)
@@ -227,7 +254,21 @@ class ChatterboxTtsService(TextToSpeechBackend):
         language_model_session = sessions["language_model"]
         cond_decoder_session = sessions["conditional_decoder"]
 
-        cond_emb = prompt_token = speaker_embeddings = speaker_features = None
+        # Speaker-features cache. The output of `speech_encoder.run()` is
+        # deterministic for a given (reference clip, dtype) pair, but the
+        # encoder pass scales linearly with reference duration — at the
+        # 60 s recording max the per-synth encoder cost would otherwise
+        # be ~1 s every call. Cache the 4-tuple on disk as `<voice>.<dtype>.npz`
+        # next to the WAV; subsequent synths skip the encoder entirely.
+        # Cache invalidates automatically when dtype changes (the filename
+        # is dtype-keyed) and explicitly when the voice is removed or
+        # re-imported (see `remove_item` / `import_reference_clip`).
+        cond_emb, prompt_token, speaker_embeddings, speaker_features = (
+            self._load_or_compute_speaker_features(
+                name, ref_path, np, librosa, speech_encoder_session,
+            )
+        )
+
         past_key_values: dict[str, Any] = {}
         attention_mask = None
         position_ids = None
@@ -236,12 +277,8 @@ class ChatterboxTtsService(TextToSpeechBackend):
             inputs_embeds = embed_tokens_session.run(None, {"input_ids": input_ids})[0]
 
             if i == 0:
-                (
-                    cond_emb,
-                    prompt_token,
-                    speaker_embeddings,
-                    speaker_features,
-                ) = speech_encoder_session.run(None, {"audio_values": audio_values})
+                # Speaker features were precomputed via the cache above;
+                # only the per-iteration LM-input wiring belongs here.
                 inputs_embeds = np.concatenate((cond_emb, inputs_embeds), axis=1)
 
                 batch_size, seq_len, _ = inputs_embeds.shape
@@ -440,6 +477,18 @@ class ChatterboxTtsService(TextToSpeechBackend):
             pass
         except OSError as exc:
             self._logger.warning("failed to remove reference %s: %s", ref, exc)
+        # Wipe any speaker-features cache files for this voice across
+        # all dtypes (the cache filename is dtype-keyed, so a single
+        # remove must sweep them all).
+        for cache_path in self._speaker_features_cache_paths(item_name):
+            try:
+                cache_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                self._logger.warning(
+                    "failed to remove cache %s: %s", cache_path, exc
+                )
 
     def artifact_paths(self, item_name: str) -> list[Path]:
         paths: list[Path] = []
@@ -467,6 +516,108 @@ class ChatterboxTtsService(TextToSpeechBackend):
 
     def _reference_path(self, item_name: str) -> Path:
         return self.references_root / f"{item_name}.wav"
+
+    def _speaker_features_path(self, item_name: str) -> Path:
+        """Cache filename for the speaker-features tuple at the active
+        dtype. Per-(voice, dtype) keying so dtype switches naturally
+        invalidate the old cache (the new one is computed on first
+        synth at the new dtype) without trashing the previous variant
+        — useful when the user flips back and forth.
+        """
+        return self.references_root / f"{item_name}.{self._dtype}.npz"
+
+    def _speaker_features_cache_paths(self, item_name: str) -> list[Path]:
+        """All speaker-features cache files for `item_name`, across
+        every dtype. Used by `remove_item`, `invalidate_speaker_features_cache`
+        and re-import to wipe stale embeddings when the underlying
+        reference clip changes.
+        """
+        return [
+            self.references_root / f"{item_name}.{dtype}.npz"
+            for dtype in self.SUPPORTED_DTYPES
+        ]
+
+    def invalidate_speaker_features_cache(self, item_name: str) -> None:
+        """Remove every cached speaker-features file for `item_name`,
+        across all supported dtypes. Public surface for callers (the
+        mic-record worker in window.py) that write the reference clip
+        outside `import_reference_clip`'s codepath.
+        """
+        if not item_name:
+            return
+        for cache_path in self._speaker_features_cache_paths(item_name):
+            try:
+                cache_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                self._logger.warning(
+                    "failed to invalidate cache %s: %s", cache_path, exc
+                )
+
+    def _load_or_compute_speaker_features(
+        self,
+        item_name: str,
+        ref_path: Path,
+        np,
+        librosa,
+        speech_encoder_session,
+    ):
+        """Return `(cond_emb, prompt_token, speaker_embeddings,
+        speaker_features)` for `item_name`. Loads from the
+        per-(voice, dtype) cache file if present and newer than the
+        reference WAV; else runs the speech encoder, caches, and
+        returns. Cache miss path matches the original inline encoder
+        pass byte-for-byte; cache hit path skips the encoder entirely.
+        """
+        cache_path = self._speaker_features_path(item_name)
+        if cache_path.exists():
+            try:
+                ref_mtime = ref_path.stat().st_mtime
+                cache_mtime = cache_path.stat().st_mtime
+                if cache_mtime >= ref_mtime:
+                    with np.load(str(cache_path)) as data:
+                        return (
+                            data["cond_emb"],
+                            data["prompt_token"],
+                            data["speaker_embeddings"],
+                            data["speaker_features"],
+                        )
+                self._logger.info(
+                    "speaker-features cache stale for %s (ref newer); "
+                    "recomputing",
+                    item_name,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning(
+                    "speaker-features cache load failed for %s (%s); "
+                    "recomputing",
+                    item_name, exc,
+                )
+
+        # Cache miss / stale / load failure: run the encoder.
+        audio_values, _ = librosa.load(str(ref_path), sr=self.SAMPLE_RATE)
+        audio_values = audio_values[np.newaxis, :].astype(np.float32)
+        cond_emb, prompt_token, speaker_embeddings, speaker_features = (
+            speech_encoder_session.run(None, {"audio_values": audio_values})
+        )
+        # Best-effort cache write — failure is non-fatal, just means
+        # next synth pays the encoder cost again.
+        try:
+            np.savez_compressed(
+                str(cache_path),
+                cond_emb=cond_emb,
+                prompt_token=prompt_token,
+                speaker_embeddings=speaker_embeddings,
+                speaker_features=speaker_features,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                "speaker-features cache save failed for %s (%s); "
+                "next synth will recompute",
+                item_name, exc,
+            )
+        return cond_emb, prompt_token, speaker_embeddings, speaker_features
 
     # ------------------------------------------------------------------ #
     # Reference-clip management (used by window.py voice-management UI)   #
@@ -502,6 +653,16 @@ class ChatterboxTtsService(TextToSpeechBackend):
                 ) from exc
             samples, _ = librosa.load(str(source_path), sr=self.SAMPLE_RATE, mono=True)
             soundfile.write(str(target), samples, self.SAMPLE_RATE)
+        # Wipe any stale speaker-features caches for this name (a prior
+        # import / recording at the same name would have produced them
+        # against different audio).
+        for cache_path in self._speaker_features_cache_paths(clean_name):
+            try:
+                cache_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
         self._logger.info("imported reference clip %s -> %s", source_path, target)
         return target
 

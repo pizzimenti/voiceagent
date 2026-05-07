@@ -73,6 +73,8 @@ QtObject {
     property bool chatterboxEngineReady: false
     property bool chatterboxEngineDownloading: false
     property real chatterboxEngineDownloadProgress: 0.0
+    property var chatterboxDtypeOptions: ["q4", "q4f16", "fp16", "fp32"]
+    property string selectedChatterboxDtype: "q4"
 
     // Footer label.
     property string versionLabel: "v0.0.0 build 0"
@@ -84,6 +86,7 @@ QtObject {
     function startChatterboxRecording(name, seconds) {}
     function cancelChatterboxRecording() {}
     function downloadChatterboxModel() {}
+    function selectChatterboxDtype(dtype) {}
 
     // Slot-shaped no-ops covering both SessionSetupPane click handlers
     // and MainWindow header actions.
