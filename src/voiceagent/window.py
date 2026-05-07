@@ -4,6 +4,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 import logging
 from pathlib import Path
+import threading
 import time
 from collections.abc import Callable
 
@@ -280,6 +281,23 @@ class MainWindow(QObject):
         # consumes it on the next IDLE transition. None when no swap
         # is queued — the listener disconnects itself once it fires.
         self._pending_tts_engine: str | None = None
+
+        # Chatterbox reference-voice recorder state. The worker thread
+        # writes `_chatterbox_record_progress` / `_chatterbox_record_finished`
+        # signals; the GUI-thread slots translate them into Property
+        # updates the QML recording dialog reads. `_cancel_flag` is the
+        # one-way kill switch the QML "Stop" button toggles.
+        self._chatterbox_record_thread: threading.Thread | None = None
+        self._chatterbox_record_cancel_flag = False
+        self._chatterbox_record_active = False
+        self._chatterbox_record_progress_value = 0.0
+        self._chatterbox_record_active_name = ""
+        self._chatterbox_record_progress.connect(
+            self._on_chatterbox_record_progress
+        )
+        self._chatterbox_record_finished.connect(
+            self._on_chatterbox_record_finished
+        )
 
         self.controller.status_changed.connect(self._emit_ui_changed)
         self.controller.connection_changed.connect(self._handle_connection_changed)
@@ -784,42 +802,194 @@ class MainWindow(QObject):
         # ComboBox switching to the new entry is the visible feedback.
         return new_name
 
-    @Slot(result=str)
-    def useChatterboxBundledDefault(self) -> str:  # noqa: N802
-        """Copy the bundled Piper-synthesized default reference clip
-        into the references directory and select it as the active
-        voice. Returns the saved name (`"default"`) on success, empty
-        string on failure (logged + appended to conversation log).
+    # ------------------------------------------------------------------
+    # Chatterbox mic-capture (option A) — fixed-duration recorder.
+    #
+    # Distinct from `MicrophoneRecorder` (which is wired into the STT
+    # pipeline, uses VAD, and streams continuously). The reference-voice
+    # recorder needs the opposite: record exactly N seconds, no VAD,
+    # save to disk as a 24 kHz mono WAV. Lives entirely in window.py
+    # rather than as a service so the QML recording dialog has a single
+    # owner for the worker thread + cancel flag + progress state.
+    # ------------------------------------------------------------------
+
+    @Property(bool, notify=ui_changed)
+    def chatterboxRecordingActive(self) -> bool:  # noqa: N802
+        return self._chatterbox_record_active
+
+    @Property(float, notify=ui_changed)
+    def chatterboxRecordingProgress(self) -> float:  # noqa: N802
+        """0.0 → 1.0 fraction of the requested recording duration that
+        has elapsed. ProgressBar in QML binds directly to this.
+        """
+        return self._chatterbox_record_progress_value
+
+    @Property(str, notify=ui_changed)
+    def chatterboxRecordingName(self) -> str:  # noqa: N802
+        return self._chatterbox_record_active_name
+
+    @Slot(str, float)
+    def startChatterboxRecording(  # noqa: N802
+        self, name: str, seconds: float = 15.0,
+    ) -> None:
+        """Start a fixed-duration mic capture in a worker thread. The
+        worker emits `_chatterbox_record_progress` ticks ~10 Hz and a
+        single `_chatterbox_record_finished` at the end. QML calls
+        `cancelChatterboxRecording()` to stop early; the worker saves
+        whatever it has captured up to that point.
         """
         if self.selectedTtsEngine != "chatterbox":
-            return ""
-        service = getattr(self.tts_loader, "tts_service", None)
-        seeder = getattr(service, "seed_default_reference", None)
-        if seeder is None:
-            return ""
+            return
+        if self._chatterbox_record_active:
+            return
+        cleaned = "".join(
+            c if c.isalnum() or c in "-_" else "_" for c in (name or "")
+        ).strip("_") or "user-voice"
+        self._chatterbox_record_cancel_flag = False
+        self._chatterbox_record_active = True
+        self._chatterbox_record_progress_value = 0.0
+        self._chatterbox_record_active_name = cleaned
+        self.ui_changed.emit()
+        self._chatterbox_record_thread = threading.Thread(
+            target=self._record_chatterbox_worker,
+            args=(cleaned, max(1.0, float(seconds))),
+            name="chatterbox-recorder",
+            daemon=True,
+        )
+        self._chatterbox_record_thread.start()
+
+    @Slot()
+    def cancelChatterboxRecording(self) -> None:  # noqa: N802
+        """Set the cancel flag. The worker polls it on each progress
+        tick and stops the sounddevice stream when set; whatever was
+        captured up to that point is saved as the reference clip.
+        Closing the QML dialog without explicit cancel does NOT stop
+        the worker — the user's recorded audio is preserved.
+        """
+        self._chatterbox_record_cancel_flag = True
+
+    def _record_chatterbox_worker(self, name: str, seconds: float) -> None:
+        # Background thread. `sd.rec()` is non-blocking — it allocates
+        # a buffer and starts a stream that the host audio system fills.
+        # We poll `sd.get_stream().active` and the cancel flag in a
+        # short sleep loop, emitting progress ticks. On cancel we stop
+        # the stream early and save the captured prefix; on natural
+        # completion we save the full buffer.
         try:
-            seeded = seeder()
+            import sounddevice as sd
+            import soundfile
+            import numpy as np
+        except ImportError as exc:
+            self._chatterbox_record_finished.emit(
+                "", False, f"audio extras missing: {exc}"
+            )
+            return
+
+        sample_rate = 24_000  # Chatterbox native; matches the service
+        total_frames = int(sample_rate * seconds)
+        try:
+            audio = sd.rec(
+                total_frames,
+                samplerate=sample_rate,
+                channels=1,
+                dtype="float32",
+                blocking=False,
+            )
         except Exception as exc:  # noqa: BLE001
-            self._logger.exception("seed_default_reference failed: %s", exc)
-            self._append_log_message(
-                f"Could not seed default voice: {exc}", "error"
+            self._chatterbox_record_finished.emit(
+                "", False, f"could not start recording: {exc}"
             )
-            return ""
-        if seeded is None:
-            self._append_log_message(
-                "Bundled default reference clip is missing.", "error"
+            return
+
+        start = time.monotonic()
+        frames_captured = total_frames
+        while True:
+            stream = sd.get_stream() if hasattr(sd, "get_stream") else None
+            if stream is None or not stream.active:
+                break
+            elapsed = time.monotonic() - start
+            self._chatterbox_record_progress.emit(
+                min(elapsed, seconds), seconds
             )
-            return ""
+            if self._chatterbox_record_cancel_flag:
+                try:
+                    sd.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+                frames_captured = max(1, int(elapsed * sample_rate))
+                break
+            time.sleep(0.1)
+
+        try:
+            sd.wait()
+        except Exception:  # noqa: BLE001
+            pass
+        self._chatterbox_record_progress.emit(seconds, seconds)
+
+        service = getattr(self.tts_loader, "tts_service", None)
+        refs_root = getattr(service, "references_root", None)
+        if refs_root is None:
+            self._chatterbox_record_finished.emit(
+                "", False, "Chatterbox engine is no longer active"
+            )
+            return
+
+        target = Path(refs_root) / f"{name}.wav"
+        try:
+            Path(refs_root).mkdir(parents=True, exist_ok=True)
+            # Keep only the captured prefix when the user stopped early.
+            buf = np.asarray(audio[:frames_captured])
+            soundfile.write(str(target), buf, sample_rate)
+        except Exception as exc:  # noqa: BLE001
+            self._chatterbox_record_finished.emit(
+                "", False, f"could not save recording: {exc}"
+            )
+            return
+
+        self._chatterbox_record_finished.emit(name, True, "")
+
+    def _on_chatterbox_record_progress(
+        self, elapsed: float, total: float,
+    ) -> None:
+        # GUI-thread slot, queued from the worker thread.
+        if total <= 0:
+            self._chatterbox_record_progress_value = 0.0
+        else:
+            self._chatterbox_record_progress_value = min(
+                1.0, max(0.0, elapsed / total)
+            )
+        self.ui_changed.emit()
+
+    def _on_chatterbox_record_finished(
+        self, name: str, success: bool, error: str,
+    ) -> None:
+        self._chatterbox_record_active = False
+        self._chatterbox_record_progress_value = 0.0
+        self._chatterbox_record_active_name = ""
+        self._chatterbox_record_cancel_flag = False
+
+        if not success:
+            if error:
+                self._append_log_message(
+                    f"Recording failed: {error}", "error"
+                )
+            self.ui_changed.emit()
+            return
+
+        # Refresh catalog with the new reference clip and select it as
+        # the active voice. Same path the import-flow uses.
+        service = getattr(self.tts_loader, "tts_service", None)
+        if service is None:
+            self.ui_changed.emit()
+            return
         new_catalog = list(service.available_items())
         self._tts_catalog = new_catalog
         self._tts_catalog_model.replace_names(new_catalog)
-        service.set_selected_item("default")
-        self.tts_loader.select_model("default")
-        self.settings.setValue("selected_tts_model_chatterbox", "default")
+        if name in new_catalog:
+            service.set_selected_item(name)
+            self.tts_loader.select_model(name)
+            self.settings.setValue("selected_tts_model_chatterbox", name)
         self.ui_changed.emit()
-        # No success notification — the catalog list updating + voice
-        # ComboBox switching to "default" is the visible feedback.
-        return "default"
 
     @Slot(str)
     def selectTtsEngine(self, engine_name: str) -> None:  # noqa: N802
@@ -933,21 +1103,6 @@ class MainWindow(QObject):
         # down, so a constructor failure doesn't leave the window with
         # neither a working old loader nor a working new one.
         new_service = self._build_tts_service_for_engine(engine)
-
-        # Chatterbox first-run UX: when the user switches to Chatterbox
-        # and the references catalog is empty, seed the bundled default
-        # reference clip so the engine works out of the box. Users can
-        # later record/import additional clips via Settings → Voices.
-        # The full A+B+C first-run modal prompt lands in v0.12.1.
-        if engine == "chatterbox" and hasattr(new_service, "seed_default_reference"):
-            try:
-                if not new_service.available_items():
-                    seeded = new_service.seed_default_reference()
-                    if seeded is not None:
-                        new_service.set_selected_item("default")
-            except Exception:
-                self._logger.exception("Chatterbox default-reference seed failed")
-
         new_loader = TtsVoiceLoader(new_service)
 
         old_loader = self.tts_loader

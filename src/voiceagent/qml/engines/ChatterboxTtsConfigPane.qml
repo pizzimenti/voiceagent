@@ -7,10 +7,10 @@ import org.kde.kirigami 2.20 as Kirigami
 import ".."
 
 // Chatterbox TTS config pane — voice-cloning-only engine with no
-// built-in voices, so the pane includes a reference-clip setup row
-// (Record / Import / Use bundled default) above the filter + catalog.
-// The catalog itself lists imported reference clips, since for
-// Chatterbox a "voice" === a reference clip.
+// built-in voices. The pane includes a reference-clip setup row
+// (Record / Import) above the filter + catalog. The catalog itself
+// lists user-supplied reference clips, since for Chatterbox a
+// "voice" === a reference clip.
 //
 // Tunable parameter sliders (cfg_weight, exaggeration) will land here
 // once the corresponding Slots exist on `voiceAgent`. See the
@@ -43,7 +43,7 @@ ColumnLayout {
         Layout.fillWidth: true
         visible: true
         type: Kirigami.MessageType.Information
-        text: chatterboxPane.tr("Chatterbox is voice-cloning only — no built-in voices. Add a reference clip below, or load the bundled default voice.")
+        text: chatterboxPane.tr("Chatterbox is voice-cloning only — no built-in voices. Record a reference clip from your microphone, or import an existing audio file.")
     }
 
     RowLayout {
@@ -53,29 +53,19 @@ ColumnLayout {
         Button {
             text: chatterboxPane.tr("Record from mic…")
             icon.name: "audio-input-microphone"
-            enabled: false  // option A — wired in v0.12.1
-            ToolTip.visible: hovered
-            ToolTip.text: chatterboxPane.tr("Microphone-record reference clip — coming in v0.12.1")
+            enabled: chatterboxPane.hasVoiceAgent
+                && !chatterboxPane.voiceAgent.chatterboxRecordingActive
+            onClicked: {
+                recordingNameField.text = "";
+                recordingDialog.errorText = "";
+                recordingDialog.open();
+            }
         }
 
         Button {
             text: chatterboxPane.tr("Import audio file…")
             icon.name: "document-open"
             onClicked: chatterboxImportDialog.open()
-        }
-
-        Button {
-            text: chatterboxPane.tr("Use bundled default")
-            icon.name: "audio-volume-medium"
-            onClicked: {
-                if (chatterboxPane.hasVoiceAgent) {
-                    var saved = chatterboxPane.voiceAgent.useChatterboxBundledDefault();
-                    if (saved !== "") {
-                        // tts catalog refreshes via the Slot's
-                        // ui_changed.emit().
-                    }
-                }
-            }
         }
     }
 
@@ -119,13 +109,147 @@ ColumnLayout {
         onAccepted: {
             if (!chatterboxPane.hasVoiceAgent) return;
             var url = String(selectedFile);
-            // Derive a default name from the file's basename.
             var basename = url.substring(url.lastIndexOf("/") + 1);
             var dot = basename.lastIndexOf(".");
             var stem = dot > 0 ? basename.substring(0, dot) : basename;
-            var saved = chatterboxPane.voiceAgent.importChatterboxReference(url, stem);
+            chatterboxPane.voiceAgent.importChatterboxReference(url, stem);
             // No special handling on success — the catalog refresh
             // happens inside the Slot via ui_changed.
+        }
+    }
+
+    // Mic-recording session dialog.
+    //
+    // Two visual phases:
+    //   - PRE-RECORD: name TextField + Start button + Cancel.
+    //   - RECORDING: name read-only label, ProgressBar bound to
+    //     `chatterboxRecordingProgress`, Stop button (saves whatever
+    //     was captured up to that point), Cancel (no-op visually —
+    //     the dialog stays open until the worker emits its finished
+    //     signal so we can surface errors).
+    //
+    // The worker auto-stops at the requested duration (15 s by
+    // default). On the finished signal handler in window.py the
+    // dialog auto-closes via the Connections block below.
+    Dialog {
+        id: recordingDialog
+        title: chatterboxPane.tr("Record reference voice")
+        modal: true
+        anchors.centerIn: parent
+        standardButtons: Dialog.NoButton
+        closePolicy: Popup.NoAutoClose
+
+        property string errorText: ""
+        readonly property real recordingSeconds: 15.0
+        readonly property bool isRecording: chatterboxPane.hasVoiceAgent
+            && chatterboxPane.voiceAgent.chatterboxRecordingActive
+
+        contentItem: ColumnLayout {
+            spacing: Kirigami.Units.largeSpacing
+
+            Label {
+                Layout.fillWidth: true
+                Layout.preferredWidth: Kirigami.Units.gridUnit * 24
+                wrapMode: Text.WordWrap
+                text: recordingDialog.isRecording
+                    ? chatterboxPane.tr("Recording — speak now. Auto-stops in %1 seconds.").replace(
+                        "%1", String(recordingDialog.recordingSeconds))
+                    : chatterboxPane.tr("Choose a name for the new voice. Recording starts when you click Start and runs for up to %1 seconds.").replace(
+                        "%1", String(recordingDialog.recordingSeconds))
+            }
+
+            // PRE-RECORD: editable name input
+            TextField {
+                id: recordingNameField
+                Layout.fillWidth: true
+                placeholderText: chatterboxPane.tr("voice name (e.g. my-voice)")
+                visible: !recordingDialog.isRecording
+                enabled: !recordingDialog.isRecording
+                onAccepted: startButton.clicked()
+            }
+
+            // RECORDING: read-only name label
+            Label {
+                Layout.fillWidth: true
+                visible: recordingDialog.isRecording
+                text: chatterboxPane.tr("Voice: %1").replace(
+                    "%1", chatterboxPane.hasVoiceAgent
+                        ? chatterboxPane.voiceAgent.chatterboxRecordingName
+                        : "")
+                font.italic: true
+            }
+
+            ProgressBar {
+                Layout.fillWidth: true
+                from: 0.0
+                to: 1.0
+                value: chatterboxPane.hasVoiceAgent
+                    ? chatterboxPane.voiceAgent.chatterboxRecordingProgress
+                    : 0.0
+                visible: recordingDialog.isRecording
+            }
+
+            Label {
+                Layout.fillWidth: true
+                visible: recordingDialog.errorText !== ""
+                color: Kirigami.Theme.negativeTextColor
+                wrapMode: Text.WordWrap
+                text: recordingDialog.errorText
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    text: recordingDialog.isRecording
+                        ? chatterboxPane.tr("Stop")
+                        : chatterboxPane.tr("Cancel")
+                    onClicked: {
+                        if (recordingDialog.isRecording) {
+                            // Stop early; worker saves the captured prefix.
+                            if (chatterboxPane.hasVoiceAgent) {
+                                chatterboxPane.voiceAgent.cancelChatterboxRecording();
+                            }
+                        } else {
+                            recordingDialog.close();
+                        }
+                    }
+                }
+
+                Button {
+                    id: startButton
+                    text: chatterboxPane.tr("Start")
+                    visible: !recordingDialog.isRecording
+                    enabled: !recordingDialog.isRecording
+                        && recordingNameField.text.trim().length > 0
+                        && chatterboxPane.hasVoiceAgent
+                    onClicked: {
+                        recordingDialog.errorText = "";
+                        chatterboxPane.voiceAgent.startChatterboxRecording(
+                            recordingNameField.text.trim(),
+                            recordingDialog.recordingSeconds,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Auto-close when the worker reports finished. The recording
+        // state transition (chatterboxRecordingActive: true → false)
+        // is the trigger; we react in onIsRecordingChanged via a
+        // tracker. Errors land in window.py's conversation log.
+        property bool _wasRecording: false
+        onIsRecordingChanged: {
+            if (recordingDialog._wasRecording && !recordingDialog.isRecording) {
+                // Recording just finished. Close the dialog. The
+                // catalog model refresh + voice selection both happen
+                // inside the worker's finished-signal handler.
+                recordingDialog.close();
+            }
+            recordingDialog._wasRecording = recordingDialog.isRecording;
         }
     }
 }

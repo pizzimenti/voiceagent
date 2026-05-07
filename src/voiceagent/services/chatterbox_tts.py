@@ -429,28 +429,6 @@ class ChatterboxTtsService(TextToSpeechBackend):
     # Reference-clip management (used by window.py voice-management UI)   #
     # ------------------------------------------------------------------ #
 
-    def seed_default_reference(self, name: str = "default") -> Path | None:
-        """Copy the bundled default reference clip into references_root.
-
-        The package ships `voiceagent/assets/default-reference.wav` (a
-        Piper-synthesized voice) so the engine has something to use on
-        first run if the user hasn't recorded or imported their own
-        clip. Returns the destination Path on success, or None if the
-        bundled asset is missing (e.g. wheel was built without
-        `package-data` entry — defensive only).
-        """
-        target = self._reference_path(name)
-        if target.exists():
-            return target
-        bundled = Path(__file__).resolve().parent.parent / "assets" / "default-reference.wav"
-        if not bundled.exists():
-            self._logger.warning("bundled default reference not found at %s", bundled)
-            return None
-        self.references_root.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(bundled, target)
-        self._logger.info("seeded default Chatterbox reference clip -> %s", target)
-        return target
-
     def import_reference_clip(self, source_path: Path, name: str) -> Path:
         """Copy a user-supplied audio file into references_root.
 

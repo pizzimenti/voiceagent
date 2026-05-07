@@ -239,9 +239,10 @@ def test_swap_chatterbox_then_back_to_piper_preserves_installed_voices(_swap_win
     assert win.tts_loader.tts_service.backend_name == "Piper"
     assert len(win.ttsOptions) == 4
 
-    # Swap to chatterbox — references_root is empty so seed default.
+    # Swap to chatterbox — empty references_root means empty catalog.
     win._perform_tts_engine_swap("chatterbox")
     assert win.tts_loader.tts_service.backend_name == "Chatterbox"
+    assert list(win.ttsOptions) == []
 
     # Swap back to piper.
     win._perform_tts_engine_swap("piper")
@@ -262,13 +263,16 @@ def test_swap_chatterbox_then_back_to_piper_preserves_installed_voices(_swap_win
     assert selected in win.ttsOptions
 
 
-def test_swap_to_chatterbox_seeds_default_voice_when_empty(_swap_window):
-    """When references_root is empty, swapping to chatterbox must
-    seed the bundled default reference clip and select it.
+def test_swap_to_chatterbox_with_empty_references_yields_empty_catalog(_swap_window):
+    """When references_root is empty, swapping to Chatterbox produces
+    an empty voice catalog. The user must explicitly record (option A)
+    or import (option B) a reference clip — there is no bundled
+    default. (Pre-1.0 design choice: a Piper-synthesized 'default'
+    voice would only be a clone of an inferior model, not a meaningful
+    default. The user provides their own clone source from minute one.)
     """
     win = _swap_window
     win._perform_tts_engine_swap("chatterbox")
     assert win.tts_loader.tts_service.backend_name == "Chatterbox"
-    options = list(win.ttsOptions)
-    assert "default" in options, options
-    assert win.selectedTtsModel == "default"
+    assert list(win.ttsOptions) == []
+    assert win.selectedTtsModel == ""
