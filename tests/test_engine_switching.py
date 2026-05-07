@@ -7,7 +7,8 @@ Verifies the four expected branches:
 3. `tts_engine == "chatterbox"` AND extras absent → falls back to
    `PiperTtsService` with a logged warning, never `ImportError`.
 4. The Chatterbox service's `model_root` is rooted at
-   `<config.tts_model_root>/chatterbox`, not the bare TTS root.
+   `default_chatterbox_model_root()` (`<data>/tts/chatterbox/model/`),
+   independent of the Piper-specific `tts_model_root`.
 """
 
 from __future__ import annotations
@@ -123,17 +124,31 @@ def test_chatterbox_falls_back_to_piper_when_extras_absent(
     assert "chatterbox" in joined
 
 
-def test_chatterbox_model_root_is_under_tts_model_root(monkeypatch, tmp_path):
+def test_chatterbox_model_root_uses_engine_scoped_helper(monkeypatch, tmp_path):
+    """Chatterbox `model_root` must come from
+    `default_chatterbox_model_root()` (engine-scoped, `<data>/tts/chatterbox/model/`),
+    not from `config.tts_model_root` which is now Piper-specific.
+    Patch the helper into `tmp_path` so the test never touches the
+    user's real XDG data dir.
+    """
     pytest.importorskip(
         "voiceagent.services.chatterbox_tts",
         reason="ChatterboxTtsService not yet wired in this branch",
     )
     _force_extras(monkeypatch, present=True)
+
+    expected = tmp_path / "tts" / "chatterbox" / "model"
+    # `build_shared_services` imports the helper inside the function
+    # body (`from voiceagent.paths import default_chatterbox_model_root`),
+    # so patching the source module is sufficient.
+    monkeypatch.setattr(
+        "voiceagent.paths.default_chatterbox_model_root",
+        lambda: expected,
+    )
+
     config = _make_config(tmp_path, tts_engine="chatterbox")
     _, tts, _, _ = build_shared_services(config)
-    expected = (tmp_path / "tts" / "chatterbox").resolve()
-    actual = Path(tts.model_root).resolve()
-    assert actual == expected
+    assert Path(tts.model_root).resolve() == expected.resolve()
 
 
 # ---------------------------------------------------------------------

@@ -8,7 +8,11 @@ import shlex
 import sys
 from typing import Literal
 
-from voiceagent.paths import default_stt_model_root, default_tts_model_root
+from voiceagent.paths import (
+    default_chatterbox_references_root,
+    default_piper_voices_root,
+    default_whisper_root,
+)
 
 _VALID_TTS_ENGINES: frozenset[str] = frozenset({"piper", "chatterbox"})
 
@@ -47,8 +51,8 @@ class AppConfig:
 
     @classmethod
     def from_env(cls) -> "AppConfig":
-        stt_model_root = Path(os.environ.get("VOICEAGENT_STT_MODEL_ROOT", default_stt_model_root())).expanduser()
-        tts_model_root = Path(os.environ.get("VOICEAGENT_TTS_MODEL_ROOT", default_tts_model_root())).expanduser()
+        stt_model_root = Path(os.environ.get("VOICEAGENT_STT_MODEL_ROOT", default_whisper_root())).expanduser()
+        tts_model_root = Path(os.environ.get("VOICEAGENT_TTS_MODEL_ROOT", default_piper_voices_root())).expanduser()
         default_tts_command = os.environ.get("TTS_COMMAND", "").strip()
         if default_tts_command:
             tts_command = shlex.split(default_tts_command)
@@ -85,7 +89,7 @@ class AppConfig:
         chatterbox_references_root = Path(
             os.environ.get(
                 "VOICEAGENT_CHATTERBOX_REFERENCES_ROOT",
-                str(Path.home() / ".local/share/voiceagent/chatterbox-references"),
+                str(default_chatterbox_references_root()),
             )
         ).expanduser()
         return cls(

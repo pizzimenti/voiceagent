@@ -59,10 +59,15 @@ def build_shared_services(
     )
     transcriber.model_root = config.stt_model_root
     if config.tts_engine == "chatterbox" and _chatterbox_extras_available():
+        from voiceagent.paths import default_chatterbox_model_root
         from voiceagent.services.chatterbox_tts import ChatterboxTtsService
 
+        # `tts_model_root` is now Piper-specific (defaults to
+        # `<data>/tts/piper/`), so appending `/chatterbox` to it would
+        # land inside Piper's voices directory. The Chatterbox model
+        # cache has its own engine-scoped root under `<data>/tts/chatterbox/model/`.
         tts_service: TextToSpeechBackend = ChatterboxTtsService(
-            model_root=config.tts_model_root / "chatterbox",
+            model_root=default_chatterbox_model_root(),
             references_root=config.chatterbox_references_root,
             selected_item=config.tts_model,
         )

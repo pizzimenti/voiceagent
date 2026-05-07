@@ -549,6 +549,29 @@ class MainWindow(QObject):
         normalized = str(stored).strip().lower()
         return normalized if normalized in _TTS_ENGINE_OPTIONS else "piper"
 
+    @Property(str, notify=ui_changed)
+    def ttsConfigPaneFile(self) -> str:  # noqa: N802
+        """QML filename of the per-engine TTS config pane.
+
+        Resolved by the Voice Models dialog's Loader, which prepends
+        ``"engines/"`` and instantiates the pane. Adding a future TTS
+        engine is one new ``qml/engines/<Name>TtsConfigPane.qml`` file
+        plus one branch here — `MainWindow.qml` does not change.
+        """
+        engine = self.selectedTtsEngine
+        if engine == "chatterbox":
+            return "ChatterboxTtsConfigPane.qml"
+        return "PiperTtsConfigPane.qml"
+
+    @Property(str, notify=ui_changed)
+    def sttConfigPaneFile(self) -> str:  # noqa: N802
+        """QML filename of the per-engine STT config pane.
+
+        Only Whisper today; the indirection is in place so adding a
+        future STT engine is a one-line change here + one new QML pane.
+        """
+        return "WhisperSttConfigPane.qml"
+
     @Property(bool, notify=ui_changed)
     def modelLoading(self) -> bool:  # noqa: N802
         return self.model_loader.is_loading
@@ -874,10 +897,14 @@ class MainWindow(QObject):
         """
         config = AppConfig.from_env()
         if engine == "chatterbox":
+            from voiceagent.paths import default_chatterbox_model_root
             from voiceagent.services.chatterbox_tts import ChatterboxTtsService
 
+            # `tts_model_root` is Piper-specific (defaults to
+            # `<data>/tts/piper/`) under the v0.12.1 hierarchical layout;
+            # the Chatterbox model cache has its own engine-scoped root.
             return ChatterboxTtsService(
-                model_root=config.tts_model_root / "chatterbox",
+                model_root=default_chatterbox_model_root(),
                 references_root=config.chatterbox_references_root,
                 selected_item=config.tts_model,
             )

@@ -58,6 +58,12 @@ QtObject {
     property var sttCatalogModel: null
     property var ttsCatalogModel: null
 
+    // Per-engine config-pane filenames consumed by MainWindow's
+    // Voice Models Loader. Tests that don't open the dialog never
+    // read these, but keeping the stub honest avoids drift surprises.
+    property string ttsConfigPaneFile: "PiperTtsConfigPane.qml"
+    property string sttConfigPaneFile: "WhisperSttConfigPane.qml"
+
     // Slot-shaped no-ops covering both SessionSetupPane click handlers
     // and MainWindow header actions.
     function selectSttModel(name) {}

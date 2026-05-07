@@ -7,7 +7,8 @@ The env contract:
   falls back silently to `piper` (and logs a warning).
 * `VOICEAGENT_CHATTERBOX_REFERENCES_ROOT` points at the directory
   holding user-recorded `*.wav` reference clips. Defaults to
-  `~/.local/share/voiceagent/chatterbox-references`.
+  `~/.local/share/voiceagent/tts/chatterbox/references` under the
+  v0.12.1 hierarchical layout.
 """
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ def test_tts_engine_empty_string_falls_back_to_piper(monkeypatch):
 
 def test_chatterbox_references_root_default():
     config = AppConfig.from_env()
-    expected = Path.home() / ".local/share/voiceagent/chatterbox-references"
+    expected = Path.home() / ".local/share/voiceagent/tts/chatterbox/references"
     assert Path(config.chatterbox_references_root) == expected
 
 

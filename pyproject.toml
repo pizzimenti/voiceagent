@@ -62,7 +62,7 @@ Repository = "https://github.com/pizzimenti/voiceagent"
 where = ["src"]
 
 [tool.setuptools.package-data]
-voiceagent = ["qml/*.qml", "assets/*.wav"]
+voiceagent = ["qml/*.qml", "qml/engines/*.qml", "assets/*.wav"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

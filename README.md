@@ -33,12 +33,12 @@ Environment variables:
 - `WHISPER_MODEL` default: `large-v3`
 - `WHISPER_DEVICE` default: `auto`
 - `WHISPER_COMPUTE_TYPE` default: `auto`
-- `VOICEAGENT_STT_MODEL_ROOT` default: `$XDG_DATA_HOME/voiceagent/stt-models` or `~/.local/share/voiceagent/stt-models`
-- `VOICEAGENT_TTS_MODEL_ROOT` default: `$XDG_DATA_HOME/voiceagent/tts-models` or `~/.local/share/voiceagent/tts-models`
+- `VOICEAGENT_STT_MODEL_ROOT` default: `$XDG_DATA_HOME/voiceagent/stt/whisper` or `~/.local/share/voiceagent/stt/whisper`
+- `VOICEAGENT_TTS_MODEL_ROOT` default: `$XDG_DATA_HOME/voiceagent/tts/piper` or `~/.local/share/voiceagent/tts/piper`
 - `TTS_MODEL` optional Piper voice name like `en_US-lessac-medium` or a path to a Piper model file
 - `TTS_EXTRA_ARGS` optional extra command-line flags for TTS
 - `VOICEAGENT_TTS_ENGINE` default: `piper` — selects the TTS engine. Set to `chatterbox` to use Resemble AI's zero-shot voice cloning model. See [TTS engines](#tts-engines) below.
-- `VOICEAGENT_CHATTERBOX_REFERENCES_ROOT` default: `~/.local/share/voiceagent/chatterbox-references` — directory holding user-recorded reference voice clips (`*.wav`) for the Chatterbox engine.
+- `VOICEAGENT_CHATTERBOX_REFERENCES_ROOT` default: `~/.local/share/voiceagent/tts/chatterbox/references` — directory holding user-recorded reference voice clips (`*.wav`) for the Chatterbox engine.
 - `VOICEAGENT_MAX_HISTORY_TURNS` default: `20` — how many user/assistant entries (≈ 10 pairs) the conversation pane keeps. See [Conversation memory](#conversation-memory) below.
 
 Whisper downloads, Hugging Face cache data, and Piper voices are stored under the app's XDG data directory by default. Logs are stored under `$XDG_STATE_HOME/voiceagent/logs` or `~/.local/state/voiceagent/logs`:
@@ -71,7 +71,7 @@ That extra pulls in `onnxruntime`, `transformers`, `librosa`, and
 `soundfile`. The engine targets the `q4`-quantized variant of
 `ResembleAI/chatterbox-turbo-ONNX` (pure ONNX, no PyTorch). The first
 synthesis triggers a one-time ~700 MB model download under
-`$VOICEAGENT_TTS_MODEL_ROOT/chatterbox/`.
+`~/.local/share/voiceagent/tts/chatterbox/model/`.
 
 If you select the Chatterbox engine without those extras installed,
 voiceagent logs a warning and falls back to Piper rather than failing
@@ -98,9 +98,9 @@ provide a reference voice. You can:
 
 Reference clips are stored under
 `$VOICEAGENT_CHATTERBOX_REFERENCES_ROOT` (default
-`~/.local/share/voiceagent/chatterbox-references/`) as `*.wav` files,
-one per cloned voice. Manage them via Settings → Voice → Manage
-reference voices.
+`~/.local/share/voiceagent/tts/chatterbox/references/`) as `*.wav`
+files, one per cloned voice. Manage them via Settings → Voice →
+Manage reference voices.
 
 ### Performance
 

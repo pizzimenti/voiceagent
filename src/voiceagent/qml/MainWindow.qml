@@ -248,123 +248,67 @@ Kirigami.ApplicationWindow {
                     Layout.fillHeight: true
                     currentIndex: managerTabs.currentIndex
 
-                    ColumnLayout {
-                        Layout.leftMargin: Kirigami.Units.largeSpacing
-                        Layout.rightMargin: Kirigami.Units.largeSpacing
-                        Layout.topMargin: Kirigami.Units.mediumSpacing
-                        Layout.bottomMargin: Kirigami.Units.largeSpacing
-                        spacing: Kirigami.Units.smallSpacing
-
-                        TextField {
-                            Layout.fillWidth: true
-                            placeholderText: root.tr("Filter STT models")
-                            text: modelManagerWindow.sttFilter
-                            onTextChanged: modelManagerWindow.sttFilter = text
-                        }
-
-                        CatalogList {
-                            id: sttCatalogView
-                            catalogModel: root.hasVoiceAgent ? voiceAgent.sttCatalogModel : null
-                            filterText: modelManagerWindow.sttFilter
-                            selectedName: root.hasVoiceAgent ? voiceAgent.selectedSttModel : ""
-                            onSelect: function(name) { if (root.hasVoiceAgent) voiceAgent.selectSttModel(name); }
-                            onInstall: function(name) { if (root.hasVoiceAgent) voiceAgent.installSttModel(name); }
-                            onRemove: function(name) { if (root.hasVoiceAgent) voiceAgent.deleteSttModel(name); }
+                    // Speech-To-Text tab: a Loader resolves the active
+                    // STT engine's config pane file via
+                    // `voiceAgent.sttConfigPaneFile`. Adding a future
+                    // STT engine is one new pane file under
+                    // `qml/engines/` plus one branch in the Python
+                    // `sttConfigPaneFile` Property — no edits here.
+                    //
+                    // Filter wiring direction: the Loader seeds the
+                    // pane's local `filterText` once at load with
+                    // `modelManagerWindow.sttFilter`'s current value,
+                    // then mirrors pane → window via
+                    // `filterTextChanged`. We do NOT use Qt.binding
+                    // for the seed because the pane's TextField writes
+                    // back to its own `filterText`, which would
+                    // immediately break a binding installed here. The
+                    // pane is the editable source of truth for the
+                    // duration of its lifetime; the window acts as
+                    // persistence across pane swaps (engine change /
+                    // tab re-entry).
+                    Loader {
+                        id: sttConfigLoader
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        source: root.hasVoiceAgent
+                            ? "engines/" + voiceAgent.sttConfigPaneFile
+                            : ""
+                        onLoaded: {
+                            if (item) {
+                                item.voiceAgent = root.voiceAgent;
+                                item.filterText = modelManagerWindow.sttFilter;
+                                item.filterTextChanged.connect(function() {
+                                    modelManagerWindow.sttFilter = item.filterText;
+                                });
+                            }
                         }
                     }
 
-                    ColumnLayout {
-                        Layout.leftMargin: Kirigami.Units.largeSpacing
-                        Layout.rightMargin: Kirigami.Units.largeSpacing
-                        Layout.topMargin: Kirigami.Units.mediumSpacing
-                        Layout.bottomMargin: Kirigami.Units.largeSpacing
-                        spacing: Kirigami.Units.smallSpacing
-
-                        // Chatterbox-specific voice setup row. Visible only
-                        // when the active engine is Chatterbox; the engine
-                        // is voice-cloning-only and ships no built-in
-                        // voices, so the catalog stays empty until the user
-                        // adds a reference clip.
-                        Kirigami.InlineMessage {
-                            Layout.fillWidth: true
-                            visible: root.hasVoiceAgent && voiceAgent.selectedTtsEngine === "chatterbox"
-                            type: Kirigami.MessageType.Information
-                            text: root.tr("Chatterbox is voice-cloning only — no built-in voices. Add a reference clip below, or load the bundled default voice.")
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: root.hasVoiceAgent && voiceAgent.selectedTtsEngine === "chatterbox"
-                            spacing: Kirigami.Units.smallSpacing
-
-                            Button {
-                                text: root.tr("Record from mic…")
-                                icon.name: "audio-input-microphone"
-                                enabled: false  // option A — wired in v0.12.1
-                                ToolTip.visible: hovered
-                                ToolTip.text: root.tr("Microphone-record reference clip — coming in v0.12.1")
+                    // Text-To-Speech tab: same pattern as STT but driven
+                    // by `voiceAgent.ttsConfigPaneFile`, which switches
+                    // between PiperTtsConfigPane.qml and
+                    // ChatterboxTtsConfigPane.qml based on the active
+                    // engine. Loader.source flips when the engine
+                    // changes, instantiating the new pane.
+                    Loader {
+                        id: ttsConfigLoader
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        source: root.hasVoiceAgent
+                            ? "engines/" + voiceAgent.ttsConfigPaneFile
+                            : ""
+                        onLoaded: {
+                            if (item) {
+                                item.voiceAgent = root.voiceAgent;
+                                item.filterText = modelManagerWindow.ttsFilter;
+                                item.filterTextChanged.connect(function() {
+                                    modelManagerWindow.ttsFilter = item.filterText;
+                                });
                             }
-
-                            Button {
-                                text: root.tr("Import audio file…")
-                                icon.name: "document-open"
-                                onClicked: chatterboxImportDialog.open()
-                            }
-
-                            Button {
-                                text: root.tr("Use bundled default")
-                                icon.name: "audio-volume-medium"
-                                onClicked: {
-                                    if (root.hasVoiceAgent) {
-                                        var saved = voiceAgent.useChatterboxBundledDefault();
-                                        if (saved !== "") {
-                                            // tts catalog refreshes via the
-                                            // Slot's ui_changed.emit().
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        TextField {
-                            Layout.fillWidth: true
-                            placeholderText: root.tr("Filter TTS voices")
-                            text: modelManagerWindow.ttsFilter
-                            onTextChanged: modelManagerWindow.ttsFilter = text
-                        }
-
-                        CatalogList {
-                            id: ttsCatalogView
-                            catalogModel: root.hasVoiceAgent ? voiceAgent.ttsCatalogModel : null
-                            filterText: modelManagerWindow.ttsFilter
-                            selectedName: root.hasVoiceAgent ? voiceAgent.selectedTtsModel : ""
-                            onSelect: function(name) { if (root.hasVoiceAgent) voiceAgent.selectTtsModel(name); }
-                            onInstall: function(name) { if (root.hasVoiceAgent) voiceAgent.installTtsModel(name); }
-                            onRemove: function(name) { if (root.hasVoiceAgent) voiceAgent.deleteTtsModel(name); }
                         }
                     }
                 }
-            }
-        }
-
-        FileDialog {
-            id: chatterboxImportDialog
-            title: root.tr("Choose a reference audio file")
-            currentFolder: StandardPaths.standardLocations(StandardPaths.MusicLocation)[0]
-            nameFilters: [
-                root.tr("Audio files (*.wav *.mp3 *.flac *.ogg *.m4a *.aac)"),
-                root.tr("All files (*)"),
-            ]
-            onAccepted: {
-                if (!root.hasVoiceAgent) return;
-                var url = String(selectedFile);
-                // Derive a default name from the file's basename.
-                var basename = url.substring(url.lastIndexOf("/") + 1);
-                var dot = basename.lastIndexOf(".");
-                var stem = dot > 0 ? basename.substring(0, dot) : basename;
-                var saved = voiceAgent.importChatterboxReference(url, stem);
-                // No special handling on success — the catalog refresh
-                // happens inside the Slot via ui_changed.
             }
         }
     }
