@@ -159,27 +159,42 @@ class LmStudioClient:
         # `/api/v1/models` endpoint can report `loaded_instances: []`
         # for every model even when one is actively serving chat
         # completions. The OpenAI-compatible `/v1/models` endpoint
-        # still lists models that are reachable for inference. Fall
-        # back to the first LLM entry there (filtering out embedding
-        # models by cross-referencing `type: llm` in the native list).
+        # still lists models that are reachable for inference.
+        #
+        # Only apply the workaround when /v1/models returns exactly
+        # ONE LLM-typed entry — that's a high-confidence signal that
+        # the listed model is the loaded one. With multiple candidates
+        # we cannot tell which (if any) is actually serving, so
+        # surfacing "no model loaded" is more honest than guessing
+        # and failing at the next /chat/completions call.
         try:
             llm_keys = self._llm_keys_from_native()
             openai_models = self.list_models()
-        except Exception:
+        except Exception as exc:
             self.model = ""
-            raise RuntimeError("No LLM is currently loaded on the server.")
-        for candidate in openai_models:
-            if not llm_keys or candidate in llm_keys:
-                self._logger.warning(
-                    "LM Studio /api/v1/models reported no loaded "
-                    "instances; falling back to first /v1/models entry "
-                    "%r (LM Studio bug workaround)",
-                    candidate,
-                )
-                self.model = candidate
-                return self.model
+            raise RuntimeError(
+                "No LLM is currently loaded on the server "
+                f"(fallback /v1/models lookup failed: {exc})."
+            ) from exc
+        llm_candidates = [
+            m for m in openai_models if not llm_keys or m in llm_keys
+        ]
+        if len(llm_candidates) == 1:
+            candidate = llm_candidates[0]
+            self._logger.warning(
+                "LM Studio /api/v1/models reported no loaded "
+                "instances; single /v1/models entry %r treated as "
+                "loaded (LM Studio bug workaround)",
+                candidate,
+            )
+            self.model = candidate
+            return self.model
         self.model = ""
-        raise RuntimeError("No LLM is currently loaded on the server.")
+        raise RuntimeError(
+            "No LLM is currently loaded on the server "
+            f"({len(llm_candidates)} candidate(s) in /v1/models; "
+            "ambiguous — load one explicitly)."
+        )
 
     def _llm_keys_from_native(self) -> set[str]:
         """Return the set of model keys the native API reports as

@@ -273,7 +273,18 @@ ColumnLayout {
     FileDialog {
         id: chatterboxImportDialog
         title: chatterboxPane.tr("Choose a reference audio file")
-        currentFolder: StandardPaths.standardLocations(StandardPaths.MusicLocation)[0]
+        // StandardPaths.standardLocations() can return an empty list on
+        // stripped/sandboxed runtimes (minimal containers, some Flatpak
+        // setups). Indexing [0] on empty yields `undefined`, which
+        // leaves currentFolder unset and the dialog opens at an
+        // unpredictable cwd. Fall back to HomeLocation, then empty
+        // string as a last resort so Qt picks a default.
+        currentFolder: {
+            const music = StandardPaths.standardLocations(StandardPaths.MusicLocation);
+            if (music && music.length > 0) return music[0];
+            const home = StandardPaths.standardLocations(StandardPaths.HomeLocation);
+            return (home && home.length > 0) ? home[0] : "";
+        }
         nameFilters: [
             chatterboxPane.tr("Audio files (*.wav *.mp3 *.flac *.ogg *.m4a *.aac)"),
             chatterboxPane.tr("All files (*)"),

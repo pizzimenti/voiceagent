@@ -457,20 +457,24 @@ class LlmController(QObject):
             # `/api/v1/models` endpoint can report `loaded_instances:
             # []` for every model even when one is actually serving
             # chat completions. When that happens, fall back to the
-            # first OpenAI `/v1/models` entry that the native API also
-            # marks as `type: llm` (excludes embeddings). The model
-            # dropdown then shows a sane default instead of going
-            # blank. See chat.py:refresh_loaded_model for the same
-            # pattern on the other detection path.
+            # OpenAI `/v1/models` entry that the native API also
+            # marks as `type: llm` (excludes embeddings) — but ONLY
+            # when there is exactly one such candidate. With multiple
+            # candidates the heuristic can't tell which (if any) is
+            # actually loaded; surfacing "no model loaded" is more
+            # honest than picking arbitrarily and failing at the next
+            # /chat/completions call. See chat.py:refresh_loaded_model
+            # for the same pattern on the other detection path.
             if not loaded_models and models:
                 try:
                     llm_keys = snapshot_client._llm_keys_from_native()
                 except Exception:
                     llm_keys = set()
-                for candidate in models:
-                    if not llm_keys or candidate in llm_keys:
-                        loaded_models = [candidate]
-                        break
+                llm_candidates = [
+                    m for m in models if not llm_keys or m in llm_keys
+                ]
+                if len(llm_candidates) == 1:
+                    loaded_models = [llm_candidates[0]]
             return {
                 "ok": True,
                 "models": models,

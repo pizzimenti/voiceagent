@@ -82,6 +82,23 @@ Pane {
                     // a label-on-top-of-control stack (compact mode).
                     wideMode: !sessionPane.compactMode
 
+                    // Per-ComboBox delegates below bind `highlighted`
+                    // to `currentIndex === index` so the dropdown
+                    // identifies the current selection on open. The
+                    // default QQC2 delegate uses `highlightedIndex`
+                    // (keyboard hover) instead, leaving the actual
+                    // selection visually indistinguishable under the
+                    // KDE/Breeze style. Mouse hover is handled
+                    // separately by ItemDelegate's `hovered` state, so
+                    // we don't OR `highlightedIndex` in — that would
+                    // light up two rows simultaneously when the user's
+                    // hover lands on a non-selected item.
+                    // (A shared Component delegate doesn't work here —
+                    // there is no robust `parent`-walk from inside the
+                    // popup ListView back to the owning ComboBox in
+                    // QQC2, so each delegate references its ComboBox
+                    // by `id`.)
+
                     ComboBox {
                         id: sttSelector
                         Kirigami.FormData.label: sessionPane.tr("Speech:")
@@ -92,6 +109,11 @@ Pane {
                             ? sessionPane._stringIndex(sessionPane.voiceAgent.sttOptions, sessionPane.voiceAgent.selectedSttModel)
                             : -1
                         displayText: currentIndex >= 0 ? currentText : sessionPane.tr("No installed STT models")
+                        delegate: ItemDelegate {
+                            width: sttSelector.width
+                            text: modelData
+                            highlighted: sttSelector.currentIndex === index
+                        }
                         onActivated: {
                             if (sessionPane.voiceAgent) {
                                 sessionPane.voiceAgent.selectSttModel(currentText);
@@ -108,6 +130,11 @@ Pane {
                         currentIndex: sessionPane.voiceAgent
                             ? sessionPane._stringIndex(sessionPane.voiceAgent.ttsEngineOptions, sessionPane.voiceAgent.selectedTtsEngine)
                             : -1
+                        delegate: ItemDelegate {
+                            width: ttsEngineSelector.width
+                            text: modelData
+                            highlighted: ttsEngineSelector.currentIndex === index
+                        }
                         onActivated: {
                             if (sessionPane.voiceAgent) {
                                 sessionPane.voiceAgent.selectTtsEngine(currentText);
@@ -133,6 +160,11 @@ Pane {
                             return hasOptions
                                 ? sessionPane.tr("Select a voice")
                                 : sessionPane.tr("No installed TTS voices");
+                        }
+                        delegate: ItemDelegate {
+                            width: ttsSelector.width
+                            text: modelData
+                            highlighted: ttsSelector.currentIndex === index
                         }
                         onActivated: {
                             if (sessionPane.voiceAgent) {
@@ -160,6 +192,11 @@ Pane {
                             currentIndex: sessionPane.voiceAgent
                                 ? sessionPane._stringIndex(sessionPane.voiceAgent.llmUrls, sessionPane.voiceAgent.currentLlmUrl)
                                 : -1
+                            delegate: ItemDelegate {
+                                width: llmUrlBox.width
+                                text: modelData
+                                highlighted: llmUrlBox.currentIndex === index
+                            }
                             Component.onCompleted: {
                                 if (sessionPane.voiceAgent) {
                                     editText = sessionPane.voiceAgent.currentLlmUrl;
@@ -201,6 +238,7 @@ Pane {
                     }
 
                     ComboBox {
+                        id: llmModelBox
                         Kirigami.FormData.label: sessionPane.tr("LLM Model:")
                         Layout.fillWidth: false
                         Layout.preferredWidth: Kirigami.Units.gridUnit * 16
@@ -213,6 +251,11 @@ Pane {
                         currentIndex: sessionPane.voiceAgent
                             ? sessionPane._stringIndex(sessionPane.voiceAgent.llmModelOptions, sessionPane.voiceAgent.selectedLlmModel)
                             : -1
+                        delegate: ItemDelegate {
+                            width: llmModelBox.width
+                            text: modelData
+                            highlighted: llmModelBox.currentIndex === index
+                        }
                         // `<= 0` (NOT `< 0`) because `llmModelOptions` is
                         // `["", *self._llm.models]` — index 0 is the empty-
                         // string sentinel for "no LLM loaded". Showing

@@ -299,6 +299,12 @@ class MainWindow(QObject):
         self._chatterbox_record_active = False
         self._chatterbox_record_progress_value = 0.0
         self._chatterbox_record_active_name = ""
+        # Voice-pipeline suspend/restore around reference recording.
+        # `sd.rec()` opens a second mic stream which conflicts with the
+        # always-on STT capture (device-busy on systems with one input
+        # stream / cross-talk on systems that allow both). We capture
+        # the pre-record state, suspend, and restore on finish.
+        self._chatterbox_record_voice_was_enabled = False
         self._chatterbox_record_progress.connect(
             self._on_chatterbox_record_progress
         )
@@ -379,17 +385,7 @@ class MainWindow(QObject):
         self.model_loader.selection_changed.connect(self._handle_inventory_change)
         self.model_loader.load_completed.connect(self._handle_inventory_change)
         self.model_loader.delete_completed.connect(self._handle_inventory_change)
-        self.tts_loader.ready_changed.connect(self._emit_ui_changed)
-        self.tts_loader.loading_changed.connect(self._emit_ui_changed)
-        self.tts_loader.status_changed.connect(self._apply_tts_status)
-        self.tts_loader.progress_changed.connect(self._apply_tts_progress)
-        self.tts_loader.item_loading_changed.connect(self._on_tts_item_loading_changed)
-        self.tts_loader.item_progress_changed.connect(self._on_tts_item_progress_changed)
-        self.tts_loader.error_changed.connect(self._set_error_message)
-        self.tts_loader.selection_changed.connect(self._emit_ui_changed)
-        self.tts_loader.load_completed.connect(self._handle_inventory_change)
-        self.tts_loader.delete_completed.connect(self._handle_inventory_change)
-        self.tts_loader.catalog_changed.connect(self._on_tts_catalog_changed)
+        self._connect_tts_loader_signals(self.tts_loader)
         self._llm.urls_changed.connect(self._on_llm_urls_changed)
         self._llm.current_url_changed.connect(self._on_llm_current_url_changed)
         self._llm.connection_state_changed.connect(self._on_llm_connection_state_changed)
@@ -466,10 +462,28 @@ class MainWindow(QObject):
         # would otherwise show a banner saying "engine X selected" while
         # the actual service is still engine Y. Swap on first frame so
         # the divergence resolves before the user opens any pane.
-        stored_engine = self.selectedTtsEngine
         active_engine = getattr(
             self.tts_loader.tts_service, "backend_name", ""
         ).lower()
+        # First-launch env-precedence: when no `selected_tts_engine`
+        # has been written to QSettings yet (fresh profile), persist
+        # the engine that `build_shared_services()` picked from
+        # `VOICEAGENT_TTS_ENGINE`. Without this, the desync check
+        # below would compare the env-driven `active_engine` against
+        # the QSettings default `piper` and force-swap to piper on
+        # every launch, silently ignoring the documented env override.
+        if (
+            not self.settings.contains("selected_tts_engine")
+            and active_engine in _TTS_ENGINE_OPTIONS
+        ):
+            self._logger.info(
+                "Persisting env-driven TTS engine to QSettings on "
+                "first launch engine=%s",
+                active_engine,
+            )
+            self.settings.setValue("selected_tts_engine", active_engine)
+            self.ui_changed.emit()
+        stored_engine = self.selectedTtsEngine
         if stored_engine and stored_engine != active_engine:
             self._logger.info(
                 "TTS engine startup desync: QSettings=%s service=%s — swapping",
@@ -812,10 +826,15 @@ class MainWindow(QObject):
             )
             return ""
         try:
-            cleaned = source_path
-            if cleaned.startswith("file://"):
-                cleaned = cleaned[len("file://"):]
-            saved = importer(Path(cleaned), name or Path(cleaned).stem)
+            # `FileDialog.selectedFile` is a URL (`file:///…`) and may
+            # contain percent-encoding (spaces as `%20`, non-ASCII
+            # filenames). The hand-rolled prefix strip used to leave
+            # the encoded form intact, so `Path()` opened a literal
+            # `%20`-bearing path that does not exist. `QUrl.toLocalFile`
+            # handles triple-slash, host-form, and percent decoding.
+            url = QUrl(source_path)
+            local_path = url.toLocalFile() if url.isLocalFile() else source_path
+            saved = importer(Path(local_path), name or Path(local_path).stem)
         except Exception as exc:  # noqa: BLE001
             self._logger.exception("Chatterbox reference import failed: %s", exc)
             self._append_log_message(
@@ -830,6 +849,11 @@ class MainWindow(QObject):
         service.set_selected_item(new_name)
         self.tts_loader.select_model(new_name)
         self.settings.setValue("selected_tts_model_chatterbox", new_name)
+        # Also write the generic key so the startup restore path picks
+        # this voice on launches that start directly on Chatterbox
+        # (e.g. via VOICEAGENT_TTS_ENGINE=chatterbox before any
+        # explicit user selection has populated the per-engine key).
+        self.settings.setValue("selected_tts_model", new_name)
         self.ui_changed.emit()
         # No success notification — the catalog list updating + voice
         # ComboBox switching to the new entry is the visible feedback.
@@ -878,6 +902,19 @@ class MainWindow(QObject):
         cleaned = "".join(
             c if c.isalnum() or c in "-_" else "_" for c in (name or "")
         ).strip("_") or "user-voice"
+        # Suspend the always-on STT mic capture so `sd.rec()` doesn't
+        # contend with it. Recorded reference clip stays clean and the
+        # user's reference speech can't get consumed by the chat
+        # pipeline mid-record. Restored in `_on_chatterbox_record_finished`.
+        self._chatterbox_record_voice_was_enabled = self.voiceConnectionEnabled
+        if self._chatterbox_record_voice_was_enabled:
+            try:
+                self.controller.stop_recording()
+            except Exception:  # noqa: BLE001
+                self._logger.exception(
+                    "Could not suspend voice pipeline before chatterbox "
+                    "reference recording"
+                )
         self._chatterbox_record_cancel_flag = False
         self._chatterbox_record_active = True
         self._chatterbox_record_progress_value = 0.0
@@ -1012,6 +1049,19 @@ class MainWindow(QObject):
         self._chatterbox_record_active_name = ""
         self._chatterbox_record_cancel_flag = False
 
+        # Restore the always-on voice pipeline if we suspended it for
+        # the recording. Wrap in try so a controller hiccup doesn't
+        # leave the rest of the cleanup half-done.
+        if self._chatterbox_record_voice_was_enabled:
+            self._chatterbox_record_voice_was_enabled = False
+            try:
+                self.controller.start_recording()
+            except Exception:  # noqa: BLE001
+                self._logger.exception(
+                    "Could not resume voice pipeline after chatterbox "
+                    "reference recording"
+                )
+
         if not success:
             if error:
                 self._append_log_message(
@@ -1033,6 +1083,10 @@ class MainWindow(QObject):
             service.set_selected_item(name)
             self.tts_loader.select_model(name)
             self.settings.setValue("selected_tts_model_chatterbox", name)
+            # Mirror the import path: keep the generic key in sync so
+            # `selected_tts_model` matches the live selection across
+            # restart paths.
+            self.settings.setValue("selected_tts_model", name)
         self.ui_changed.emit()
 
     # ------------------------------------------------------------------
@@ -1212,6 +1266,29 @@ class MainWindow(QObject):
         if normalized not in _TTS_ENGINE_OPTIONS:
             return
         if normalized == self.selectedTtsEngine:
+            # User re-picked the current engine. If a swap was queued
+            # for a different engine (deferred while the pipeline was
+            # busy), the user has reverted their choice — cancel the
+            # queued swap and disconnect the IDLE listener so the next
+            # IDLE transition doesn't force-switch to the abandoned
+            # target.
+            if (
+                self._pending_tts_engine is not None
+                and self._pending_tts_engine != normalized
+            ):
+                self._logger.info(
+                    "Cancelling queued TTS engine swap pending=%s "
+                    "(user re-selected current engine %s)",
+                    self._pending_tts_engine,
+                    normalized,
+                )
+                self._pending_tts_engine = None
+                try:
+                    self.controller.pipeline_state_changed.disconnect(
+                        self._on_pipeline_state_for_engine_swap
+                    )
+                except (RuntimeError, TypeError):
+                    pass
             return
         if normalized == "chatterbox" and not self._chatterbox_extras_available():
             self._logger.info("Engine swap rejected: chatterbox extras missing")
@@ -1312,15 +1389,41 @@ class MainWindow(QObject):
         Mirrors v0.12 Kokoro reference design.
         """
         self._logger.info("Performing TTS engine swap engine=%s", engine)
-        self.settings.setValue("selected_tts_engine", engine)
 
         # Build the new service + loader before tearing the old one
         # down, so a constructor failure doesn't leave the window with
-        # neither a working old loader nor a working new one.
-        new_service = self._build_tts_service_for_engine(engine)
+        # neither a working old loader nor a working new one. Guard
+        # against runtime/init failures explicitly: bubbling through
+        # the slot leaves the QML ComboBox stranded with no user-
+        # visible explanation. On failure, keep the current engine
+        # active and surface the reason via the conversation log.
+        try:
+            new_service = self._build_tts_service_for_engine(engine)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.exception(
+                "TTS engine swap build failed engine=%s", engine,
+            )
+            self._append_log_message(
+                f"Could not switch TTS engine to {engine}: {exc}",
+                "error",
+            )
+            return
         new_loader = TtsVoiceLoader(new_service)
 
+        # Persist only after the new service constructed successfully —
+        # writing earlier would leave QSettings ahead of reality on a
+        # failed swap, and the next launch's startup desync would try
+        # (and likely fail) to swap again.
+        self.settings.setValue("selected_tts_engine", engine)
+
         old_loader = self.tts_loader
+        # Disconnect every signal we wired to the old loader BEFORE
+        # initiating its shutdown. `ParallelItemLoader.shutdown()` is
+        # a bounded wait — long-running downloads can outlive it and
+        # continue emitting progress/status/completion signals after
+        # the swap. Without an explicit disconnect those late emits
+        # would land on the new engine's UI state with stale data.
+        self._disconnect_tts_loader_signals(old_loader)
         try:
             old_loader.shutdown()
         except Exception:
@@ -1352,18 +1455,10 @@ class MainWindow(QObject):
         self._tts_catalog = new_catalog
         self._tts_catalog_model.replace_names(new_catalog)
 
-        # Wire all the same loader signals on the new instance.
-        new_loader.ready_changed.connect(self._emit_ui_changed)
-        new_loader.loading_changed.connect(self._emit_ui_changed)
-        new_loader.status_changed.connect(self._apply_tts_status)
-        new_loader.progress_changed.connect(self._apply_tts_progress)
-        new_loader.item_loading_changed.connect(self._on_tts_item_loading_changed)
-        new_loader.item_progress_changed.connect(self._on_tts_item_progress_changed)
-        new_loader.error_changed.connect(self._set_error_message)
-        new_loader.selection_changed.connect(self._emit_ui_changed)
-        new_loader.load_completed.connect(self._handle_inventory_change)
-        new_loader.delete_completed.connect(self._handle_inventory_change)
-        new_loader.catalog_changed.connect(self._on_tts_catalog_changed)
+        # Wire all the same loader signals on the new instance via the
+        # shared helper so the connect/disconnect surfaces stay in
+        # lockstep — easy to forget a signal otherwise.
+        self._connect_tts_loader_signals(new_loader)
 
         # Hand the controller the new service so the next pipeline
         # turn synthesizes via the new engine.
@@ -1959,11 +2054,53 @@ class MainWindow(QObject):
     def _emit_ui_changed(self, *_args) -> None:
         self.ui_changed.emit()
 
+    def _tts_loader_signal_pairs(self, loader: "TtsVoiceLoader"):
+        """Single source of truth for the (signal, slot) pairs that
+        bind a TTS loader to the window. Used by both the connect-on-
+        init / connect-on-swap path and the disconnect-on-swap path so
+        the two surfaces never drift.
+        """
+        return (
+            (loader.ready_changed, self._emit_ui_changed),
+            (loader.loading_changed, self._emit_ui_changed),
+            (loader.status_changed, self._apply_tts_status),
+            (loader.progress_changed, self._apply_tts_progress),
+            (loader.item_loading_changed, self._on_tts_item_loading_changed),
+            (loader.item_progress_changed, self._on_tts_item_progress_changed),
+            (loader.error_changed, self._set_error_message),
+            (loader.selection_changed, self._emit_ui_changed),
+            (loader.load_completed, self._handle_inventory_change),
+            (loader.delete_completed, self._handle_inventory_change),
+            (loader.catalog_changed, self._on_tts_catalog_changed),
+        )
+
+    def _connect_tts_loader_signals(self, loader: "TtsVoiceLoader") -> None:
+        for sig, slot in self._tts_loader_signal_pairs(loader):
+            sig.connect(slot)
+
+    def _disconnect_tts_loader_signals(self, loader: "TtsVoiceLoader") -> None:
+        for sig, slot in self._tts_loader_signal_pairs(loader):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+
     def _is_stt_downloaded(self, model_name: str) -> bool:
         return self.model_loader.transcriber.is_item_available(model_name)
 
     def _is_tts_downloaded(self, model_name: str) -> bool:
-        return self.tts_loader.tts_service.is_item_available(model_name)
+        service = self.tts_loader.tts_service
+        if not service.is_item_available(model_name):
+            return False
+        # If the backend exposes per-engine readiness (Chatterbox: the
+        # shared ONNX bundle), gate on it too. Otherwise a voice with a
+        # reference clip but no engine model would appear "downloaded"
+        # and `talkReady` would let the user start a turn that fails at
+        # synth time with a "model is not downloaded" error.
+        engine_ready = getattr(service, "is_engine_ready", None)
+        if engine_ready is False:
+            return False
+        return True
 
     def _format_progress(self, progress) -> tuple[float, bool, str]:
         current = progress.completed_bytes

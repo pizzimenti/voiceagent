@@ -343,9 +343,15 @@ class ChatterboxTtsService(TextToSpeechBackend):
             for j, key in enumerate(past_key_values):
                 past_key_values[key] = present_key_values[j]
 
-        # Strip leading START and trailing STOP, append silence pad,
-        # prepend the speaker prompt token; matches the probe.
-        speech_tokens = generate_tokens[:, 1:-1]
+        # Strip leading START. Trailing STOP_SPEECH_TOKEN is only present
+        # when generation halted via the early-break above; a MAX_NEW_TOKENS
+        # exit leaves a valid speech token in the tail that should not be
+        # dropped. Conditionally trim only when the tail is the stop sentinel.
+        speech_tokens = generate_tokens[:, 1:]
+        if speech_tokens.shape[1] > 0 and (
+            speech_tokens[:, -1] == self.STOP_SPEECH_TOKEN
+        ).all():
+            speech_tokens = speech_tokens[:, :-1]
         silence_tokens = np.full(
             (speech_tokens.shape[0], 3), self.SILENCE_TOKEN, dtype=np.int64
         )
@@ -426,6 +432,21 @@ class ChatterboxTtsService(TextToSpeechBackend):
                 "Chatterbox extras are not installed. Install with "
                 "`pip install voiceagent[chatterbox]`"
             ) from exc
+        # Pinning the snapshot revision and identifying the HF
+        # `EntryNotFoundError` are best-effort: older / stubbed HF
+        # versions may not expose them. When absent, fall back to a
+        # floating revision and treat any sidecar exception as
+        # benign-on-debug.
+        try:
+            from huggingface_hub import HfApi  # type: ignore[attr-defined]
+        except ImportError:
+            HfApi = None  # type: ignore[assignment]
+        try:
+            from huggingface_hub.errors import EntryNotFoundError  # type: ignore[import-not-found]
+        except ImportError:
+            EntryNotFoundError = type(
+                "_EntryNotFoundFallback", (Exception,), {}
+            )
 
         callback = progress_callback or (lambda progress: None)
         total_bytes = _APPROX_BUNDLE_BYTES.get(
@@ -442,12 +463,33 @@ class ChatterboxTtsService(TextToSpeechBackend):
         )
 
         self.model_root.mkdir(parents=True, exist_ok=True)
+        cache_dir = str(self.model_root)
+
+        # Resolve the upstream repo's current main-branch revision once
+        # so every component (graph + sidecar + tokenizer) lands from
+        # the same snapshot. Without this, an upstream re-publish mid-
+        # download could yield a mixed cache that passes file-existence
+        # checks but mismatches at runtime. Failure to resolve is
+        # non-fatal — fall back to the floating default.
+        revision: str | None = None
+        if HfApi is not None:
+            try:
+                revision = HfApi().repo_info(self.HF_REPO).sha
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning(
+                    "Could not pin Chatterbox revision (%s); falling back "
+                    "to floating main", exc,
+                )
         completed_bytes = 0
         for component in _COMPONENTS:
             filename = self._filename_for(component, self._dtype)
             try:
                 graph_path = hf_hub_download(
-                    self.HF_REPO, subfolder="onnx", filename=filename
+                    self.HF_REPO,
+                    subfolder="onnx",
+                    filename=filename,
+                    cache_dir=cache_dir,
+                    revision=revision,
                 )
             except Exception as exc:
                 raise RuntimeError(
@@ -457,22 +499,34 @@ class ChatterboxTtsService(TextToSpeechBackend):
                 completed_bytes += Path(graph_path).stat().st_size
             except OSError:
                 pass
-            # The external-data sidecar is optional for some dtypes;
-            # absence is not an error.
+            # The external-data sidecar is optional for some dtypes —
+            # only EntryNotFoundError (HF 404 for the file) is benign.
+            # Other failures (network, auth, cache corruption) leave a
+            # broken install where _model_present() is true but synth
+            # fails at InferenceSession with a missing-data error;
+            # surface them as install errors instead of silently
+            # ignoring.
             try:
                 data_path = hf_hub_download(
                     self.HF_REPO,
                     subfolder="onnx",
                     filename=f"{filename}_data",
+                    cache_dir=cache_dir,
+                    revision=revision,
                 )
                 try:
                     completed_bytes += Path(data_path).stat().st_size
                 except OSError:
                     pass
-            except Exception as exc:
+            except EntryNotFoundError:
                 self._logger.debug(
-                    "no _data sidecar for %s (%s)", filename, exc
+                    "no _data sidecar for %s (HF 404)", filename
                 )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Chatterbox sidecar download failed for "
+                    f"{filename}_data: {exc}"
+                ) from exc
             # Keep total honest if our approximation underestimated:
             # the user shouldn't see "750 MB / 700 MB" mid-download.
             running_total = max(total_bytes, completed_bytes)
@@ -483,6 +537,41 @@ class ChatterboxTtsService(TextToSpeechBackend):
                     download_speed_bytes_per_second=0,
                 )
             )
+
+        # Prefetch tokenizer assets so first synth never hits the network
+        # for AutoTokenizer.from_pretrained. Without this, a "completed"
+        # download still depends on a live HF connection at first synth
+        # — the offline-readiness contract that model_root implies is
+        # broken otherwise. Tokenizer files are small (~1 MB total) so
+        # they don't warrant their own progress UI.
+        for tokenizer_file in (
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+        ):
+            try:
+                hf_hub_download(
+                    self.HF_REPO,
+                    filename=tokenizer_file,
+                    cache_dir=cache_dir,
+                    revision=revision,
+                )
+            except EntryNotFoundError:
+                # Not all tokenizer variants ship every file; skip.
+                self._logger.debug(
+                    "tokenizer file %s not present in repo (HF 404)",
+                    tokenizer_file,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Tokenizer prefetch is best-effort: missing files
+                # surface at first synth via AutoTokenizer's own error,
+                # which is more informative than a wrapped RuntimeError
+                # here.
+                self._logger.warning(
+                    "tokenizer prefetch failed for %s (%s); first synth "
+                    "may need network",
+                    tokenizer_file, exc,
+                )
 
         # Invalidate any previously cached sessions/tokenizer so the
         # next synth re-resolves against the freshly populated cache.
@@ -710,16 +799,24 @@ class ChatterboxTtsService(TextToSpeechBackend):
         returns the resolved blob path if the file is fully present in
         the local cache, the sentinel string `_CACHED_NO_EXIST` if HF
         recorded a 404, or `None` if the file has never been fetched.
+
+        Probes both the engine-scoped `model_root` (where
+        `download_engine_model` writes) and the global default cache
+        (where pre-existing seeded snapshots may live), so an upgrade
+        from a build that cached into the global location still
+        resolves without re-downloading.
         """
         try:
             from huggingface_hub import try_to_load_from_cache
-            from huggingface_hub.constants import HF_HUB_CACHE  # noqa: F401
         except ImportError:
             return None
         filename = f"onnx/{self._filename_for(component, self._dtype)}"
-        cached = try_to_load_from_cache(self.HF_REPO, filename=filename)
-        if isinstance(cached, str) and cached and Path(cached).exists():
-            return Path(cached)
+        for cache_dir in (str(self.model_root), None):
+            cached = try_to_load_from_cache(
+                self.HF_REPO, filename=filename, cache_dir=cache_dir,
+            )
+            if isinstance(cached, str) and cached and Path(cached).exists():
+                return Path(cached)
         return None
 
     def _model_present(self) -> bool:
@@ -751,7 +848,14 @@ class ChatterboxTtsService(TextToSpeechBackend):
                         f"cache: {component}"
                     )
                 sessions[component] = onnxruntime.InferenceSession(str(path))
-            tokenizer = AutoTokenizer.from_pretrained(self.HF_REPO)
+            # Route tokenizer load through the same engine-scoped cache.
+            # `download_engine_model` prefetches tokenizer.json &c. there;
+            # without `cache_dir`, AutoTokenizer would resolve against the
+            # global HF cache and could re-fetch from the network even
+            # when the engine model is fully present locally.
+            tokenizer = AutoTokenizer.from_pretrained(
+                self.HF_REPO, cache_dir=str(self.model_root)
+            )
             self._sessions = sessions
             self._tokenizer = tokenizer
             return sessions, tokenizer
