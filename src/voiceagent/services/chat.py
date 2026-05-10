@@ -176,9 +176,20 @@ class LmStudioClient:
                 "No LLM is currently loaded on the server "
                 f"(fallback /v1/models lookup failed: {exc})."
             ) from exc
-        llm_candidates = [
-            m for m in openai_models if not llm_keys or m in llm_keys
-        ]
+        # Skip the workaround when we cannot confirm any /v1/models
+        # entry is an LLM via the native API: `llm_keys is None` means
+        # the native lookup itself failed / was missing / was malformed,
+        # so promoting an arbitrary entry could mark an embedding model
+        # or unloaded entry as the active LLM. Empty set is also a skip
+        # — lookup succeeded but no LLM-typed keys exist, so nothing in
+        # /v1/models can be safely classified.
+        if not llm_keys:
+            self.model = ""
+            raise RuntimeError(
+                "No LLM is currently loaded on the server "
+                "(native API did not confirm any LLM-typed model)."
+            )
+        llm_candidates = [m for m in openai_models if m in llm_keys]
         if len(llm_candidates) == 1:
             candidate = llm_candidates[0]
             self._logger.warning(
@@ -196,22 +207,30 @@ class LmStudioClient:
             "ambiguous — load one explicitly)."
         )
 
-    def _llm_keys_from_native(self) -> set[str]:
+    def _llm_keys_from_native(self) -> set[str] | None:
         """Return the set of model keys the native API reports as
         `type: llm`. Used to filter the OpenAI `/v1/models` list (which
         also includes embedding models) when falling back from a buggy
         `loaded_instances` response.
+
+        Returns `None` (distinct sentinel) when the native lookup
+        cannot be confirmed — endpoint missing, request failed, or
+        payload was malformed. Callers must treat `None` as "could
+        not confirm any /v1/models entry is an LLM" and skip the
+        workaround entirely (otherwise the fallback could promote an
+        embedding model or unloaded entry to the active model). An
+        empty set means "lookup succeeded; no LLM-typed keys exist."
         """
         native_api_root = self._native_api_root()
         if not native_api_root:
-            return set()
+            return None
         try:
             data = self._json_request(f"{native_api_root}/models", method="GET")
         except Exception:
-            return set()
+            return None
         models = data.get("models", [])
         if not isinstance(models, list):
-            return set()
+            return None
         keys: set[str] = set()
         for item in models:
             if not isinstance(item, dict):

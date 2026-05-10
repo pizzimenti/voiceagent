@@ -295,6 +295,12 @@ ColumnLayout {
             var basename = url.substring(url.lastIndexOf("/") + 1);
             var dot = basename.lastIndexOf(".");
             var stem = dot > 0 ? basename.substring(0, dot) : basename;
+            // `selectedFile` is percent-encoded; without decoding, a
+            // file named "my voice.wav" becomes the stem "my%20voice"
+            // which the Python sanitizer turns into "my_20voice"
+            // — wrong voice name. The path itself is decoded
+            // separately via QUrl.toLocalFile() on the Python side.
+            stem = decodeURIComponent(stem);
             chatterboxPane.voiceAgent.importChatterboxReference(url, stem);
             // No special handling on success — the catalog refresh
             // happens inside the Slot via ui_changed.

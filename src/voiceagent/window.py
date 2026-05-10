@@ -713,7 +713,22 @@ class MainWindow(QObject):
 
     @Property(bool, notify=ui_changed)
     def talkReady(self) -> bool:  # noqa: N802
-        return bool(self.selectedSttModel and self.selectedTtsModel and self._llm.is_ready)
+        if not (
+            self.selectedSttModel
+            and self.selectedTtsModel
+            and self._llm.is_ready
+        ):
+            return False
+        # Backends that distinguish per-voice availability from engine
+        # readiness (Chatterbox: shared ONNX bundle separate from the
+        # per-voice reference clip) must clear engine-readiness too,
+        # else the mic enables and the first turn fails at synth.
+        engine_ready = getattr(
+            self.tts_loader.tts_service, "is_engine_ready", None,
+        )
+        if engine_ready is False:
+            return False
+        return True
 
     @Property(str, notify=ui_changed)
     def micStatusLabel(self) -> str:  # noqa: N802
@@ -2089,18 +2104,13 @@ class MainWindow(QObject):
         return self.model_loader.transcriber.is_item_available(model_name)
 
     def _is_tts_downloaded(self, model_name: str) -> bool:
-        service = self.tts_loader.tts_service
-        if not service.is_item_available(model_name):
-            return False
-        # If the backend exposes per-engine readiness (Chatterbox: the
-        # shared ONNX bundle), gate on it too. Otherwise a voice with a
-        # reference clip but no engine model would appear "downloaded"
-        # and `talkReady` would let the user start a turn that fails at
-        # synth time with a "model is not downloaded" error.
-        engine_ready = getattr(service, "is_engine_ready", None)
-        if engine_ready is False:
-            return False
-        return True
+        # Per-voice availability ONLY. Engine-wide readiness (Chatterbox:
+        # the shared ONNX bundle) is gated separately in `talkReady` —
+        # otherwise voices with a reference clip but no engine model
+        # would vanish from `ttsOptions` entirely and the user couldn't
+        # see/select them in the catalog or voice ComboBox before the
+        # engine downloads.
+        return self.tts_loader.tts_service.is_item_available(model_name)
 
     def _format_progress(self, progress) -> tuple[float, bool, str]:
         current = progress.completed_bytes

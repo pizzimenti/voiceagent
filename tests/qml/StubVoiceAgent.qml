@@ -64,6 +64,9 @@ QtObject {
     property string ttsConfigPaneFile: "PiperTtsConfigPane.qml"
     property string sttConfigPaneFile: "WhisperSttConfigPane.qml"
 
+    // Engine selector surface SessionSetupPane reads.
+    property var ttsEngineOptions: ["piper", "chatterbox"]
+
     // Chatterbox engine identity + reference-recorder state. Read by
     // ChatterboxTtsConfigPane.qml's recording dialog and engine banner.
     property string selectedTtsEngine: "piper"
@@ -88,6 +91,7 @@ QtObject {
     function cancelChatterboxRecording() {}
     function downloadChatterboxModel() {}
     function selectChatterboxDtype(dtype) {}
+    function selectTtsEngine(engine) {}
 
     // Slot-shaped no-ops covering both SessionSetupPane click handlers
     // and MainWindow header actions.

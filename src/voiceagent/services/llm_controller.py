@@ -469,12 +469,18 @@ class LlmController(QObject):
                 try:
                     llm_keys = snapshot_client._llm_keys_from_native()
                 except Exception:
-                    llm_keys = set()
-                llm_candidates = [
-                    m for m in models if not llm_keys or m in llm_keys
-                ]
-                if len(llm_candidates) == 1:
-                    loaded_models = [llm_candidates[0]]
+                    llm_keys = None
+                # Mirror chat.py:refresh_loaded_model — skip the
+                # workaround when native LLM-key lookup was either
+                # unavailable (None) or empty. An empty `llm_keys`
+                # set after a successful lookup means the server
+                # exposes no LLM-typed models; promoting a /v1/models
+                # entry without that confirmation could mark an
+                # embedding model as loaded.
+                if llm_keys:
+                    llm_candidates = [m for m in models if m in llm_keys]
+                    if len(llm_candidates) == 1:
+                        loaded_models = [llm_candidates[0]]
             return {
                 "ok": True,
                 "models": models,

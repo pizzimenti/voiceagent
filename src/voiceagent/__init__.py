@@ -6,4 +6,4 @@ __version__ = "0.12.0"
 # glance which build is running (since QSettings + cached venvs
 # made "did I pull the latest?" hard to verify after a few back-to-
 # back fixes). Reset only on a major/minor version bump.
-__build__ = 8
+__build__ = 9

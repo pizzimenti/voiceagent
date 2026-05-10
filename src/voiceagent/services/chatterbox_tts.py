@@ -573,6 +573,31 @@ class ChatterboxTtsService(TextToSpeechBackend):
                     tokenizer_file, exc,
                 )
 
+        # Persist the install manifest BEFORE clearing the session
+        # cache. Records every sidecar that resolved during this
+        # download so `_model_present` can detect a later cache
+        # eviction (HF cache cleanup, manual delete) and re-trigger
+        # the engine-download UI rather than leaving a half-installed
+        # model that fails at first synth.
+        try:
+            import json
+            present_sidecars: list[str] = []
+            for component in _COMPONENTS:
+                sidecar_filename = (
+                    f"{self._filename_for(component, self._dtype)}_data"
+                )
+                if self._resolved_sidecar_path(sidecar_filename) is not None:
+                    present_sidecars.append(sidecar_filename)
+            self._install_manifest_path().write_text(
+                json.dumps({"sidecars": present_sidecars})
+            )
+        except OSError as exc:
+            self._logger.warning(
+                "Could not write install manifest (%s); _model_present "
+                "will not gate on sidecar presence for this install",
+                exc,
+            )
+
         # Invalidate any previously cached sessions/tokenizer so the
         # next synth re-resolves against the freshly populated cache.
         with self._load_lock:
@@ -791,6 +816,34 @@ class ChatterboxTtsService(TextToSpeechBackend):
             suffix = f"_{dtype}"
         return f"{component}{suffix}.onnx"
 
+    def _install_manifest_path(self) -> Path:
+        """Path to the per-dtype install manifest. Records which
+        optional `*_data` sidecars were present when the install
+        completed so `_model_present` can detect post-install cache
+        evictions of required sidecars (rather than silently passing
+        readiness checks and failing at InferenceSession).
+        """
+        return self.model_root / f"install_manifest_{self._dtype}.json"
+
+    def _resolved_sidecar_path(self, sidecar_filename: str) -> Path | None:
+        """Resolve a `*_data` sidecar in the cache. Mirrors
+        `_resolved_component_path`'s dual-probe (engine-scoped first,
+        global second) so legacy installs that landed in the global HF
+        cache still resolve.
+        """
+        try:
+            from huggingface_hub import try_to_load_from_cache
+        except ImportError:
+            return None
+        filename = f"onnx/{sidecar_filename}"
+        for cache_dir in (str(self.model_root), None):
+            cached = try_to_load_from_cache(
+                self.HF_REPO, filename=filename, cache_dir=cache_dir,
+            )
+            if isinstance(cached, str) and cached and Path(cached).exists():
+                return Path(cached)
+        return None
+
     def _resolved_component_path(self, component: str) -> Path | None:
         """Resolve an HF-cached component path, or `None` if absent.
 
@@ -823,6 +876,33 @@ class ChatterboxTtsService(TextToSpeechBackend):
         for component in _COMPONENTS:
             if self._resolved_component_path(component) is None:
                 return False
+        # Verify any sidecars recorded in the install manifest still
+        # exist. Without this, a post-install cache eviction of a
+        # required `*_data` sidecar would leave readiness reporting
+        # True while synth fails at InferenceSession with a missing-
+        # data error. Manifest absence is treated as "no sidecars
+        # required" so legacy installs (pre-manifest) and dtypes that
+        # ship no sidecars both stay green without rewriting the
+        # cache.
+        manifest_path = self._install_manifest_path()
+        if not manifest_path.exists():
+            return True
+        try:
+            import json
+            with manifest_path.open("r") as fh:
+                manifest = json.load(fh)
+            for sidecar in manifest.get("sidecars", []):
+                if self._resolved_sidecar_path(sidecar) is None:
+                    return False
+        except (OSError, ValueError):
+            # Corrupt manifest: fail open. Better to let the next
+            # synth surface a real error than to perma-block the
+            # install state on a parse failure.
+            self._logger.warning(
+                "install manifest at %s is unreadable; treating as "
+                "no-sidecars",
+                manifest_path,
+            )
         return True
 
     def _load_models(self) -> tuple[dict[str, Any], Any]:
