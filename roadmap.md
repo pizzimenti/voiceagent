@@ -3,9 +3,23 @@
 Scheduled work, in order. Each entry maps to a target minor version.
 Items move out of here into `CHANGELOG.md` once they ship.
 
-## v0.12 — Kokoro TTS engine (second backend)
+## v0.12.0 — Chatterbox TTS engine + live engine selector ✅ SHIPPED 2026-05-10
 
-**Status:** next up.
+The original v0.12 plan was Kokoro, but upstream `kokoro-onnx` /
+`misaki` pinned `<3.14` Python while Manjaro / Arch defaulted to
+3.14, blocking the venv. Chatterbox (Resemble AI's zero-shot voice
+cloning model, pure ONNX runtime, no PyTorch dep) had no such
+constraint and was sequenced ahead — see CHANGELOG for the full
+shipped scope: live engine selector, mic-record + file-import
+voices, per-dtype model variants, offline-readiness via pinned HF
+revision + install manifest, engine-swap safety guarantees.
+
+Released as v0.12.0 (commit `4dcdf74`, tag `v0.12.0`).
+
+## v0.13 — Kokoro TTS engine (was v0.12)
+
+**Status:** next up. Unblocked once `kokoro-onnx` / `misaki` ship
+Python 3.14 support, OR voiceagent pins to 3.13 for a release.
 
 ### Why
 
@@ -123,26 +137,23 @@ when the streaming overhaul does happen Kokoro inherits it cleanly.
   (`tts-models/kokoro/...`, `tts-models/<piper-voice>.onnx`) so file
   lookups can't cross.
 
-## v0.13 — Chatterbox Turbo TTS engine (third backend, optional)
+## ~~v0.13 — Chatterbox Turbo TTS engine~~ — superseded by v0.12.0
 
-**Status:** scheduled after v0.12. The pluggable layer landed in
-v0.12 is what makes this cheap.
+The Chatterbox engine work originally scheduled here landed early as
+v0.12.0 once upstream Kokoro got blocked. Notable deviations from
+this plan:
 
-### Why
+- The shipped engine targets `ResembleAI/chatterbox-turbo-ONNX`
+  (pure ONNX, no PyTorch dep) — the PyTorch-runtime concern
+  documented below turned out to be moot.
+- Voice-cloning UX shipped as mic-record + file-import (no
+  expressivity sliders yet — upstream API doesn't expose them).
+- Optional-extras packaging (`pip install voiceagent[chatterbox]`)
+  did ship as planned.
 
-Kokoro covers the "better default voice" gap. Chatterbox Turbo
-(Resemble AI, mid-2025) covers the next axis: **voice cloning and
-expressive prosody**. Permissive license (base Chatterbox is MIT),
-voice cloning from a short reference clip, emotion / expressivity
-controls. "Turbo" is Resemble's latency-optimized variant designed
-to bring per-token cost down enough for interactive use. **Confirm
-the exact model name, license, and footprint when implementation
-starts** — these are 2025-current details and worth re-verifying
-before work begins.
+The original v0.13 outline preserved below for historical reference.
 
-This is not a default-engine candidate. PyTorch runtime weight and
-larger model size make it heavier than Kokoro. It's the "if you want
-expressive voices or to clone your own" tier.
+### Why (historical)
 
 ### Outcome
 

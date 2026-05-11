@@ -2,45 +2,6 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
-## 0.12.1 — 2026-05-06
-
-**Hierarchical per-engine on-disk layout.** The flat
-`stt-models/`, `tts-models/`, and `chatterbox-references/` directories
-under `~/.local/share/voiceagent/` are replaced with a nested,
-engine-scoped tree:
-
-```
-~/.local/share/voiceagent/
-  stt/
-    whisper/                 # was stt-models/
-      huggingface/
-      tiny.en/
-  tts/
-    piper/                   # was tts-models/ (voices + voices.json)
-      en_US-libritts-high.onnx
-      en_US-libritts-high.onnx.json
-      voices.json
-    chatterbox/
-      model/                 # downloaded ONNX model cache
-      references/            # was chatterbox-references/
-        default.wav
-```
-
-Adding a third TTS or STT engine now slots in cleanly under
-`tts/<engine>/` or `stt/<engine>/` instead of fighting for namespace
-in a flat directory. New helpers in `voiceagent.paths`
-(`default_whisper_root`, `default_piper_voices_root`,
-`default_chatterbox_root`, `default_chatterbox_model_root`,
-`default_chatterbox_references_root`) replace the legacy
-`default_stt_model_root` / `default_tts_model_root` (kept as
-deprecated aliases that resolve to the new engine-scoped paths).
-
-The `VOICEAGENT_STT_MODEL_ROOT`, `VOICEAGENT_TTS_MODEL_ROOT`, and
-`VOICEAGENT_CHATTERBOX_REFERENCES_ROOT` env-var names are unchanged;
-only the unset defaults move. Existing installs need a one-time `mv`
-of the old directories into the new tree — voiceagent does not
-auto-migrate.
-
 ## 0.12.0 — 2026-05-10
 
 **Chatterbox TTS engine + live engine selector.** Voiceagent ships
