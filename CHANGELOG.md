@@ -2,6 +2,51 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.12.1 — 2026-05-11
+
+**Auto-migrate v0.11.x flat data dirs to the engine-scoped tree.**
+v0.12.0 introduced the new layout (`stt/whisper/`, `tts/piper/`,
+`tts/chatterbox/references/`) but the legacy aliases were redirected
+to the new paths, leaving an upgrading user's existing models
+orphaned at the old flat locations (`stt-models/`, `tts-models/`,
+`chatterbox-references/`). The app appeared to lose all installed
+content — STT/TTS catalogs went empty, the user re-downloaded
+several GB of models that were already on disk a directory away.
+
+`voiceagent.paths.migrate_legacy_data_dirs()` now runs at startup
+(before service construction) and moves each legacy dir into its
+engine-scoped equivalent when the new dir is empty. Idempotent
+(no-op once migrated). Logs the migration to both the file log and
+the console line on first post-upgrade launch.
+
+Skip rules:
+
+- **Both old and new dirs have content.** The migration logs a
+  warning and skips that pair — merge manually if the old data
+  should take precedence. Avoids clobbering anything the user
+  accumulated post-upgrade.
+- **`VOICEAGENT_*_ROOT` env var is set.** The user has an explicit
+  custom path; auto-migrating to the *default* would put the data
+  somewhere they're not reading from. Manual `mv` recovers prior
+  state in that case.
+- **`os.rename` fails (cross-device, permissions).** Logs a warning
+  with the OSError; the app proceeds with empty new dirs. Manual
+  `mv` recovers.
+
+### Manual fallback
+
+Users on custom env-var paths or with both-populated dirs can run
+the migration by hand:
+
+```sh
+mv ~/.local/share/voiceagent/stt-models           ~/.local/share/voiceagent/stt/whisper
+mv ~/.local/share/voiceagent/tts-models           ~/.local/share/voiceagent/tts/piper
+mv ~/.local/share/voiceagent/chatterbox-references ~/.local/share/voiceagent/tts/chatterbox/references
+```
+
+Adjust the destination paths for any custom `VOICEAGENT_*_ROOT`
+overrides.
+
 ## 0.12.0 — 2026-05-10
 
 **Chatterbox TTS engine + live engine selector.** Voiceagent ships

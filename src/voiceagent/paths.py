@@ -125,3 +125,113 @@ def default_tts_model_root() -> Path:
 
 def default_log_dir() -> Path:
     return app_state_dir() / "logs"
+
+
+# ---------------------------------------------------------------------------
+# Legacy → engine-scoped one-time migration (v0.12.1).
+#
+# v0.12.0 introduced the engine-scoped data tree but redirected the legacy
+# `default_stt_model_root()` / `default_tts_model_root()` aliases to the
+# NEW paths rather than the old flat dirs. So an upgrading v0.11.x user
+# who didn't manually `mv` their dirs would see empty STT/TTS catalogs
+# (the app reads the new empty dirs, the old data sits orphaned). No
+# error — just a silent "your config evaporated" experience that
+# triggers a multi-GB re-download.
+#
+# The migration here detects the legacy flat dirs at startup and moves
+# their contents into the engine-scoped tree. Idempotent (no-op once
+# migrated). Skipped when the user has set a `VOICEAGENT_*_ROOT` env
+# var (their explicit choice overrides the default migration target).
+# ---------------------------------------------------------------------------
+
+
+# Legacy → new path pairs. Each entry: (legacy_relative_to_data_root,
+# new_default_path_fn, env_override_var). The env override means
+# "user has explicitly chosen a path, don't auto-migrate to the
+# default — let them handle it."
+_LEGACY_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("stt-models", "default_whisper_root", "VOICEAGENT_STT_MODEL_ROOT"),
+    ("tts-models", "default_piper_voices_root", "VOICEAGENT_TTS_MODEL_ROOT"),
+    (
+        "chatterbox-references",
+        "default_chatterbox_references_root",
+        "VOICEAGENT_CHATTERBOX_REFERENCES_ROOT",
+    ),
+)
+
+
+def migrate_legacy_data_dirs(logger=None) -> list[tuple[Path, Path]]:
+    """Move v0.11.x flat data dirs into the v0.12+ engine-scoped tree.
+
+    Run early at startup (before any service reads its model root).
+    Returns the list of (legacy, new) pairs that were actually moved
+    so callers can log / surface the migration. Empty list means
+    nothing to do — already migrated, no legacy data, or all moves
+    were skipped by env-override / conflict.
+
+    Skip rules:
+    - Legacy dir doesn't exist → nothing to move.
+    - User has set the matching `VOICEAGENT_*_ROOT` env var to a
+      non-blank value → don't auto-migrate; the user has an explicit
+      path that would be ignored by a default-to-default move.
+    - New dir already exists with content → don't clobber. Logs a
+      warning so the user sees the conflict; manual merge needed.
+    """
+    moved: list[tuple[Path, Path]] = []
+    data_root = default_data_root()
+    if not data_root.exists():
+        return moved
+    # Late lookup so the names map to the live module-level functions
+    # — keeps the table data-only and avoids a circular eval at import.
+    here = globals()
+    for legacy_name, new_fn_name, env_var in _LEGACY_MIGRATIONS:
+        env_value = os.environ.get(env_var, "").strip()
+        if env_value:
+            # Explicit user override — skip silently.
+            continue
+        legacy = data_root / legacy_name
+        if not legacy.exists() or not legacy.is_dir():
+            continue
+        new_fn = here.get(new_fn_name)
+        if not callable(new_fn):
+            continue
+        new = new_fn()
+        # If the new dir already has content, don't overwrite — let
+        # the user resolve the conflict (they may have started fresh
+        # post-upgrade and accumulated new state alongside the old).
+        try:
+            new_has_content = new.exists() and any(new.iterdir())
+        except OSError:
+            new_has_content = True  # fail closed
+        if new_has_content:
+            if logger is not None:
+                logger.warning(
+                    "Skipping legacy data migration: both %s and %s "
+                    "have content. Merge manually if the old data "
+                    "should take precedence.",
+                    legacy, new,
+                )
+            continue
+        try:
+            new.parent.mkdir(parents=True, exist_ok=True)
+            # Replace an empty new dir so `legacy.rename(new)` works
+            # — rename refuses to overwrite a non-empty target on
+            # POSIX, but empty-target replacement is portable.
+            if new.exists():
+                new.rmdir()
+            legacy.rename(new)
+        except OSError as exc:
+            if logger is not None:
+                logger.warning(
+                    "Could not migrate legacy data dir %s -> %s (%s); "
+                    "the app will treat the new dir as empty. Manual "
+                    "`mv` recovers prior state.",
+                    legacy, new, exc,
+                )
+            continue
+        if logger is not None:
+            logger.info(
+                "Migrated legacy data dir %s -> %s", legacy, new,
+            )
+        moved.append((legacy, new))
+    return moved
