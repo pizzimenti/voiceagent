@@ -41,35 +41,72 @@ only the unset defaults move. Existing installs need a one-time `mv`
 of the old directories into the new tree — voiceagent does not
 auto-migrate.
 
-## 0.12.0 — 2026-05-06
+## 0.12.0 — 2026-05-10
 
-**Chatterbox TTS engine.** Voiceagent ships Piper (default) and now
-also Chatterbox (Resemble AI's zero-shot voice cloning model) as an
-optional second engine. Install via `pip install voiceagent[chatterbox]`.
-Both engines coexist behind a runtime engine selector in the main
-window — switch without restarting; per-engine voice selection is
-remembered across swaps.
+**Chatterbox TTS engine + live engine selector.** Voiceagent ships
+Piper (default) and now also Chatterbox (Resemble AI's zero-shot
+voice cloning model) as an optional second engine. Install via
+`pip install voiceagent[chatterbox]`. Both engines coexist behind a
+runtime engine selector in the main window — switch without
+restarting; per-engine voice selection is remembered across swaps.
 
-Chatterbox is voice-cloning only — there are no built-in voices. On
-first switch to Chatterbox, voiceagent auto-seeds a bundled default
-reference clip (a Piper-synthesized neutral voice, ~150 KiB, shipped
-in the package) so the engine works out of the box. Backend slots
-for file-import (`importChatterboxReference`) and use-bundled-default
-(`useChatterboxBundledDefault`) are wired and callable from QML.
+Chatterbox is voice-cloning only — there are no built-in voices.
+Two ways to add one:
+
+- **Mic-record** (`startChatterboxRecording`): in-app fixed-duration
+  capture (up to 60 s) writes a 24 kHz mono WAV directly into the
+  references catalog. The always-on STT mic is suspended for the
+  duration so the recording stays clean.
+- **File import** (`importChatterboxReference`): pick any audio
+  file via the system FileDialog; non-WAV is resampled to 24 kHz
+  mono on import. Percent-encoded paths and filenames with spaces
+  / non-ASCII characters are decoded correctly.
 
 Reference clips live at `$VOICEAGENT_CHATTERBOX_REFERENCES_ROOT`
-(default `~/.local/share/voiceagent/chatterbox-references/`).
+(default `~/.local/share/voiceagent/tts/chatterbox/references/`).
 
-The richer first-run UX — a modal A/B/C dialog (record-from-mic,
-import-file, use-bundled-default) plus a "Manage reference voices"
-Settings pane — is queued for v0.12.1. v0.12.0 lands the engine and
-its synthesis path; v0.12.1 layers the polished voice-management UI
-on top.
+**Per-dtype model variants.** A dropdown in the Chatterbox config
+pane selects between four precision tiers — `q4` (default, ~700 MB,
+fastest), `q4f16`, `fp16`, and `fp32` (~2.5 GB, highest fidelity,
+preserves the high-frequency tail of speaker embeddings where pitch
+lives). Switching dtypes does not delete previously-downloaded
+variants — flipping back is free.
 
-The Chatterbox engine targets the `q4`-quantized variant of
-`ResembleAI/chatterbox-turbo-ONNX` (pure ONNX runtime, no PyTorch
-dependency, ~700 MB on disk) and runs at ~1.35× realtime on a
-Ryzen 5 8640HS CPU. 24 kHz mono output.
+**Offline-readiness.** `download_engine_model` pins a single HF
+revision SHA across every component fetch (graphs + sidecars +
+tokenizer files), records the SHA + sidecar inventory in a per-
+dtype install manifest, and routes every download through the
+engine-scoped `model_root` rather than the global HF cache.
+`AutoTokenizer.from_pretrained` uses the pinned revision with
+`local_files_only=True` so first synth never touches the network
+when the install is complete. `_model_present` re-verifies the
+manifest's sidecar inventory still exists, so a post-install cache
+eviction surfaces as "needs download" instead of failing later at
+`InferenceSession`.
+
+**Engine swap safety.** Live engine swaps tear down the previous
+loader's signal connections before tearing down the loader itself,
+so late progress/status emits from in-flight downloads can't update
+the new engine's UI state. `controller.set_tts_service` rejects
+mid-pipeline swaps with a logged warning rather than risking a torn
+state in `_run_pipeline`. Re-selecting the current engine cancels
+any deferred swap that was queued behind a busy pipeline.
+`VOICEAGENT_TTS_ENGINE` is honored on first launch (persisted to
+QSettings so the desync recovery path doesn't silently revert it
+to piper).
+
+**LM Studio bug workaround.** When the native `/api/v1/models`
+endpoint returns `loaded_instances: []` for every model (a known
+LM Studio bug as of May 2026), voiceagent falls back to the
+OpenAI-compatible `/v1/models` list — but only when there is
+exactly one LLM-typed candidate AND the native API confirmed at
+least one model is `type: llm`. Ambiguous fallbacks now surface
+"no model loaded" honestly instead of guessing.
+
+The Chatterbox engine targets `ResembleAI/chatterbox-turbo-ONNX`
+(pure ONNX runtime, no PyTorch dependency). The default `q4` variant
+runs at ~1.35× realtime on a Ryzen 5 8640HS CPU; ~6.77 s wall time
+for a 5 s utterance. 24 kHz mono output.
 
 ### Notes
 - Chatterbox extras require Python ≥ 3.11 (matches voiceagent's own pin).
@@ -81,6 +118,14 @@ Ryzen 5 8640HS CPU. 24 kHz mono output.
   `VOICEAGENT_CHATTERBOX_WATERMARK=1`.
 - The `huggingface_hub` upper pin is bumped from `<1` to `<2` to keep
   the venv coherent with `transformers` 5.x's hub requirements.
+- `VOICEAGENT_*_ROOT` env vars are now treated as unset when blank —
+  a stray empty assignment in a shell rc no longer diverts caches
+  into the launch directory.
+- Session Setup ComboBoxes (engine, voice, speech, LLM model)
+  highlight the currently-selected entry on dropdown open. The
+  default Qt Quick Controls delegate only highlights keyboard hover
+  under the KDE/Breeze style, leaving the actual selection visually
+  indistinguishable from the other rows.
 
 ## 0.11.1 — 2026-05-06
 
