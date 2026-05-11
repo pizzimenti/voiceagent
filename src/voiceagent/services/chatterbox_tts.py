@@ -578,7 +578,12 @@ class ChatterboxTtsService(TextToSpeechBackend):
         # download so `_model_present` can detect a later cache
         # eviction (HF cache cleanup, manual delete) and re-trigger
         # the engine-download UI rather than leaving a half-installed
-        # model that fails at first synth.
+        # model that fails at first synth. Also pins the HF revision
+        # so `_load_models` can route the tokenizer load through the
+        # exact same snapshot (with `local_files_only=True`) — without
+        # this, a tokenizer load could drift to a newer upstream
+        # commit while the ONNX bundle stayed pinned, mismatching
+        # special-token IDs.
         try:
             import json
             present_sidecars: list[str] = []
@@ -588,8 +593,11 @@ class ChatterboxTtsService(TextToSpeechBackend):
                 )
                 if self._resolved_sidecar_path(sidecar_filename) is not None:
                     present_sidecars.append(sidecar_filename)
+            manifest_payload: dict[str, Any] = {"sidecars": present_sidecars}
+            if revision:
+                manifest_payload["revision"] = revision
             self._install_manifest_path().write_text(
-                json.dumps({"sidecars": present_sidecars})
+                json.dumps(manifest_payload)
             )
         except OSError as exc:
             self._logger.warning(
@@ -825,6 +833,24 @@ class ChatterboxTtsService(TextToSpeechBackend):
         """
         return self.model_root / f"install_manifest_{self._dtype}.json"
 
+    def _pinned_revision(self) -> str | None:
+        """Return the HF revision SHA recorded in the install manifest
+        for the active dtype, or `None` if no manifest exists / the
+        manifest predates revision tracking. Used by `_load_models` to
+        pin tokenizer load to the same snapshot as the ONNX bundle.
+        """
+        manifest_path = self._install_manifest_path()
+        if not manifest_path.exists():
+            return None
+        try:
+            import json
+            with manifest_path.open("r") as fh:
+                manifest = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        revision = manifest.get("revision")
+        return revision if isinstance(revision, str) and revision else None
+
     def _resolved_sidecar_path(self, sidecar_filename: str) -> Path | None:
         """Resolve a `*_data` sidecar in the cache. Mirrors
         `_resolved_component_path`'s dual-probe (engine-scoped first,
@@ -933,8 +959,24 @@ class ChatterboxTtsService(TextToSpeechBackend):
             # without `cache_dir`, AutoTokenizer would resolve against the
             # global HF cache and could re-fetch from the network even
             # when the engine model is fully present locally.
+            #
+            # When the install manifest pins a revision SHA, pass it
+            # through with `local_files_only=True` so the tokenizer
+            # loads from the exact snapshot the ONNX bundle was
+            # downloaded against AND surfaces a clear error instead of
+            # silently hitting the network if any tokenizer file is
+            # missing. Falls back to the un-pinned cache_dir path on
+            # legacy installs (no manifest, or manifest predates the
+            # revision-tracking field).
+            pinned_revision = self._pinned_revision()
+            tokenizer_kwargs: dict[str, Any] = {
+                "cache_dir": str(self.model_root),
+            }
+            if pinned_revision:
+                tokenizer_kwargs["revision"] = pinned_revision
+                tokenizer_kwargs["local_files_only"] = True
             tokenizer = AutoTokenizer.from_pretrained(
-                self.HF_REPO, cache_dir=str(self.model_root)
+                self.HF_REPO, **tokenizer_kwargs
             )
             self._sessions = sessions
             self._tokenizer = tokenizer

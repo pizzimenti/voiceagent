@@ -49,10 +49,30 @@ class AppConfig:
     # is good enough to unblock multi-turn for v0.11.
     max_history_turns: int = 20
 
+    @staticmethod
+    def _path_from_env(var_name: str, default: Path) -> Path:
+        """Resolve a Path from `var_name`, treating empty / whitespace-
+        only values as unset. The default `os.environ.get(name, default)`
+        returns the env value if it exists at all, even if blank — and
+        `Path("")` resolves to `"."`, so a stray `VOICEAGENT_*_ROOT=`
+        in a shell rc would silently divert model caches into the
+        launch directory. Falling back to `default` on whitespace
+        keeps the cache layout predictable.
+        """
+        raw = os.environ.get(var_name, "") or ""
+        trimmed = raw.strip()
+        if not trimmed:
+            return default
+        return Path(trimmed).expanduser()
+
     @classmethod
     def from_env(cls) -> "AppConfig":
-        stt_model_root = Path(os.environ.get("VOICEAGENT_STT_MODEL_ROOT", default_whisper_root())).expanduser()
-        tts_model_root = Path(os.environ.get("VOICEAGENT_TTS_MODEL_ROOT", default_piper_voices_root())).expanduser()
+        stt_model_root = cls._path_from_env(
+            "VOICEAGENT_STT_MODEL_ROOT", default_whisper_root(),
+        )
+        tts_model_root = cls._path_from_env(
+            "VOICEAGENT_TTS_MODEL_ROOT", default_piper_voices_root(),
+        )
         default_tts_command = os.environ.get("TTS_COMMAND", "").strip()
         if default_tts_command:
             tts_command = shlex.split(default_tts_command)
@@ -86,12 +106,10 @@ class AppConfig:
                 raw_engine,
             )
             tts_engine = "piper"
-        chatterbox_references_root = Path(
-            os.environ.get(
-                "VOICEAGENT_CHATTERBOX_REFERENCES_ROOT",
-                str(default_chatterbox_references_root()),
-            )
-        ).expanduser()
+        chatterbox_references_root = cls._path_from_env(
+            "VOICEAGENT_CHATTERBOX_REFERENCES_ROOT",
+            default_chatterbox_references_root(),
+        )
         return cls(
             lm_studio_base_url=os.environ.get("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1").rstrip("/"),
             lm_studio_model=os.environ.get("LM_STUDIO_MODEL", "").strip(),

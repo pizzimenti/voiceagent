@@ -223,7 +223,22 @@ class VoiceController(QObject):
         could send mid-pipeline calls to a destroyed service. The window
         gates this on `state == AppState.IDLE` (or stashes a pending
         swap until the next idle transition).
+
+        Defensive runtime guard: if a future caller forgets the IDLE
+        precondition (or a bug in the QML wiring re-fires this slot
+        mid-pipeline), reject the swap rather than torn-state the
+        live pipeline. Belt-and-braces — the window-side gate is the
+        primary safety, this is the failsafe.
         """
+        if self.state is not AppState.IDLE:
+            self._logger.warning(
+                "Rejected TTS swap outside IDLE state=%s "
+                "current=%s requested=%s",
+                self.state.value,
+                type(self.tts_service).__name__,
+                type(tts_service).__name__,
+            )
+            return
         self.tts_service = tts_service
 
     def shutdown(self) -> None:

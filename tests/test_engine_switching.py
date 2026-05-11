@@ -99,10 +99,11 @@ def test_default_engine_is_piper(tmp_path):
 
 
 def test_chatterbox_when_extras_present(monkeypatch, tmp_path):
-    pytest.importorskip(
-        "voiceagent.services.chatterbox_tts",
-        reason="ChatterboxTtsService not yet wired in this branch",
-    )
+    # Hard import — the previous `pytest.importorskip` here masked
+    # wiring failures (renamed module, broken import chain, missing
+    # symbol) by quietly skipping. The Chatterbox engine is part of
+    # the v0.12 surface and any import regression should fail the
+    # suite, not be tolerated as "not yet wired."
     from voiceagent.services.chatterbox_tts import ChatterboxTtsService
 
     _force_extras(monkeypatch, present=True)
