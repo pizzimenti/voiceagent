@@ -44,6 +44,7 @@ class LmStudioClient:
         self.load_timeout_seconds = (
             load_timeout_seconds if load_timeout_seconds is not None else timeout_seconds
         )
+        self._logger = logging.getLogger(__name__)
         self.set_base_url(base_url)
 
     @staticmethod
@@ -150,12 +151,96 @@ class LmStudioClient:
 
     def refresh_loaded_model(self) -> str:
         loaded_models = self.list_loaded_models()
-        if not loaded_models:
-            self.model = ""
-            raise RuntimeError("No LLM is currently loaded on the server.")
+        if loaded_models:
+            self.model = loaded_models[0]
+            return self.model
 
-        self.model = loaded_models[0]
-        return self.model
+        # LM Studio bug workaround (observed May 2026): the native
+        # `/api/v1/models` endpoint can report `loaded_instances: []`
+        # for every model even when one is actively serving chat
+        # completions. The OpenAI-compatible `/v1/models` endpoint
+        # still lists models that are reachable for inference.
+        #
+        # Only apply the workaround when /v1/models returns exactly
+        # ONE LLM-typed entry — that's a high-confidence signal that
+        # the listed model is the loaded one. With multiple candidates
+        # we cannot tell which (if any) is actually serving, so
+        # surfacing "no model loaded" is more honest than guessing
+        # and failing at the next /chat/completions call.
+        try:
+            llm_keys = self._llm_keys_from_native()
+            openai_models = self.list_models()
+        except Exception as exc:
+            self.model = ""
+            raise RuntimeError(
+                "No LLM is currently loaded on the server "
+                f"(fallback /v1/models lookup failed: {exc})."
+            ) from exc
+        # Skip the workaround when we cannot confirm any /v1/models
+        # entry is an LLM via the native API: `llm_keys is None` means
+        # the native lookup itself failed / was missing / was malformed,
+        # so promoting an arbitrary entry could mark an embedding model
+        # or unloaded entry as the active LLM. Empty set is also a skip
+        # — lookup succeeded but no LLM-typed keys exist, so nothing in
+        # /v1/models can be safely classified.
+        if not llm_keys:
+            self.model = ""
+            raise RuntimeError(
+                "No LLM is currently loaded on the server "
+                "(native API did not confirm any LLM-typed model)."
+            )
+        llm_candidates = [m for m in openai_models if m in llm_keys]
+        if len(llm_candidates) == 1:
+            candidate = llm_candidates[0]
+            self._logger.warning(
+                "LM Studio /api/v1/models reported no loaded "
+                "instances; single /v1/models entry %r treated as "
+                "loaded (LM Studio bug workaround)",
+                candidate,
+            )
+            self.model = candidate
+            return self.model
+        self.model = ""
+        raise RuntimeError(
+            "No LLM is currently loaded on the server "
+            f"({len(llm_candidates)} candidate(s) in /v1/models; "
+            "ambiguous — load one explicitly)."
+        )
+
+    def _llm_keys_from_native(self) -> set[str] | None:
+        """Return the set of model keys the native API reports as
+        `type: llm`. Used to filter the OpenAI `/v1/models` list (which
+        also includes embedding models) when falling back from a buggy
+        `loaded_instances` response.
+
+        Returns `None` (distinct sentinel) when the native lookup
+        cannot be confirmed — endpoint missing, request failed, or
+        payload was malformed. Callers must treat `None` as "could
+        not confirm any /v1/models entry is an LLM" and skip the
+        workaround entirely (otherwise the fallback could promote an
+        embedding model or unloaded entry to the active model). An
+        empty set means "lookup succeeded; no LLM-typed keys exist."
+        """
+        native_api_root = self._native_api_root()
+        if not native_api_root:
+            return None
+        try:
+            data = self._json_request(f"{native_api_root}/models", method="GET")
+        except Exception:
+            return None
+        models = data.get("models", [])
+        if not isinstance(models, list):
+            return None
+        keys: set[str] = set()
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "llm":
+                continue
+            key = item.get("key")
+            if isinstance(key, str) and key.strip():
+                keys.add(key.strip())
+        return keys
 
     def list_models(self) -> list[str]:
         if not self.base_url:

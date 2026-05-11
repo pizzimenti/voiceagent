@@ -1,5 +1,7 @@
 import QtQuick
+import QtCore
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import QtQuick.Window
 import org.kde.kirigami 2.20 as Kirigami
@@ -7,8 +9,13 @@ import org.kde.kirigami 2.20 as Kirigami
 Kirigami.ApplicationWindow {
     id: root
 
-    width: 512
-    height: 512
+    // Default launch size is exactly the compact-mode threshold so
+    // first paint lands in the wide layout (form column + mic to the
+    // right). Shrinking horizontally by even one pixel drops to
+    // compactMode (the single-column layout). Height is sized for the
+    // session-setup form + a few rows of conversation log.
+    width: Kirigami.Units.gridUnit * 40
+    height: Kirigami.Units.gridUnit * 30
     // Floors are intentionally aggressive: the user wants the option
     // to shrink to a postage-stamp mic-only widget. Below ~6 grid
     // units (~108 px @1.0x) the WM's title bar may itself cramp or
@@ -153,32 +160,6 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    // Cycle 9: replay-failure toast. MainWindow.replayMessage(int) emits
-    // `replay_failed(QString reason)` when synthesis raises or the voice
-    // is not yet `is_available`. Surface the reason via Kirigami's
-    // standard passive notification (`"short"` ≈ 4s auto-dismiss) so a
-    // failed replay click is visible without persisting in chrome.
-    // The Python side already wraps static reasons via i18nCtx and
-    // leaves dynamic exception text in English; we display the payload
-    // as-is.
-    //
-    // Wiring uses `Component.onCompleted: signal.connect(handler)` rather
-    // than a `Connections { function onReplayFailed(...) }` block. The
-    // Python signal is `replay_failed` (snake_case, per the rest of the
-    // window.py surface), and Qt's QML Connections signal-handler name
-    // resolution does NOT auto-camelCase a snake_case Python signal name
-    // at runtime — `onReplayFailed` would silently never fire (and the
-    // QML parser warns "no signal of the target matches the name"). The
-    // direct `signal.connect(fn)` form binds at runtime regardless of
-    // the Python casing convention. The QA-automation suite's
-    // `tests/test_replay_toast.py` locks this in.
-    Component.onCompleted: {
-        if (voiceAgent && voiceAgent.replay_failed) {
-            voiceAgent.replay_failed.connect(function(reason) {
-                root.showPassiveNotification(reason, "short");
-            });
-        }
-    }
 
     Window {
         id: modelManagerWindow
@@ -272,53 +253,64 @@ Kirigami.ApplicationWindow {
                     Layout.fillHeight: true
                     currentIndex: managerTabs.currentIndex
 
-                    ColumnLayout {
-                        Layout.leftMargin: Kirigami.Units.largeSpacing
-                        Layout.rightMargin: Kirigami.Units.largeSpacing
-                        Layout.topMargin: Kirigami.Units.mediumSpacing
-                        Layout.bottomMargin: Kirigami.Units.largeSpacing
-                        spacing: Kirigami.Units.smallSpacing
-
-                        TextField {
-                            Layout.fillWidth: true
-                            placeholderText: root.tr("Filter STT models")
-                            text: modelManagerWindow.sttFilter
-                            onTextChanged: modelManagerWindow.sttFilter = text
-                        }
-
-                        CatalogList {
-                            id: sttCatalogView
-                            catalogModel: root.hasVoiceAgent ? voiceAgent.sttCatalogModel : null
-                            filterText: modelManagerWindow.sttFilter
-                            selectedName: root.hasVoiceAgent ? voiceAgent.selectedSttModel : ""
-                            onSelect: function(name) { if (root.hasVoiceAgent) voiceAgent.selectSttModel(name); }
-                            onInstall: function(name) { if (root.hasVoiceAgent) voiceAgent.installSttModel(name); }
-                            onRemove: function(name) { if (root.hasVoiceAgent) voiceAgent.deleteSttModel(name); }
+                    // Speech-To-Text tab: a Loader resolves the active
+                    // STT engine's config pane file via
+                    // `voiceAgent.sttConfigPaneFile`. Adding a future
+                    // STT engine is one new pane file under
+                    // `qml/engines/` plus one branch in the Python
+                    // `sttConfigPaneFile` Property — no edits here.
+                    //
+                    // Filter wiring direction: the Loader seeds the
+                    // pane's local `filterText` once at load with
+                    // `modelManagerWindow.sttFilter`'s current value,
+                    // then mirrors pane → window via
+                    // `filterTextChanged`. We do NOT use Qt.binding
+                    // for the seed because the pane's TextField writes
+                    // back to its own `filterText`, which would
+                    // immediately break a binding installed here. The
+                    // pane is the editable source of truth for the
+                    // duration of its lifetime; the window acts as
+                    // persistence across pane swaps (engine change /
+                    // tab re-entry).
+                    Loader {
+                        id: sttConfigLoader
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        source: root.hasVoiceAgent
+                            ? "engines/" + voiceAgent.sttConfigPaneFile
+                            : ""
+                        onLoaded: {
+                            if (item) {
+                                item.voiceAgent = root.voiceAgent;
+                                item.filterText = modelManagerWindow.sttFilter;
+                                item.filterTextChanged.connect(function() {
+                                    modelManagerWindow.sttFilter = item.filterText;
+                                });
+                            }
                         }
                     }
 
-                    ColumnLayout {
-                        Layout.leftMargin: Kirigami.Units.largeSpacing
-                        Layout.rightMargin: Kirigami.Units.largeSpacing
-                        Layout.topMargin: Kirigami.Units.mediumSpacing
-                        Layout.bottomMargin: Kirigami.Units.largeSpacing
-                        spacing: Kirigami.Units.smallSpacing
-
-                        TextField {
-                            Layout.fillWidth: true
-                            placeholderText: root.tr("Filter TTS voices")
-                            text: modelManagerWindow.ttsFilter
-                            onTextChanged: modelManagerWindow.ttsFilter = text
-                        }
-
-                        CatalogList {
-                            id: ttsCatalogView
-                            catalogModel: root.hasVoiceAgent ? voiceAgent.ttsCatalogModel : null
-                            filterText: modelManagerWindow.ttsFilter
-                            selectedName: root.hasVoiceAgent ? voiceAgent.selectedTtsModel : ""
-                            onSelect: function(name) { if (root.hasVoiceAgent) voiceAgent.selectTtsModel(name); }
-                            onInstall: function(name) { if (root.hasVoiceAgent) voiceAgent.installTtsModel(name); }
-                            onRemove: function(name) { if (root.hasVoiceAgent) voiceAgent.deleteTtsModel(name); }
+                    // Text-To-Speech tab: same pattern as STT but driven
+                    // by `voiceAgent.ttsConfigPaneFile`, which switches
+                    // between PiperTtsConfigPane.qml and
+                    // ChatterboxTtsConfigPane.qml based on the active
+                    // engine. Loader.source flips when the engine
+                    // changes, instantiating the new pane.
+                    Loader {
+                        id: ttsConfigLoader
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        source: root.hasVoiceAgent
+                            ? "engines/" + voiceAgent.ttsConfigPaneFile
+                            : ""
+                        onLoaded: {
+                            if (item) {
+                                item.voiceAgent = root.voiceAgent;
+                                item.filterText = modelManagerWindow.ttsFilter;
+                                item.filterTextChanged.connect(function() {
+                                    modelManagerWindow.ttsFilter = item.filterText;
+                                });
+                            }
                         }
                     }
                 }
@@ -544,6 +536,24 @@ Kirigami.ApplicationWindow {
                     }
                 }
             }
+
+        }
+
+        // Version + build identifier — pinned to the bottom-right
+        // page corner via direct anchors (rather than living in
+        // `pageContent`'s margined ColumnLayout) so its padding is
+        // independent of `pageContentMargin`. Hidden in
+        // ultraCompactMode where there is no spare height.
+        Label {
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.rightMargin: Kirigami.Units.smallSpacing
+            anchors.bottomMargin: Kirigami.Units.smallSpacing
+            visible: !root.ultraCompactMode && root.hasVoiceAgent
+            text: root.hasVoiceAgent ? root.voiceAgent.versionLabel : ""
+            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            color: Kirigami.Theme.disabledTextColor
+            opacity: 0.7
         }
     }
 }

@@ -28,13 +28,29 @@ if TYPE_CHECKING:
     pass
 
 
+def _chatterbox_extras_available() -> bool:
+    """Return True if every optional dependency the Chatterbox engine
+    needs is importable. Used as the gate before instantiating
+    `ChatterboxTtsService` so the user gets a deterministic fall-back
+    to Piper instead of an `ImportError` on first synth. `huggingface_hub`
+    is a hard dep of the project so it's not in the probe list.
+    """
+    import importlib.util
+
+    for name in ("onnxruntime", "transformers", "librosa", "soundfile"):
+        if importlib.util.find_spec(name) is None:
+            return False
+    return True
+
+
 def build_shared_services(
     config: AppConfig,
 ) -> tuple[SpeechToTextBackend, TextToSpeechBackend, WhisperModelLoader, TtsVoiceLoader]:
     # Backend imports stay local so future optional engines can be added
     # without forcing every provider dependency to be importable at startup.
     from voiceagent.services.stt import WhisperTranscriber
-    from voiceagent.services.tts import PiperTtsService
+
+    logger = logging.getLogger(__name__)
 
     transcriber = WhisperTranscriber(
         model_name=config.whisper_model,
@@ -42,12 +58,33 @@ def build_shared_services(
         compute_type=config.whisper_compute_type,
     )
     transcriber.model_root = config.stt_model_root
-    tts_service = PiperTtsService(
-        command=config.tts_command,
-        model_path=config.tts_model,
-        extra_args=config.tts_extra_args,
-    )
-    tts_service.model_root = config.tts_model_root
+    if config.tts_engine == "chatterbox" and _chatterbox_extras_available():
+        from voiceagent.paths import default_chatterbox_model_root
+        from voiceagent.services.chatterbox_tts import ChatterboxTtsService
+
+        # `tts_model_root` is now Piper-specific (defaults to
+        # `<data>/tts/piper/`), so appending `/chatterbox` to it would
+        # land inside Piper's voices directory. The Chatterbox model
+        # cache has its own engine-scoped root under `<data>/tts/chatterbox/model/`.
+        tts_service: TextToSpeechBackend = ChatterboxTtsService(
+            model_root=default_chatterbox_model_root(),
+            references_root=config.chatterbox_references_root,
+            selected_item=config.tts_model,
+        )
+    else:
+        if config.tts_engine == "chatterbox":
+            logger.warning(
+                "Chatterbox engine selected but extras not installed; "
+                "falling back to Piper"
+            )
+        from voiceagent.services.tts import PiperTtsService
+
+        tts_service = PiperTtsService(
+            command=config.tts_command,
+            model_path=config.tts_model,
+            extra_args=config.tts_extra_args,
+        )
+        tts_service.model_root = config.tts_model_root
     model_loader = WhisperModelLoader(transcriber)
     tts_loader = TtsVoiceLoader(tts_service)
     return transcriber, tts_service, model_loader, tts_loader

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voiceagent"
-version = "0.11.1"
+version = "0.12.0"
 description = "KDE-friendly desktop voice assistant"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
@@ -24,7 +24,7 @@ dependencies = [
   "PySide6>=6.10,<6.12",
   "sounddevice>=0.5,<0.6",
   "faster-whisper>=1.2,<2",
-  "huggingface_hub>=0.34,<1",
+  "huggingface_hub>=0.34,<2",
   "piper-tts>=1.4,<2",
 ]
 
@@ -37,6 +37,16 @@ dev = [
   "pytest>=8",
   "pytest-qt>=4",
   "ruff>=0.5",
+]
+# Chatterbox TTS engine — Resemble AI's zero-shot voice cloning model
+# (`ResembleAI/chatterbox-turbo-ONNX`). Pure ONNX runtime path, no
+# PyTorch dep. `huggingface_hub` is already a base dep so it isn't
+# listed here.
+chatterbox = [
+  "onnxruntime>=1.20",
+  "transformers>=4.40",
+  "librosa>=0.10",
+  "soundfile>=0.12",
 ]
 
 [project.scripts]
@@ -52,7 +62,7 @@ Repository = "https://github.com/pizzimenti/voiceagent"
 where = ["src"]
 
 [tool.setuptools.package-data]
-voiceagent = ["qml/*.qml"]
+voiceagent = ["qml/*.qml", "qml/engines/*.qml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

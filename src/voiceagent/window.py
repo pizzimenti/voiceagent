@@ -4,6 +4,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 import logging
 from pathlib import Path
+import threading
 import time
 from collections.abc import Callable
 
@@ -20,6 +21,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication
 
 from voiceagent.catalog_model import CatalogModel
+from voiceagent.config import AppConfig
 from voiceagent.controller import VoiceController
 from voiceagent.conversation_model import ConversationModel
 from voiceagent.conversation_turn_coordinator import ConversationTurnCoordinator
@@ -32,6 +34,9 @@ from voiceagent.services.llm_controller import LlmController
 from voiceagent.services.playback import AudioPlayer
 from voiceagent.startup_deferral import schedule_after_first_frame
 from voiceagent.tts_loader import TtsVoiceLoader
+
+_TTS_ENGINE_OPTIONS: tuple[str, ...] = ("piper", "chatterbox")
+_CHATTERBOX_DTYPES: tuple[str, ...] = ("q4", "q4f16", "fp16", "fp32")
 
 
 class _CatalogStateAdapter:
@@ -83,18 +88,6 @@ class MainWindow(QObject):
     ui_changed = Signal()
     progress_changed = Signal()
     conversation_changed = Signal()
-    # Fires when `replayMessage` cannot produce audio (synthesis raised
-    # or the selected TTS voice is not yet `is_available`). QML wires
-    # this to `Kirigami.ApplicationWindow.showPassiveNotification(...)`
-    # so the user gets a transient toast instead of a silent failure.
-    # The string payload is the human-readable reason. Exception-derived
-    # text is left in English source (exception messages aren't
-    # translatable). Static readiness reasons are wrapped through the
-    # `i18nCtx.i18n(...)` shim Python-side via `self._translator` so all
-    # translatable copy lives behind the same shim, swappable for a
-    # real `KLocalizedContext` later.
-    replay_failed = Signal(str)
-
     # Internal worker-thread → main-thread bridge for the LM Studio
     # context-length fetch. Layer 5 / 6 design: when the selected LLM
     # model changes, hop a `fetch_loaded_context_length()` HTTP call off
@@ -113,6 +106,21 @@ class MainWindow(QObject):
     # second is `(audio_path, error_message)` packed in a tuple so
     # both success and failure paths fit one signal shape.
     _replay_synth_completed = Signal(int, object)
+
+    # Internal worker-thread → main-thread bridge for the Chatterbox
+    # reference-voice recorder. `_chatterbox_record_progress` ticks
+    # ~10 Hz with `(seconds_elapsed, seconds_total)`. `_chatterbox_record_finished`
+    # fires once with `(saved_name, success, error_message)` — empty
+    # `saved_name` + non-empty error means the record failed; non-empty
+    # `saved_name` + empty error means success.
+    _chatterbox_record_progress = Signal(float, float)
+    _chatterbox_record_finished = Signal(str, bool, str)
+
+    # Engine-model download (the shared 4-component q4 ONNX bundle).
+    # Distinct from the per-voice recorder above. Emits component-
+    # progress ticks (1..4 of 4) and a single finished signal.
+    _chatterbox_engine_download_progress = Signal(int, int)
+    _chatterbox_engine_download_finished = Signal(bool, str)
 
     def __init__(
         self,
@@ -275,6 +283,49 @@ class MainWindow(QObject):
         self._tts_catalog_model = CatalogModel(
             self._tts_catalog, self._tts_state_adapter, self
         )
+        # Set when `selectTtsEngine` is invoked while a pipeline is
+        # active. The one-shot listener on `pipeline_state_changed`
+        # consumes it on the next IDLE transition. None when no swap
+        # is queued — the listener disconnects itself once it fires.
+        self._pending_tts_engine: str | None = None
+
+        # Chatterbox reference-voice recorder state. The worker thread
+        # writes `_chatterbox_record_progress` / `_chatterbox_record_finished`
+        # signals; the GUI-thread slots translate them into Property
+        # updates the QML recording dialog reads. `_cancel_flag` is the
+        # one-way kill switch the QML "Stop" button toggles.
+        self._chatterbox_record_thread: threading.Thread | None = None
+        self._chatterbox_record_cancel_flag = False
+        self._chatterbox_record_active = False
+        self._chatterbox_record_progress_value = 0.0
+        self._chatterbox_record_active_name = ""
+        # Voice-pipeline suspend/restore around reference recording.
+        # `sd.rec()` opens a second mic stream which conflicts with the
+        # always-on STT capture (device-busy on systems with one input
+        # stream / cross-talk on systems that allow both). We capture
+        # the pre-record state, suspend, and restore on finish.
+        self._chatterbox_record_voice_was_enabled = False
+        self._chatterbox_record_progress.connect(
+            self._on_chatterbox_record_progress
+        )
+        self._chatterbox_record_finished.connect(
+            self._on_chatterbox_record_finished
+        )
+
+        # Engine-model download state (shared across all chatterbox
+        # voices). The download fetches ~700 MB from HuggingFace; the
+        # banner in ChatterboxTtsConfigPane.qml drives this lifecycle.
+        self._chatterbox_engine_download_thread: threading.Thread | None = None
+        self._chatterbox_engine_downloading = False
+        self._chatterbox_engine_download_progress_value = 0.0
+        self._chatterbox_engine_download_completed_bytes = 0
+        self._chatterbox_engine_download_total_bytes = 0
+        self._chatterbox_engine_download_progress.connect(
+            self._on_chatterbox_engine_download_progress
+        )
+        self._chatterbox_engine_download_finished.connect(
+            self._on_chatterbox_engine_download_finished
+        )
 
         self.controller.status_changed.connect(self._emit_ui_changed)
         self.controller.connection_changed.connect(self._handle_connection_changed)
@@ -334,17 +385,7 @@ class MainWindow(QObject):
         self.model_loader.selection_changed.connect(self._handle_inventory_change)
         self.model_loader.load_completed.connect(self._handle_inventory_change)
         self.model_loader.delete_completed.connect(self._handle_inventory_change)
-        self.tts_loader.ready_changed.connect(self._emit_ui_changed)
-        self.tts_loader.loading_changed.connect(self._emit_ui_changed)
-        self.tts_loader.status_changed.connect(self._apply_tts_status)
-        self.tts_loader.progress_changed.connect(self._apply_tts_progress)
-        self.tts_loader.item_loading_changed.connect(self._on_tts_item_loading_changed)
-        self.tts_loader.item_progress_changed.connect(self._on_tts_item_progress_changed)
-        self.tts_loader.error_changed.connect(self._set_error_message)
-        self.tts_loader.selection_changed.connect(self._emit_ui_changed)
-        self.tts_loader.load_completed.connect(self._handle_inventory_change)
-        self.tts_loader.delete_completed.connect(self._handle_inventory_change)
-        self.tts_loader.catalog_changed.connect(self._on_tts_catalog_changed)
+        self._connect_tts_loader_signals(self.tts_loader)
         self._llm.urls_changed.connect(self._on_llm_urls_changed)
         self._llm.current_url_changed.connect(self._on_llm_current_url_changed)
         self._llm.connection_state_changed.connect(self._on_llm_connection_state_changed)
@@ -414,6 +455,63 @@ class MainWindow(QObject):
                 self._window, self.tts_loader.refresh_catalog_async
             )
 
+        # Sync the live TTS engine with the user's last QSettings choice.
+        # `build_shared_services` (in app.py) reads `config.tts_engine`
+        # which only consults the env var; it does not see QSettings.
+        # If the user previously picked a different engine in the UI we
+        # would otherwise show a banner saying "engine X selected" while
+        # the actual service is still engine Y. Swap on first frame so
+        # the divergence resolves before the user opens any pane.
+        active_engine = getattr(
+            self.tts_loader.tts_service, "backend_name", ""
+        ).lower()
+        # First-launch env-precedence: when no `selected_tts_engine`
+        # has been written to QSettings yet (fresh profile), persist
+        # the engine that `build_shared_services()` picked from
+        # `VOICEAGENT_TTS_ENGINE`. Without this, the desync check
+        # below would compare the env-driven `active_engine` against
+        # the QSettings default `piper` and force-swap to piper on
+        # every launch, silently ignoring the documented env override.
+        if (
+            not self.settings.contains("selected_tts_engine")
+            and active_engine in _TTS_ENGINE_OPTIONS
+        ):
+            self._logger.info(
+                "Persisting env-driven TTS engine to QSettings on "
+                "first launch engine=%s",
+                active_engine,
+            )
+            self.settings.setValue("selected_tts_engine", active_engine)
+            self.ui_changed.emit()
+        stored_engine = self.selectedTtsEngine
+        if stored_engine and stored_engine != active_engine:
+            self._logger.info(
+                "TTS engine startup desync: QSettings=%s service=%s — swapping",
+                stored_engine,
+                active_engine,
+            )
+            if stored_engine == "chatterbox" and not self._chatterbox_extras_available():
+                # Chatterbox previously selected but extras now missing.
+                # Reset QSettings to piper to keep the UI honest and
+                # prevent looping back into this same branch on every
+                # subsequent launch.
+                self._logger.warning(
+                    "QSettings asks for Chatterbox engine but extras "
+                    "are not installed; reverting to piper"
+                )
+                self.settings.setValue("selected_tts_engine", "piper")
+                self.ui_changed.emit()
+            else:
+                # Call _perform_tts_engine_swap directly rather than
+                # selectTtsEngine: the latter has a same-engine guard
+                # that would short-circuit here (QSettings already says
+                # `stored_engine`, so `selectedTtsEngine == stored_engine`).
+                # The desync is precisely what we are trying to resolve.
+                schedule_after_first_frame(
+                    self._window,
+                    lambda eng=stored_engine: self._perform_tts_engine_swap(eng),
+                )
+
     def shutdown(self) -> None:
         if self._shutting_down:
             return
@@ -479,6 +577,17 @@ class MainWindow(QObject):
     def ttsInstalledCount(self) -> int:  # noqa: N802
         return sum(1 for name in self._tts_catalog if self._is_tts_downloaded(name))
 
+    @Property(str, constant=True)
+    def versionLabel(self) -> str:  # noqa: N802
+        """Human-readable version + build identifier surfaced in the
+        UI footer so the user can confirm at a glance which build is
+        running. The build counter (`voiceagent.__build__`) bumps on
+        every commit that changes behavior — useful when a back-to-
+        back fix series makes "did I pull?" non-obvious.
+        """
+        from voiceagent import __version__, __build__
+        return f"v{__version__} build {__build__}"
+
     @Property(str, notify=ui_changed)
     def selectedSttModel(self) -> str:  # noqa: N802
         current = self.model_loader.selected_model
@@ -488,6 +597,45 @@ class MainWindow(QObject):
     def selectedTtsModel(self) -> str:  # noqa: N802
         current = self.tts_loader.selected_model or ""
         return current if current in self.ttsOptions else ""
+
+    @Property("QVariantList", constant=True)
+    def ttsEngineOptions(self) -> list[str]:  # noqa: N802
+        """Engines the user can pick in the Session Setup pane.
+
+        v0.12 introduced the engine selector for the Piper ↔ Chatterbox
+        swap. The list is constant for the process lifetime — adding a
+        new engine is a code change, not a runtime mutation.
+        """
+        return list(_TTS_ENGINE_OPTIONS)
+
+    @Property(str, notify=ui_changed)
+    def selectedTtsEngine(self) -> str:  # noqa: N802
+        stored = self.settings.value("selected_tts_engine", "piper", str) or "piper"
+        normalized = str(stored).strip().lower()
+        return normalized if normalized in _TTS_ENGINE_OPTIONS else "piper"
+
+    @Property(str, notify=ui_changed)
+    def ttsConfigPaneFile(self) -> str:  # noqa: N802
+        """QML filename of the per-engine TTS config pane.
+
+        Resolved by the Voice Models dialog's Loader, which prepends
+        ``"engines/"`` and instantiates the pane. Adding a future TTS
+        engine is one new ``qml/engines/<Name>TtsConfigPane.qml`` file
+        plus one branch here — `MainWindow.qml` does not change.
+        """
+        engine = self.selectedTtsEngine
+        if engine == "chatterbox":
+            return "ChatterboxTtsConfigPane.qml"
+        return "PiperTtsConfigPane.qml"
+
+    @Property(str, notify=ui_changed)
+    def sttConfigPaneFile(self) -> str:  # noqa: N802
+        """QML filename of the per-engine STT config pane.
+
+        Only Whisper today; the indirection is in place so adding a
+        future STT engine is a one-line change here + one new QML pane.
+        """
+        return "WhisperSttConfigPane.qml"
 
     @Property(bool, notify=ui_changed)
     def modelLoading(self) -> bool:  # noqa: N802
@@ -565,7 +713,22 @@ class MainWindow(QObject):
 
     @Property(bool, notify=ui_changed)
     def talkReady(self) -> bool:  # noqa: N802
-        return bool(self.selectedSttModel and self.selectedTtsModel and self._llm.is_ready)
+        if not (
+            self.selectedSttModel
+            and self.selectedTtsModel
+            and self._llm.is_ready
+        ):
+            return False
+        # Backends that distinguish per-voice availability from engine
+        # readiness (Chatterbox: shared ONNX bundle separate from the
+        # per-voice reference clip) must clear engine-readiness too,
+        # else the mic enables and the first turn fails at synth.
+        engine_ready = getattr(
+            self.tts_loader.tts_service, "is_engine_ready", None,
+        )
+        if engine_ready is False:
+            return False
+        return True
 
     @Property(str, notify=ui_changed)
     def micStatusLabel(self) -> str:  # noqa: N802
@@ -644,7 +807,699 @@ class MainWindow(QObject):
         if model_name not in self.ttsOptions:
             return
         self.settings.setValue("selected_tts_model", model_name)
+        # Per-engine memory: a user who flips Piper → Chatterbox → Piper
+        # gets their last-used voice on each side restored on the next
+        # swap, rather than a "first installed voice" fallback. The
+        # generic `selected_tts_model` key remains the active selection
+        # for whichever engine is live; the `_<engine>` keys are per-
+        # engine snapshots restored by `_perform_tts_engine_swap`.
+        engine = self.selectedTtsEngine
+        self.settings.setValue(f"selected_tts_model_{engine}", model_name)
         self.tts_loader.select_model(model_name)
+        self.ui_changed.emit()
+
+    @Slot(str, str, result=str)
+    def importChatterboxReference(self, source_path: str, name: str) -> str:  # noqa: N802
+        """Import a user-supplied audio file into the Chatterbox
+        references directory. Returns the saved name on success or
+        an empty string on failure (logged + appended to the
+        conversation log). Only valid when the live engine is
+        Chatterbox; callers should hide the UI affordance otherwise.
+        """
+        if self.selectedTtsEngine != "chatterbox":
+            self._logger.info("importChatterboxReference ignored: engine=%s", self.selectedTtsEngine)
+            return ""
+        service = getattr(self.tts_loader, "tts_service", None)
+        importer = getattr(service, "import_reference_clip", None)
+        if importer is None:
+            # Defensive — should not happen if the QML button is gated
+            # on `selectedTtsEngine === "chatterbox"`. Log only; user
+            # never reaches this path under normal flow.
+            self._logger.warning(
+                "importChatterboxReference invoked but service has no "
+                "import_reference_clip (engine=%s)", self.selectedTtsEngine
+            )
+            return ""
+        try:
+            # `FileDialog.selectedFile` is a URL (`file:///…`) and may
+            # contain percent-encoding (spaces as `%20`, non-ASCII
+            # filenames). The hand-rolled prefix strip used to leave
+            # the encoded form intact, so `Path()` opened a literal
+            # `%20`-bearing path that does not exist. `QUrl.toLocalFile`
+            # handles triple-slash, host-form, and percent decoding.
+            url = QUrl(source_path)
+            local_path = url.toLocalFile() if url.isLocalFile() else source_path
+            saved = importer(Path(local_path), name or Path(local_path).stem)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.exception("Chatterbox reference import failed: %s", exc)
+            self._append_log_message(
+                f"Could not import reference clip: {exc}", "error"
+            )
+            return ""
+        # Refresh catalog so QML rebinds to the new entry, and select it.
+        new_catalog = list(service.available_items())
+        self._tts_catalog = new_catalog
+        self._tts_catalog_model.replace_names(new_catalog)
+        new_name = saved.stem
+        service.set_selected_item(new_name)
+        self.tts_loader.select_model(new_name)
+        self.settings.setValue("selected_tts_model_chatterbox", new_name)
+        # Also write the generic key so the startup restore path picks
+        # this voice on launches that start directly on Chatterbox
+        # (e.g. via VOICEAGENT_TTS_ENGINE=chatterbox before any
+        # explicit user selection has populated the per-engine key).
+        self.settings.setValue("selected_tts_model", new_name)
+        self.ui_changed.emit()
+        # No success notification — the catalog list updating + voice
+        # ComboBox switching to the new entry is the visible feedback.
+        return new_name
+
+    # ------------------------------------------------------------------
+    # Chatterbox mic-capture (option A) — fixed-duration recorder.
+    #
+    # Distinct from `MicrophoneRecorder` (which is wired into the STT
+    # pipeline, uses VAD, and streams continuously). The reference-voice
+    # recorder needs the opposite: record exactly N seconds, no VAD,
+    # save to disk as a 24 kHz mono WAV. Lives entirely in window.py
+    # rather than as a service so the QML recording dialog has a single
+    # owner for the worker thread + cancel flag + progress state.
+    # ------------------------------------------------------------------
+
+    @Property(bool, notify=ui_changed)
+    def chatterboxRecordingActive(self) -> bool:  # noqa: N802
+        return self._chatterbox_record_active
+
+    @Property(float, notify=ui_changed)
+    def chatterboxRecordingProgress(self) -> float:  # noqa: N802
+        """0.0 → 1.0 fraction of the requested recording duration that
+        has elapsed. ProgressBar in QML binds directly to this.
+        """
+        return self._chatterbox_record_progress_value
+
+    @Property(str, notify=ui_changed)
+    def chatterboxRecordingName(self) -> str:  # noqa: N802
+        return self._chatterbox_record_active_name
+
+    @Slot(str, float)
+    def startChatterboxRecording(  # noqa: N802
+        self, name: str, seconds: float = 60.0,
+    ) -> None:
+        """Start a fixed-duration mic capture in a worker thread. The
+        worker emits `_chatterbox_record_progress` ticks ~10 Hz and a
+        single `_chatterbox_record_finished` at the end. QML calls
+        `cancelChatterboxRecording()` to stop early; the worker saves
+        whatever it has captured up to that point.
+        """
+        if self.selectedTtsEngine != "chatterbox":
+            return
+        if self._chatterbox_record_active:
+            return
+        cleaned = "".join(
+            c if c.isalnum() or c in "-_" else "_" for c in (name or "")
+        ).strip("_") or "user-voice"
+        # Suspend the always-on STT mic capture so `sd.rec()` doesn't
+        # contend with it. Recorded reference clip stays clean and the
+        # user's reference speech can't get consumed by the chat
+        # pipeline mid-record. Restored in `_on_chatterbox_record_finished`.
+        self._chatterbox_record_voice_was_enabled = self.voiceConnectionEnabled
+        if self._chatterbox_record_voice_was_enabled:
+            try:
+                self.controller.stop_recording()
+            except Exception:  # noqa: BLE001
+                self._logger.exception(
+                    "Could not suspend voice pipeline before chatterbox "
+                    "reference recording"
+                )
+        self._chatterbox_record_cancel_flag = False
+        self._chatterbox_record_active = True
+        self._chatterbox_record_progress_value = 0.0
+        self._chatterbox_record_active_name = cleaned
+        self.ui_changed.emit()
+        self._chatterbox_record_thread = threading.Thread(
+            target=self._record_chatterbox_worker,
+            args=(cleaned, max(1.0, float(seconds))),
+            name="chatterbox-recorder",
+            daemon=True,
+        )
+        self._chatterbox_record_thread.start()
+
+    @Slot()
+    def cancelChatterboxRecording(self) -> None:  # noqa: N802
+        """Set the cancel flag. The worker polls it on each progress
+        tick and stops the sounddevice stream when set; whatever was
+        captured up to that point is saved as the reference clip.
+        Closing the QML dialog without explicit cancel does NOT stop
+        the worker — the user's recorded audio is preserved.
+        """
+        self._chatterbox_record_cancel_flag = True
+
+    def _record_chatterbox_worker(self, name: str, seconds: float) -> None:
+        # Background thread. `sd.rec()` is non-blocking — it allocates
+        # a buffer and starts a stream that the host audio system fills.
+        # We poll `sd.get_stream().active` and the cancel flag in a
+        # short sleep loop, emitting progress ticks. On cancel we stop
+        # the stream early and save the captured prefix; on natural
+        # completion we save the full buffer.
+        try:
+            import sounddevice as sd
+            import soundfile
+            import numpy as np
+        except ImportError as exc:
+            self._chatterbox_record_finished.emit(
+                "", False, f"audio extras missing: {exc}"
+            )
+            return
+
+        sample_rate = 24_000  # Chatterbox native; matches the service
+        total_frames = int(sample_rate * seconds)
+        try:
+            audio = sd.rec(
+                total_frames,
+                samplerate=sample_rate,
+                channels=1,
+                dtype="float32",
+                blocking=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._chatterbox_record_finished.emit(
+                "", False, f"could not start recording: {exc}"
+            )
+            return
+
+        start = time.monotonic()
+        frames_captured = total_frames
+        while True:
+            stream = sd.get_stream() if hasattr(sd, "get_stream") else None
+            if stream is None or not stream.active:
+                break
+            elapsed = time.monotonic() - start
+            self._chatterbox_record_progress.emit(
+                min(elapsed, seconds), seconds
+            )
+            if self._chatterbox_record_cancel_flag:
+                try:
+                    sd.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+                frames_captured = max(1, int(elapsed * sample_rate))
+                break
+            time.sleep(0.1)
+
+        try:
+            sd.wait()
+        except Exception:  # noqa: BLE001
+            pass
+        self._chatterbox_record_progress.emit(seconds, seconds)
+
+        service = getattr(self.tts_loader, "tts_service", None)
+        refs_root = getattr(service, "references_root", None)
+        if refs_root is None:
+            self._chatterbox_record_finished.emit(
+                "", False, "Chatterbox engine is no longer active"
+            )
+            return
+
+        target = Path(refs_root) / f"{name}.wav"
+        try:
+            Path(refs_root).mkdir(parents=True, exist_ok=True)
+            # Keep only the captured prefix when the user stopped early.
+            buf = np.asarray(audio[:frames_captured])
+            soundfile.write(str(target), buf, sample_rate)
+        except Exception as exc:  # noqa: BLE001
+            self._chatterbox_record_finished.emit(
+                "", False, f"could not save recording: {exc}"
+            )
+            return
+
+        # If the user re-records over an existing voice name, the prior
+        # speaker-features cache is now stale (computed against the old
+        # audio). The service's invalidator wipes every dtype's cache
+        # so the next synth recomputes against the new clip.
+        invalidator = getattr(service, "invalidate_speaker_features_cache", None)
+        if invalidator is not None:
+            try:
+                invalidator(name)
+            except Exception:  # noqa: BLE001
+                pass
+
+        self._chatterbox_record_finished.emit(name, True, "")
+
+    def _on_chatterbox_record_progress(
+        self, elapsed: float, total: float,
+    ) -> None:
+        # GUI-thread slot, queued from the worker thread.
+        if total <= 0:
+            self._chatterbox_record_progress_value = 0.0
+        else:
+            self._chatterbox_record_progress_value = min(
+                1.0, max(0.0, elapsed / total)
+            )
+        self.ui_changed.emit()
+
+    def _on_chatterbox_record_finished(
+        self, name: str, success: bool, error: str,
+    ) -> None:
+        self._chatterbox_record_active = False
+        self._chatterbox_record_progress_value = 0.0
+        self._chatterbox_record_active_name = ""
+        self._chatterbox_record_cancel_flag = False
+
+        # Restore the always-on voice pipeline if we suspended it for
+        # the recording. Wrap in try so a controller hiccup doesn't
+        # leave the rest of the cleanup half-done.
+        if self._chatterbox_record_voice_was_enabled:
+            self._chatterbox_record_voice_was_enabled = False
+            try:
+                self.controller.start_recording()
+            except Exception:  # noqa: BLE001
+                self._logger.exception(
+                    "Could not resume voice pipeline after chatterbox "
+                    "reference recording"
+                )
+
+        if not success:
+            if error:
+                self._append_log_message(
+                    f"Recording failed: {error}", "error"
+                )
+            self.ui_changed.emit()
+            return
+
+        # Refresh catalog with the new reference clip and select it as
+        # the active voice. Same path the import-flow uses.
+        service = getattr(self.tts_loader, "tts_service", None)
+        if service is None:
+            self.ui_changed.emit()
+            return
+        new_catalog = list(service.available_items())
+        self._tts_catalog = new_catalog
+        self._tts_catalog_model.replace_names(new_catalog)
+        if name in new_catalog:
+            service.set_selected_item(name)
+            self.tts_loader.select_model(name)
+            self.settings.setValue("selected_tts_model_chatterbox", name)
+            # Mirror the import path: keep the generic key in sync so
+            # `selected_tts_model` matches the live selection across
+            # restart paths.
+            self.settings.setValue("selected_tts_model", name)
+        self.ui_changed.emit()
+
+    # ------------------------------------------------------------------
+    # Chatterbox engine-model download (the shared 4-component q4 ONNX
+    # bundle, ~700 MB on first fetch). Distinct from per-voice import /
+    # mic-record above. The engine state is one-per-engine; the QML
+    # banner above the voice catalog drives this lifecycle.
+    # ------------------------------------------------------------------
+
+    @Property(bool, notify=ui_changed)
+    def chatterboxEngineReady(self) -> bool:  # noqa: N802
+        service = getattr(self.tts_loader, "tts_service", None)
+        return bool(getattr(service, "is_engine_ready", False))
+
+    @Property(bool, notify=ui_changed)
+    def chatterboxEngineDownloading(self) -> bool:  # noqa: N802
+        return self._chatterbox_engine_downloading
+
+    @Property(float, notify=ui_changed)
+    def chatterboxEngineDownloadProgress(self) -> float:  # noqa: N802
+        """0.0 → 1.0 fraction of the model download that has completed.
+        Approximate (per-component, since `huggingface_hub.hf_hub_download`
+        doesn't expose per-byte progress in a stable callback API).
+        """
+        return self._chatterbox_engine_download_progress_value
+
+    @Property(str, notify=ui_changed)
+    def chatterboxEngineDownloadProgressLabel(self) -> str:  # noqa: N802
+        """`"NN MB / NNN MB"` style readout for the download progress
+        UI. Bytes come from per-component file stat after each
+        `hf_hub_download` returns; total uses the per-dtype estimate
+        (kept in sync with actual when the estimate undershoots).
+        """
+        completed = self._chatterbox_engine_download_completed_bytes
+        total = self._chatterbox_engine_download_total_bytes
+        if total <= 0:
+            return ""
+        return f"{completed / 1024 / 1024:.0f} MB / {total / 1024 / 1024:.0f} MB"
+
+    @Property("QVariantList", constant=True)
+    def chatterboxDtypeOptions(self) -> list[str]:  # noqa: N802
+        """Supported model precision variants. Higher precision = better
+        tonal fidelity (especially pitch — q4 quantization rounds away
+        the high-frequency tail of speaker embeddings) at the cost of
+        disk + RAM.
+        """
+        return list(_CHATTERBOX_DTYPES)
+
+    @Property(str, notify=ui_changed)
+    def selectedChatterboxDtype(self) -> str:  # noqa: N802
+        service = getattr(self.tts_loader, "tts_service", None)
+        return getattr(service, "dtype", _CHATTERBOX_DTYPES[0])
+
+    @Slot(str)
+    def selectChatterboxDtype(self, dtype: str) -> None:  # noqa: N802
+        """Switch the active model variant. Each variant lives at its
+        own filename in the HF cache, so swapping does NOT delete the
+        previously-downloaded variant — flipping back to it is free.
+        Persists to QSettings so subsequent launches honor the choice.
+        """
+        if self.selectedTtsEngine != "chatterbox":
+            return
+        if self._chatterbox_engine_downloading:
+            return
+        normalized = (dtype or "").strip().lower()
+        if normalized not in _CHATTERBOX_DTYPES:
+            return
+        service = getattr(self.tts_loader, "tts_service", None)
+        setter = getattr(service, "set_dtype", None)
+        if setter is None or normalized == getattr(service, "dtype", None):
+            return
+        setter(normalized)
+        self.settings.setValue("chatterbox_dtype", normalized)
+        # Engine readiness is per-dtype (different model files); force
+        # the catalog model to re-render so any voice rows whose state
+        # depends on engine readiness re-evaluate.
+        self._tts_catalog_model.modelReset.emit()
+        self.ui_changed.emit()
+
+    @Slot()
+    def downloadChatterboxModel(self) -> None:  # noqa: N802
+        """Kick off the shared model bundle download in a worker thread.
+        Idempotent — no-op if a download is already in flight or the
+        model is already on disk.
+        """
+        if self.selectedTtsEngine != "chatterbox":
+            return
+        if self._chatterbox_engine_downloading:
+            return
+        service = getattr(self.tts_loader, "tts_service", None)
+        downloader = getattr(service, "download_engine_model", None)
+        if downloader is None:
+            self._append_log_message(
+                "Chatterbox engine is not active; cannot download model.",
+                "error",
+            )
+            return
+        if getattr(service, "is_engine_ready", False):
+            return
+        self._chatterbox_engine_downloading = True
+        self._chatterbox_engine_download_progress_value = 0.0
+        self.ui_changed.emit()
+        self._chatterbox_engine_download_thread = threading.Thread(
+            target=self._download_chatterbox_engine_worker,
+            args=(downloader,),
+            name="chatterbox-engine-download",
+            daemon=True,
+        )
+        self._chatterbox_engine_download_thread.start()
+
+    def _download_chatterbox_engine_worker(self, downloader) -> None:
+        from voiceagent.downloaders import DownloadProgress
+
+        def _progress(progress: DownloadProgress) -> None:
+            # Component-progress = total_bytes is the approximated
+            # full size; completed_bytes accumulates as each of the
+            # 4 components finishes. We forward both as ints so the
+            # Signal type matches.
+            try:
+                self._chatterbox_engine_download_progress.emit(
+                    int(progress.completed_bytes),
+                    int(progress.total_bytes),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            downloader(progress_callback=_progress)
+        except Exception as exc:  # noqa: BLE001
+            self._chatterbox_engine_download_finished.emit(
+                False, str(exc)
+            )
+            return
+        self._chatterbox_engine_download_finished.emit(True, "")
+
+    def _on_chatterbox_engine_download_progress(
+        self, completed_bytes: int, total_bytes: int,
+    ) -> None:
+        self._chatterbox_engine_download_completed_bytes = max(0, completed_bytes)
+        self._chatterbox_engine_download_total_bytes = max(0, total_bytes)
+        if total_bytes <= 0:
+            self._chatterbox_engine_download_progress_value = 0.0
+        else:
+            self._chatterbox_engine_download_progress_value = min(
+                1.0, max(0.0, completed_bytes / total_bytes)
+            )
+        self.ui_changed.emit()
+
+    def _on_chatterbox_engine_download_finished(
+        self, success: bool, error: str,
+    ) -> None:
+        self._chatterbox_engine_downloading = False
+        self._chatterbox_engine_download_progress_value = 1.0 if success else 0.0
+        if not success:
+            if error:
+                self._append_log_message(
+                    f"Chatterbox model download failed: {error}",
+                    "error",
+                )
+        # The catalog model's per-row state queries `is_item_available`
+        # against the live service; with the engine now ready, the
+        # voice rows transition from "Reference saved" to "Ready"
+        # automatically once a refresh re-evaluates them. Force a
+        # row-state refresh on every catalog entry so QML re-reads.
+        self._tts_catalog_model.modelReset.emit()
+        self.ui_changed.emit()
+
+    @Slot(str)
+    def selectTtsEngine(self, engine_name: str) -> None:  # noqa: N802
+        """Swap the live TTS engine. Same-engine and unknown engine
+        no-op. Chatterbox without extras logs the rejection to the
+        conversation pane and aborts. Piper-side is always available.
+        Live swaps wait for `controller.state == AppState.IDLE` so we
+        don't pull the rug out from under an in-flight pipeline.
+        """
+        normalized = (engine_name or "").strip().lower()
+        if normalized not in _TTS_ENGINE_OPTIONS:
+            return
+        if normalized == self.selectedTtsEngine:
+            # User re-picked the current engine. If a swap was queued
+            # for a different engine (deferred while the pipeline was
+            # busy), the user has reverted their choice — cancel the
+            # queued swap and disconnect the IDLE listener so the next
+            # IDLE transition doesn't force-switch to the abandoned
+            # target.
+            if (
+                self._pending_tts_engine is not None
+                and self._pending_tts_engine != normalized
+            ):
+                self._logger.info(
+                    "Cancelling queued TTS engine swap pending=%s "
+                    "(user re-selected current engine %s)",
+                    self._pending_tts_engine,
+                    normalized,
+                )
+                self._pending_tts_engine = None
+                try:
+                    self.controller.pipeline_state_changed.disconnect(
+                        self._on_pipeline_state_for_engine_swap
+                    )
+                except (RuntimeError, TypeError):
+                    pass
+            return
+        if normalized == "chatterbox" and not self._chatterbox_extras_available():
+            self._logger.info("Engine swap rejected: chatterbox extras missing")
+            self._append_log_message(
+                "Chatterbox engine is not installed. Install with "
+                "`pip install voiceagent[chatterbox]` to enable it.",
+                "error",
+            )
+            return
+        if self.controller.state == AppState.IDLE:
+            self._perform_tts_engine_swap(normalized)
+            return
+        # Pipeline mid-flight: stash and wait for the next IDLE
+        # transition. A one-shot listener decouples the slot return
+        # from the actual swap so the QML ComboBox can re-bind cleanly.
+        self._logger.info(
+            "Deferring TTS engine swap until pipeline is idle pending=%s state=%s",
+            normalized,
+            self.controller.state.value,
+        )
+        self._pending_tts_engine = normalized
+        self.controller.pipeline_state_changed.connect(
+            self._on_pipeline_state_for_engine_swap
+        )
+
+    def _on_pipeline_state_for_engine_swap(self, state: str, _status: str) -> None:
+        if state != AppState.IDLE.value:
+            return
+        try:
+            self.controller.pipeline_state_changed.disconnect(
+                self._on_pipeline_state_for_engine_swap
+            )
+        except (RuntimeError, TypeError):
+            # Already disconnected (re-entrant safety): swallow.
+            pass
+        pending = self._pending_tts_engine
+        self._pending_tts_engine = None
+        if pending is None:
+            return
+        self._perform_tts_engine_swap(pending)
+
+    @staticmethod
+    def _chatterbox_extras_available() -> bool:
+        """Probe for the optional Chatterbox extras. Mirror of the
+        equivalent helper in `app.py` so the UI gate (here) and the
+        startup factory (there) agree on which engines are usable.
+        `huggingface_hub` is a hard dep so it's not in the probe list.
+        """
+        import importlib.util
+
+        for name in ("onnxruntime", "transformers", "librosa", "soundfile"):
+            if importlib.util.find_spec(name) is None:
+                return False
+        return True
+
+    def _build_tts_service_for_engine(self, engine: str):
+        """Construct a fresh TTS service for `engine`. Re-derives its
+        configuration via `AppConfig.from_env()` so any env-var changes
+        the user made post-launch (e.g. swapping `TTS_COMMAND`) are
+        picked up. Does NOT mutate `model_root` for Chatterbox — the
+        service constructor takes the explicit per-engine subdirectory.
+        """
+        config = AppConfig.from_env()
+        if engine == "chatterbox":
+            from voiceagent.paths import default_chatterbox_model_root
+            from voiceagent.services.chatterbox_tts import ChatterboxTtsService
+
+            # `tts_model_root` is Piper-specific (defaults to
+            # `<data>/tts/piper/`) under the v0.12.1 hierarchical layout;
+            # the Chatterbox model cache has its own engine-scoped root.
+            stored_dtype = self.settings.value(
+                "chatterbox_dtype", _CHATTERBOX_DTYPES[0], str,
+            )
+            if stored_dtype not in _CHATTERBOX_DTYPES:
+                stored_dtype = _CHATTERBOX_DTYPES[0]
+            return ChatterboxTtsService(
+                model_root=default_chatterbox_model_root(),
+                references_root=config.chatterbox_references_root,
+                selected_item=config.tts_model,
+                dtype=stored_dtype,
+            )
+        from voiceagent.services.tts import PiperTtsService
+
+        service = PiperTtsService(
+            command=config.tts_command,
+            model_path=config.tts_model,
+            extra_args=config.tts_extra_args,
+        )
+        service.model_root = config.tts_model_root
+        return service
+
+    def _perform_tts_engine_swap(self, engine: str) -> None:
+        """Tear down the live TTS loader/service and stand up fresh
+        ones for `engine`. Restores the per-engine remembered voice
+        from QSettings so the user's last selection on either side
+        survives a round-trip swap. Re-points the catalog model's
+        state adapter so per-row state queries hit the new backend.
+        Mirrors v0.12 Kokoro reference design.
+        """
+        self._logger.info("Performing TTS engine swap engine=%s", engine)
+
+        # Build the new service + loader before tearing the old one
+        # down, so a constructor failure doesn't leave the window with
+        # neither a working old loader nor a working new one. Guard
+        # against runtime/init failures explicitly: bubbling through
+        # the slot leaves the QML ComboBox stranded with no user-
+        # visible explanation. On failure, keep the current engine
+        # active and surface the reason via the conversation log.
+        try:
+            new_service = self._build_tts_service_for_engine(engine)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.exception(
+                "TTS engine swap build failed engine=%s", engine,
+            )
+            self._append_log_message(
+                f"Could not switch TTS engine to {engine}: {exc}",
+                "error",
+            )
+            return
+        new_loader = TtsVoiceLoader(new_service)
+
+        # Persist only after the new service constructed successfully —
+        # writing earlier would leave QSettings ahead of reality on a
+        # failed swap, and the next launch's startup desync would try
+        # (and likely fail) to swap again.
+        self.settings.setValue("selected_tts_engine", engine)
+
+        old_loader = self.tts_loader
+        # Disconnect every signal we wired to the old loader BEFORE
+        # initiating its shutdown. `ParallelItemLoader.shutdown()` is
+        # a bounded wait — long-running downloads can outlive it and
+        # continue emitting progress/status/completion signals after
+        # the swap. Without an explicit disconnect those late emits
+        # would land on the new engine's UI state with stale data.
+        self._disconnect_tts_loader_signals(old_loader)
+        try:
+            old_loader.shutdown()
+        except Exception:
+            self._logger.exception("Old TTS loader shutdown failed during engine swap")
+
+        # Restore the per-engine remembered voice. If the value is
+        # not in the new service's catalog (uninstalled / first run),
+        # `select_model(None)` leaves the loader in the
+        # "no-selection" state and `_sync_installed_selections`
+        # later picks the first installed voice if any.
+        remembered = self.settings.value(
+            f"selected_tts_model_{engine}", "", str
+        ) or ""
+        if remembered and remembered in new_service.available_items():
+            new_service.set_selected_item(remembered)
+            new_loader.select_model(remembered)
+
+        self.tts_loader = new_loader
+        self._tts_state_adapter = _CatalogStateAdapter(
+            loader=new_loader, backend=new_service
+        )
+        # CatalogModel stores the adapter on `_state` (verified
+        # against `catalog_model.py` — the kokoro reference docstring
+        # called this `_state_adapter` but the live attribute is
+        # `_state`). Re-pointing here means subsequent per-row reads
+        # hit the new backend without rebuilding the QAbstractListModel.
+        self._tts_catalog_model._state = self._tts_state_adapter
+        new_catalog = list(new_service.available_items())
+        self._tts_catalog = new_catalog
+        self._tts_catalog_model.replace_names(new_catalog)
+
+        # Wire all the same loader signals on the new instance via the
+        # shared helper so the connect/disconnect surfaces stay in
+        # lockstep — easy to forget a signal otherwise.
+        self._connect_tts_loader_signals(new_loader)
+
+        # Hand the controller the new service so the next pipeline
+        # turn synthesizes via the new engine.
+        self.controller.set_tts_service(new_service)
+
+        # Sync selections: if the per-engine remembered voice didn't
+        # match (first-ever swap to this engine, or the saved name was
+        # uninstalled in the meantime), fall back to the first
+        # installed voice so the ComboBox has a sensible currentIndex.
+        # Without this, the ComboBox `currentIndex` resolves to -1 and
+        # `displayText` shows the "no voice selected" placeholder text
+        # even though the catalog itself is populated and the user has
+        # voices installed — a major UX trap (see swap-chain
+        # reproduction: chatterbox→piper with no `selected_tts_model_piper`
+        # in QSettings).
+        self._sync_installed_selections()
+
+        # Trigger the deferred remote-catalog refresh on the new
+        # loader. The user just opted into a new engine — surface
+        # what's available without making them wait until the next
+        # process launch.
+        if not new_loader.catalog_refresh_scheduled and self._window is not None:
+            schedule_after_first_frame(
+                self._window, new_loader.refresh_catalog_async
+            )
+
         self.ui_changed.emit()
 
     @Slot(str)
@@ -793,13 +1648,15 @@ class MainWindow(QObject):
         # command + path). Without it, replay can call into a
         # half-installed voice and raise into the QML binding.
         if not self.tts_loader.tts_service.is_available:
-            # Cycle 9: surface a transient toast so the click isn't
-            # silent. Keep the log too — the toast doesn't replace it.
-            reason = self._translator.i18n(
-                "Replay unavailable: the selected voice is not ready."
-            )
+            # Surface the click silently-failing through the
+            # conversation log so the user can see why playback didn't
+            # happen. Logger entry is for diagnostics; the conversation
+            # log is the user-visible surface.
             self._logger.info("Replay skipped: TTS not available")
-            self.replay_failed.emit(reason)
+            self._append_log_message(
+                "Replay unavailable: the selected voice is not ready.",
+                "error",
+            )
             return
         # Toggle the row's button to 🤫 IMMEDIATELY so the click is
         # responsive. Synth itself runs on the background executor —
@@ -948,8 +1805,9 @@ class MainWindow(QObject):
             if not is_current:
                 return
             wrapped = f"Replay failed: {error_message}"
+            # `_set_error_message` already routes the wrapped reason to
+            # the conversation log via the turn coordinator.
             self._set_error_message(wrapped, discard_draft=False)
-            self.replay_failed.emit(wrapped)
             if self._speaking_owner == "replay":
                 self._speaking_row = -1
                 self._speaking_owner = ""
@@ -1211,10 +2069,47 @@ class MainWindow(QObject):
     def _emit_ui_changed(self, *_args) -> None:
         self.ui_changed.emit()
 
+    def _tts_loader_signal_pairs(self, loader: "TtsVoiceLoader"):
+        """Single source of truth for the (signal, slot) pairs that
+        bind a TTS loader to the window. Used by both the connect-on-
+        init / connect-on-swap path and the disconnect-on-swap path so
+        the two surfaces never drift.
+        """
+        return (
+            (loader.ready_changed, self._emit_ui_changed),
+            (loader.loading_changed, self._emit_ui_changed),
+            (loader.status_changed, self._apply_tts_status),
+            (loader.progress_changed, self._apply_tts_progress),
+            (loader.item_loading_changed, self._on_tts_item_loading_changed),
+            (loader.item_progress_changed, self._on_tts_item_progress_changed),
+            (loader.error_changed, self._set_error_message),
+            (loader.selection_changed, self._emit_ui_changed),
+            (loader.load_completed, self._handle_inventory_change),
+            (loader.delete_completed, self._handle_inventory_change),
+            (loader.catalog_changed, self._on_tts_catalog_changed),
+        )
+
+    def _connect_tts_loader_signals(self, loader: "TtsVoiceLoader") -> None:
+        for sig, slot in self._tts_loader_signal_pairs(loader):
+            sig.connect(slot)
+
+    def _disconnect_tts_loader_signals(self, loader: "TtsVoiceLoader") -> None:
+        for sig, slot in self._tts_loader_signal_pairs(loader):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+
     def _is_stt_downloaded(self, model_name: str) -> bool:
         return self.model_loader.transcriber.is_item_available(model_name)
 
     def _is_tts_downloaded(self, model_name: str) -> bool:
+        # Per-voice availability ONLY. Engine-wide readiness (Chatterbox:
+        # the shared ONNX bundle) is gated separately in `talkReady` —
+        # otherwise voices with a reference clip but no engine model
+        # would vanish from `ttsOptions` entirely and the user couldn't
+        # see/select them in the catalog or voice ComboBox before the
+        # engine downloads.
         return self.tts_loader.tts_service.is_item_available(model_name)
 
     def _format_progress(self, progress) -> tuple[float, bool, str]:

@@ -543,53 +543,61 @@ def test_replay_message_synthesis_failure_preserves_draft(main_window_factory):
     assert drafts_after[0]["text"] == "draft mid-typing"
 
 
-def test_replay_message_emits_failure_signal_when_tts_not_ready(
-    main_window_factory,
-):
-    """Cycle 9: a replay click against a not-ready TTS must fire
-    `replay_failed` with a non-empty reason so the QML layer can show
-    a passive notification toast. The signal is the only user-visible
-    feedback for this path (synthesis is silently skipped otherwise).
+def _system_log_messages(window) -> list[dict]:
+    return [
+        window._conversation_model.message(i)
+        for i in range(window._conversation_model.rowCount())
+        if (window._conversation_model.message(i) or {}).get("role") == "system"
+    ]
+
+
+def test_replay_message_logs_when_tts_not_ready(main_window_factory):
+    """A replay click against a not-ready TTS must surface the failure
+    in the conversation log so the user sees why the click was silent.
+    Toasts were retired in v0.12; the conversation log is the user-
+    visible surface for this kind of action-rejection.
     """
     window = main_window_factory()
     tts = window.tts_loader.tts_service
     tts.set_available(False)
-
-    reasons: list[str] = []
-    window.replay_failed.connect(reasons.append)
 
     window._append_assistant_message("hello user")
     window.replayMessage(0)
     _drain_events()
 
     assert tts.synthesize_calls == []
-    assert len(reasons) == 1
-    assert reasons[0]  # non-empty
+    log_rows = _system_log_messages(window)
+    assert any(
+        "voice is not ready" in (row.get("text") or "").lower()
+        for row in log_rows
+    ), f"expected ready-state log row, got: {[r.get('text') for r in log_rows]}"
 
 
-def test_replay_message_emits_failure_signal_on_synthesis_exception(
-    main_window_factory,
-):
-    """Cycle 9: a synthesis exception must emit `replay_failed` so the
-    QML toast surfaces the failure (in addition to the existing error
-    banner via `_set_error_message`).
+def test_replay_message_logs_synthesis_exception(main_window_factory):
+    """A synthesis exception must surface in the conversation log via
+    `_set_error_message` so the user sees `Replay failed: <reason>`.
     """
     window = main_window_factory()
     tts = window.tts_loader.tts_service
     tts.set_available(True)
     tts.synthesize_raises = RuntimeError("piper exploded")
 
-    reasons: list[str] = []
-    window.replay_failed.connect(reasons.append)
-
     window._append_assistant_message("reply that will fail to replay")
     window.replayMessage(0)
-    _wait_until(lambda: len(reasons) == 1)
+    _wait_until(
+        lambda: any(
+            "piper exploded" in (row.get("text") or "")
+            for row in _system_log_messages(window)
+        )
+    )
 
     assert tts.synthesize_calls == ["reply that will fail to replay"]
-    assert len(reasons) == 1
-    # The exception text travels through to the toast payload.
-    assert "piper exploded" in reasons[0]
+    log_rows = _system_log_messages(window)
+    assert any(
+        "Replay failed" in (row.get("text") or "")
+        and "piper exploded" in (row.get("text") or "")
+        for row in log_rows
+    )
 
 
 # --- custom STT path selection -------------------------------------------

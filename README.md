@@ -33,10 +33,12 @@ Environment variables:
 - `WHISPER_MODEL` default: `large-v3`
 - `WHISPER_DEVICE` default: `auto`
 - `WHISPER_COMPUTE_TYPE` default: `auto`
-- `VOICEAGENT_STT_MODEL_ROOT` default: `$XDG_DATA_HOME/voiceagent/stt-models` or `~/.local/share/voiceagent/stt-models`
-- `VOICEAGENT_TTS_MODEL_ROOT` default: `$XDG_DATA_HOME/voiceagent/tts-models` or `~/.local/share/voiceagent/tts-models`
+- `VOICEAGENT_STT_MODEL_ROOT` default: `$XDG_DATA_HOME/voiceagent/stt/whisper` or `~/.local/share/voiceagent/stt/whisper`
+- `VOICEAGENT_TTS_MODEL_ROOT` default: `$XDG_DATA_HOME/voiceagent/tts/piper` or `~/.local/share/voiceagent/tts/piper`
 - `TTS_MODEL` optional Piper voice name like `en_US-lessac-medium` or a path to a Piper model file
 - `TTS_EXTRA_ARGS` optional extra command-line flags for TTS
+- `VOICEAGENT_TTS_ENGINE` default: `piper` — selects the TTS engine. Set to `chatterbox` to use Resemble AI's zero-shot voice cloning model. See [TTS engines](#tts-engines) below.
+- `VOICEAGENT_CHATTERBOX_REFERENCES_ROOT` default: `~/.local/share/voiceagent/tts/chatterbox/references` — directory holding user-recorded reference voice clips (`*.wav`) for the Chatterbox engine.
 - `VOICEAGENT_MAX_HISTORY_TURNS` default: `20` — how many user/assistant entries (≈ 10 pairs) the conversation pane keeps. See [Conversation memory](#conversation-memory) below.
 
 Whisper downloads, Hugging Face cache data, and Piper voices are stored under the app's XDG data directory by default. Logs are stored under `$XDG_STATE_HOME/voiceagent/logs` or `~/.local/state/voiceagent/logs`:
@@ -45,6 +47,70 @@ Whisper downloads, Hugging Face cache data, and Piper voices are stored under th
 - `conversation.log` — per-turn content shipped to / received from the LLM (full `messages` list, assistant response, token usage, model swaps, history trims). **Session-rotated**: each launch shifts the prior file to `.1`, drops the oldest beyond `.5`. Useful when debugging multi-turn behaviour ("what context did the model actually see for that turn?").
 
 Model downloads use `aria2c` with 10 parallel connections by default, and the app shows live progress and transfer speed while Whisper is loading.
+
+## TTS engines
+
+Voiceagent ships two TTS engines that coexist behind a runtime engine
+selector in the main window:
+
+- **Piper** (default) — fast, deterministic, multilingual catalog of
+  pretrained voices. No optional install needed; bundled in the base
+  package.
+- **Chatterbox** (optional) — Resemble AI's zero-shot voice-cloning
+  model. Voice-cloning only — there are no built-in voices; the user
+  supplies a 6–10 second reference clip per voice and Chatterbox
+  synthesizes new speech in that voice.
+
+### Installing Chatterbox
+
+```bash
+pip install voiceagent[chatterbox]
+```
+
+That extra pulls in `onnxruntime`, `transformers`, `librosa`, and
+`soundfile`. The engine targets the `q4`-quantized variant of
+`ResembleAI/chatterbox-turbo-ONNX` (pure ONNX, no PyTorch). The first
+synthesis triggers a one-time ~700 MB model download under
+`~/.local/share/voiceagent/tts/chatterbox/model/`.
+
+If you select the Chatterbox engine without those extras installed,
+voiceagent logs a warning and falls back to Piper rather than failing
+on first synth.
+
+### Switching engines
+
+The TTS engine selector lives in the main window header; switching
+takes effect immediately, without restarting voiceagent. Per-engine
+voice selection is remembered: switching from Piper → Chatterbox →
+Piper restores your prior Piper voice, and likewise for Chatterbox
+reference clips.
+
+### Chatterbox first run
+
+The first time you switch to Chatterbox, voiceagent prompts you to
+provide a reference voice. You can:
+
+1. **Record** — speak into the microphone for 6–10 seconds.
+2. **Import** — pick an existing `.wav` (or any format `librosa`
+   reads) from disk.
+3. **Use bundled default** — fall back to a generic reference clip
+   shipped with the package.
+
+Reference clips are stored under
+`$VOICEAGENT_CHATTERBOX_REFERENCES_ROOT` (default
+`~/.local/share/voiceagent/tts/chatterbox/references/`) as `*.wav`
+files, one per cloned voice. Manage them via Settings → Voice →
+Manage reference voices.
+
+### Performance
+
+- **Output**: 24 kHz mono WAV.
+- **Realtime factor**: ~1.35× on a Ryzen 5 8640HS / Intel-i5-class
+  CPU with the `q4` variant. (Synthesizing a 6 s utterance takes
+  about 8 s wall time.)
+- **GPU**: Not currently available on AMD integrated GPUs (Phoenix /
+  RDNA3 iGPU) — ONNX Runtime has no Vulkan execution provider, so
+  CPU inference is the only path on those machines today.
 
 ## Conversation memory
 

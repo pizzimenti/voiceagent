@@ -453,6 +453,34 @@ class LlmController(QObject):
                 loaded_models = snapshot_client.list_loaded_models()
             except RuntimeError:
                 loaded_models = []
+            # LM Studio bug workaround (May 2026): the native
+            # `/api/v1/models` endpoint can report `loaded_instances:
+            # []` for every model even when one is actually serving
+            # chat completions. When that happens, fall back to the
+            # OpenAI `/v1/models` entry that the native API also
+            # marks as `type: llm` (excludes embeddings) — but ONLY
+            # when there is exactly one such candidate. With multiple
+            # candidates the heuristic can't tell which (if any) is
+            # actually loaded; surfacing "no model loaded" is more
+            # honest than picking arbitrarily and failing at the next
+            # /chat/completions call. See chat.py:refresh_loaded_model
+            # for the same pattern on the other detection path.
+            if not loaded_models and models:
+                try:
+                    llm_keys = snapshot_client._llm_keys_from_native()
+                except Exception:
+                    llm_keys = None
+                # Mirror chat.py:refresh_loaded_model — skip the
+                # workaround when native LLM-key lookup was either
+                # unavailable (None) or empty. An empty `llm_keys`
+                # set after a successful lookup means the server
+                # exposes no LLM-typed models; promoting a /v1/models
+                # entry without that confirmation could mark an
+                # embedding model as loaded.
+                if llm_keys:
+                    llm_candidates = [m for m in models if m in llm_keys]
+                    if len(llm_candidates) == 1:
+                        loaded_models = [llm_candidates[0]]
             return {
                 "ok": True,
                 "models": models,

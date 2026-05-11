@@ -212,6 +212,35 @@ class VoiceController(QObject):
         self._playing_response = False
         self._apply_state(AppState.IDLE.value, "Ready")
 
+    def set_tts_service(self, tts_service: TextToSpeechBackend) -> None:
+        """Swap the TTS backend at runtime. Caller must ensure pipeline IDLE.
+
+        v0.12 engine selector: switching engines (Piper ↔ Chatterbox) tears
+        down the existing TTS service and its loader on the GUI thread
+        and constructs fresh ones. The controller holds a single live
+        reference on `self.tts_service`; `_run_pipeline` reads it after
+        the segment finalizes, so swapping while a pipeline is active
+        could send mid-pipeline calls to a destroyed service. The window
+        gates this on `state == AppState.IDLE` (or stashes a pending
+        swap until the next idle transition).
+
+        Defensive runtime guard: if a future caller forgets the IDLE
+        precondition (or a bug in the QML wiring re-fires this slot
+        mid-pipeline), reject the swap rather than torn-state the
+        live pipeline. Belt-and-braces — the window-side gate is the
+        primary safety, this is the failsafe.
+        """
+        if self.state is not AppState.IDLE:
+            self._logger.warning(
+                "Rejected TTS swap outside IDLE state=%s "
+                "current=%s requested=%s",
+                self.state.value,
+                type(self.tts_service).__name__,
+                type(tts_service).__name__,
+            )
+            return
+        self.tts_service = tts_service
+
     def shutdown(self) -> None:
         self._logger.info("Stopping partial transcription timer during shutdown")
         self._partial_timer.stop()

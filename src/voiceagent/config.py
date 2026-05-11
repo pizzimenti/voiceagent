@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import os
 from pathlib import Path
 import shlex
 import sys
+from typing import Literal
 
-from voiceagent.paths import default_stt_model_root, default_tts_model_root
+from voiceagent.paths import (
+    default_chatterbox_references_root,
+    default_piper_voices_root,
+    default_whisper_root,
+)
+
+_VALID_TTS_ENGINES: frozenset[str] = frozenset({"piper", "chatterbox"})
 
 
 @dataclass(slots=True)
@@ -31,6 +39,8 @@ class AppConfig:
     tts_extra_args: list[str]
     stt_model_root: Path
     tts_model_root: Path
+    chatterbox_references_root: Path
+    tts_engine: Literal["piper", "chatterbox"] = "piper"
     sample_rate: int = 16_000
     # Conversation-history cap fed into `ConversationModel.to_openai_messages`.
     # Counts finalized user + assistant rows, so the default `20` keeps the
@@ -39,10 +49,30 @@ class AppConfig:
     # is good enough to unblock multi-turn for v0.11.
     max_history_turns: int = 20
 
+    @staticmethod
+    def _path_from_env(var_name: str, default: Path) -> Path:
+        """Resolve a Path from `var_name`, treating empty / whitespace-
+        only values as unset. The default `os.environ.get(name, default)`
+        returns the env value if it exists at all, even if blank — and
+        `Path("")` resolves to `"."`, so a stray `VOICEAGENT_*_ROOT=`
+        in a shell rc would silently divert model caches into the
+        launch directory. Falling back to `default` on whitespace
+        keeps the cache layout predictable.
+        """
+        raw = os.environ.get(var_name, "") or ""
+        trimmed = raw.strip()
+        if not trimmed:
+            return default
+        return Path(trimmed).expanduser()
+
     @classmethod
     def from_env(cls) -> "AppConfig":
-        stt_model_root = Path(os.environ.get("VOICEAGENT_STT_MODEL_ROOT", default_stt_model_root())).expanduser()
-        tts_model_root = Path(os.environ.get("VOICEAGENT_TTS_MODEL_ROOT", default_tts_model_root())).expanduser()
+        stt_model_root = cls._path_from_env(
+            "VOICEAGENT_STT_MODEL_ROOT", default_whisper_root(),
+        )
+        tts_model_root = cls._path_from_env(
+            "VOICEAGENT_TTS_MODEL_ROOT", default_piper_voices_root(),
+        )
         default_tts_command = os.environ.get("TTS_COMMAND", "").strip()
         if default_tts_command:
             tts_command = shlex.split(default_tts_command)
@@ -65,6 +95,21 @@ class AppConfig:
         except ValueError:
             max_history_turns = 20
         max_history_turns = max(0, max_history_turns)
+        raw_engine = (os.environ.get("VOICEAGENT_TTS_ENGINE", "") or "").strip().lower()
+        if not raw_engine:
+            tts_engine: Literal["piper", "chatterbox"] = "piper"
+        elif raw_engine in _VALID_TTS_ENGINES:
+            tts_engine = raw_engine  # type: ignore[assignment]
+        else:
+            logging.getLogger(__name__).warning(
+                "Unknown VOICEAGENT_TTS_ENGINE=%r; falling back to 'piper'",
+                raw_engine,
+            )
+            tts_engine = "piper"
+        chatterbox_references_root = cls._path_from_env(
+            "VOICEAGENT_CHATTERBOX_REFERENCES_ROOT",
+            default_chatterbox_references_root(),
+        )
         return cls(
             lm_studio_base_url=os.environ.get("LM_STUDIO_BASE_URL", "http://127.0.0.1:1234/v1").rstrip("/"),
             lm_studio_model=os.environ.get("LM_STUDIO_MODEL", "").strip(),
@@ -82,5 +127,7 @@ class AppConfig:
             tts_extra_args=shlex.split(os.environ.get("TTS_EXTRA_ARGS", "")),
             stt_model_root=stt_model_root,
             tts_model_root=tts_model_root,
+            chatterbox_references_root=chatterbox_references_root,
+            tts_engine=tts_engine,
             max_history_turns=max_history_turns,
         )

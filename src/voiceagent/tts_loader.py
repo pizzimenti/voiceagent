@@ -202,8 +202,17 @@ class TtsVoiceLoader(ParallelItemLoader):
     # -- subclass overrides ------------------------------------------------
 
     def _can_download(self, name: str) -> bool:
-        # Piper requires its CLI command to be present before downloading.
-        return bool(getattr(self.tts_service, "command", None))
+        # Piper requires its CLI command to be present before
+        # downloading (the install path shells out to the Piper binary).
+        # Other backends (Chatterbox) have no CLI but still expose
+        # `download_item` directly — for those, gate on the method's
+        # presence rather than a Piper-specific attribute. Without
+        # this, a clean install of a non-Piper engine would silently
+        # short-circuit `download_item` and later fail synthesis with
+        # a "model is not downloaded" error.
+        if hasattr(self.tts_service, "command"):
+            return bool(self.tts_service.command)
+        return callable(getattr(self.tts_service, "download_item", None))
 
     def _verify_download(self, name: str) -> Optional[str]:
         """Adds **layer 4 (smoke-load)** on top of the base aria2-sidecar

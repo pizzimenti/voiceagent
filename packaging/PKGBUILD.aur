@@ -1,7 +1,7 @@
 # Maintainer: Bradley <bradley@gennakersystems.com>
 
 pkgname=voiceagent
-pkgver=0.11.1
+pkgver=0.12.0
 pkgrel=1
 pkgdesc='KDE-friendly desktop voice assistant'
 arch=('x86_64')
@@ -13,6 +13,18 @@ depends=(
   'pyside6'
   'aria2'
   'portaudio'
+)
+# Chatterbox TTS engine extras. `python-onnxruntime` and
+# `python-transformers` are not in the official Arch repositories
+# (only AUR), so they are NOT listed as optdepends here. Users who
+# want the Chatterbox engine should install the [chatterbox] extra
+# via pip into a venv:
+#   pip install voiceagent[chatterbox]
+# `python-librosa` and `python-soundfile` ARE in the official repos
+# and listed below — they cover audio I/O for the engine.
+optdepends=(
+  'python-librosa: Chatterbox TTS reference audio loading'
+  'python-soundfile: Chatterbox TTS audio output'
 )
 makedepends=(
   'python-build'
