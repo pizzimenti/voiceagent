@@ -1,7 +1,7 @@
 # Maintainer: Bradley <bradley@gennakersystems.com>
 
 pkgname=voiceagent
-pkgver=0.12.0
+pkgver=0.13.0
 pkgrel=1
 pkgdesc='KDE-friendly desktop voice assistant'
 arch=('x86_64')

@@ -1,6 +1,6 @@
 pkgbase = voiceagent
 	pkgdesc = KDE-friendly desktop voice assistant
-	pkgver = 0.12.0
+	pkgver = 0.13.0
 	pkgrel = 1
 	url = https://github.com/pizzimenti/voiceagent
 	arch = x86_64
@@ -18,7 +18,7 @@ pkgbase = voiceagent
 	depends = portaudio
 	optdepends = python-librosa: Chatterbox TTS reference audio loading
 	optdepends = python-soundfile: Chatterbox TTS audio output
-	source = voiceagent-0.12.0.tar.gz::https://github.com/pizzimenti/voiceagent/archive/refs/tags/v0.12.0.tar.gz
+	source = voiceagent-0.13.0.tar.gz::https://github.com/pizzimenti/voiceagent/archive/refs/tags/v0.13.0.tar.gz
 	sha256sums = SKIP
 
 pkgname = voiceagent

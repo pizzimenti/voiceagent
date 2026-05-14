@@ -16,7 +16,15 @@ revision + install manifest, engine-swap safety guarantees.
 
 Released as v0.12.0 (commit `4dcdf74`, tag `v0.12.0`).
 
-## v0.13 — Kokoro TTS engine (was v0.12)
+## v0.13.0 — Remove v0.11.x migration helper ✅ SHIPPED 2026-05-13
+
+Cleanup-only release. Removed `migrate_legacy_data_dirs()` and its
+startup hook now that the single-user/single-machine app has fully
+moved to the engine-scoped tree introduced in 0.12.0. The migration
+helper had begun emitting a spurious "Skipping legacy data migration"
+warning on every launch.
+
+## v0.14 — Kokoro TTS engine (was v0.13, was v0.12)
 
 **Status:** next up. Unblocked once `kokoro-onnx` / `misaki` ship
 Python 3.14 support, OR voiceagent pins to 3.13 for a release.
@@ -231,9 +239,9 @@ chatterbox extras" prompt otherwise.
   shipped by v0.13, verify Chatterbox's streaming path works the
   same way. If not, both can stream once the overhaul lands.
 
-## v0.14 — Internet access via MCP (web search and beyond)
+## v0.15 — Internet access via MCP (web search and beyond)
 
-**Status:** scheduled after v0.13.
+**Status:** scheduled after v0.14 (Kokoro).
 
 **Detailed plan:** working draft below; refined when implementation starts.
 

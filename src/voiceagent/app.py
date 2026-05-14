@@ -240,18 +240,6 @@ def main() -> int:
     if instance is None:
         console.info("Another Voice Agent instance is already running; activating it.")
         return 0
-    # One-time legacy → engine-scoped data dir migration. Must run
-    # BEFORE `AppConfig.from_env()` because the config snapshot
-    # captures the resolved model-root paths; if those paths still
-    # have legacy data sitting at the old flat locations, the migration
-    # would race the catalog reads. See `voiceagent.paths.migrate_legacy_data_dirs`.
-    from voiceagent.paths import migrate_legacy_data_dirs
-    migrated = migrate_legacy_data_dirs(logger=logger)
-    if migrated:
-        for legacy, new in migrated:
-            console.info(
-                "Migrated legacy data dir %s -> %s", legacy, new,
-            )
     config = AppConfig.from_env()
     configure_model_environment(config.stt_model_root, config.tts_model_root)
     logger.info("Configured log file path=%s", log_path)
