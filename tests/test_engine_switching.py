@@ -339,6 +339,31 @@ def test_startup_desync_kokoro_extras_missing_reverts_to_piper(
     assert win.tts_loader.tts_service.backend_name == "Piper"
 
 
+def test_startup_desync_missing_extras_reverts_to_live_engine_not_piper(
+    _swap_window, monkeypatch
+):
+    """When the env var selected a usable engine (Chatterbox) but
+    QSettings remembers a now-unavailable one (Kokoro), the desync revert
+    must point QSettings at the ACTUAL live engine, not a hardcoded piper
+    — otherwise the UI reports Piper while Chatterbox runs. Regression for
+    the 3-engine generalization of the revert branch.
+    """
+    win = _swap_window
+    # Make the live service Chatterbox (extras forced present by fixture).
+    win._perform_tts_engine_swap("chatterbox")
+    assert win.tts_loader.tts_service.backend_name == "Chatterbox"
+
+    # User last picked Kokoro in the UI, but its extras are gone.
+    win.settings.setValue("selected_tts_engine", "kokoro")
+    _force_kokoro_extras(monkeypatch, present=False)
+
+    win._resolve_startup_engine_desync()
+
+    # Revert to the live engine (chatterbox), NOT piper — keeps UI honest.
+    assert win.settings.value("selected_tts_engine", "", str) == "chatterbox"
+    assert win.tts_loader.tts_service.backend_name == "Chatterbox"
+
+
 def test_shared_bundle_engine_refreshes_all_rows_on_inventory_change(
     _swap_window, monkeypatch
 ):

@@ -509,20 +509,36 @@ class MainWindow(QObject):
             if extras_missing:
                 # Optional engine previously selected but its extras are
                 # now missing (uninstalled, or never present on this
-                # machine). `build_shared_services` already fell back to
-                # Piper at startup; mirror that here by resetting
-                # QSettings to piper rather than swapping INTO the broken
-                # engine via the desync path below — which bypasses the
+                # machine). Reset QSettings to the engine that is ACTUALLY
+                # live (`active_engine`, what `build_shared_services`
+                # built) rather than swapping INTO the broken engine via
+                # the desync path below — that path bypasses the
                 # `selectTtsEngine` extras gate and would strand the UI on
                 # an engine whose first synth fails with a deferred import
-                # error. Resetting also prevents looping back into this
-                # branch on every subsequent launch.
+                # error.
+                #
+                # Reverting to `active_engine` (not a hardcoded "piper") is
+                # what keeps the UI honest: when the env var selected a
+                # different *usable* engine (e.g. live Chatterbox) while
+                # QSettings remembered the now-unavailable one (e.g.
+                # Kokoro), the live service is Chatterbox — writing "piper"
+                # would leave the banner reporting Piper while Chatterbox
+                # runs. `build_shared_services` only ever builds a usable
+                # engine (or falls back to Piper itself), so `active_engine`
+                # is always a valid, live choice. Also stops this branch
+                # from looping on every launch.
+                fallback_engine = (
+                    active_engine
+                    if active_engine in _TTS_ENGINE_OPTIONS
+                    else "piper"
+                )
                 self._logger.warning(
                     "QSettings asks for %s engine but extras are not "
-                    "installed; reverting to piper",
+                    "installed; reverting to live engine %s",
                     stored_engine,
+                    fallback_engine,
                 )
-                self.settings.setValue("selected_tts_engine", "piper")
+                self.settings.setValue("selected_tts_engine", fallback_engine)
                 self.ui_changed.emit()
             else:
                 # Call _perform_tts_engine_swap directly rather than
