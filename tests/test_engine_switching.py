@@ -87,6 +87,19 @@ def _force_extras(monkeypatch, *, present: bool) -> None:
     monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
 
 
+def _force_kokoro_extras(monkeypatch, *, present: bool) -> None:
+    """Make `_kokoro_extras_available` deterministic regardless of what is
+    actually installed. The probe is a single `find_spec("kokoro_onnx")`."""
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "kokoro_onnx":
+            return object() if present else None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+
+
 # ---------------------------------------------------------------------
 # tests
 # ---------------------------------------------------------------------
@@ -148,6 +161,46 @@ def test_chatterbox_model_root_uses_engine_scoped_helper(monkeypatch, tmp_path):
     )
 
     config = _make_config(tmp_path, tts_engine="chatterbox")
+    _, tts, _, _ = build_shared_services(config)
+    assert Path(tts.model_root).resolve() == expected.resolve()
+
+
+def test_kokoro_when_extras_present(monkeypatch, tmp_path):
+    # Hard import — a wiring regression (renamed module, broken import
+    # chain) should fail the suite, not be silently skipped.
+    from voiceagent.services.kokoro_tts import KokoroTtsService
+
+    _force_kokoro_extras(monkeypatch, present=True)
+    config = _make_config(tmp_path, tts_engine="kokoro")
+    _, tts, _, _ = build_shared_services(config)
+    assert isinstance(tts, KokoroTtsService)
+
+
+def test_kokoro_falls_back_to_piper_when_extras_absent(
+    monkeypatch, caplog, tmp_path
+):
+    _force_kokoro_extras(monkeypatch, present=False)
+    config = _make_config(tmp_path, tts_engine="kokoro")
+    with caplog.at_level(logging.WARNING):
+        _, tts, _, _ = build_shared_services(config)
+    assert isinstance(tts, PiperTtsService)
+    joined = " ".join(rec.getMessage() for rec in caplog.records).lower()
+    assert "kokoro" in joined
+
+
+def test_kokoro_model_root_uses_engine_scoped_helper(monkeypatch, tmp_path):
+    """Kokoro `model_root` must come from `default_kokoro_model_root()`
+    (`<data>/tts/kokoro/model/`), not the Piper-specific `tts_model_root`.
+    """
+    from voiceagent.services.kokoro_tts import KokoroTtsService  # noqa: F401
+
+    _force_kokoro_extras(monkeypatch, present=True)
+    expected = tmp_path / "tts" / "kokoro" / "model"
+    monkeypatch.setattr(
+        "voiceagent.paths.default_kokoro_model_root",
+        lambda: expected,
+    )
+    config = _make_config(tmp_path, tts_engine="kokoro")
     _, tts, _, _ = build_shared_services(config)
     assert Path(tts.model_root).resolve() == expected.resolve()
 

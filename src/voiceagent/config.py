@@ -14,7 +14,7 @@ from voiceagent.paths import (
     default_whisper_root,
 )
 
-_VALID_TTS_ENGINES: frozenset[str] = frozenset({"piper", "chatterbox"})
+_VALID_TTS_ENGINES: frozenset[str] = frozenset({"piper", "chatterbox", "kokoro"})
 
 
 @dataclass(slots=True)
@@ -40,7 +40,7 @@ class AppConfig:
     stt_model_root: Path
     tts_model_root: Path
     chatterbox_references_root: Path
-    tts_engine: Literal["piper", "chatterbox"] = "piper"
+    tts_engine: Literal["piper", "chatterbox", "kokoro"] = "piper"
     sample_rate: int = 16_000
     # Conversation-history cap fed into `ConversationModel.to_openai_messages`.
     # Counts finalized user + assistant rows, so the default `20` keeps the
@@ -97,7 +97,7 @@ class AppConfig:
         max_history_turns = max(0, max_history_turns)
         raw_engine = (os.environ.get("VOICEAGENT_TTS_ENGINE", "") or "").strip().lower()
         if not raw_engine:
-            tts_engine: Literal["piper", "chatterbox"] = "piper"
+            tts_engine: Literal["piper", "chatterbox", "kokoro"] = "piper"
         elif raw_engine in _VALID_TTS_ENGINES:
             tts_engine = raw_engine  # type: ignore[assignment]
         else:

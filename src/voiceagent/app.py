@@ -43,6 +43,23 @@ def _chatterbox_extras_available() -> bool:
     return True
 
 
+def _kokoro_extras_available() -> bool:
+    """Return True if the optional Kokoro engine deps are importable.
+
+    `kokoro_onnx` pulls `onnxruntime`, `numpy` and `phonemizer-fork`
+    transitively, so probing the top-level wrapper is sufficient — if it
+    imports, its runtime deps resolved too. Gate before instantiating
+    `KokoroTtsService` so the user falls back to Piper deterministically
+    instead of hitting an ImportError on first synth. Installed via
+    `pip install --ignore-requires-python voiceagent[kokoro]` (the
+    `--ignore-requires-python` works around kokoro-onnx's conservative
+    `<3.14` cap; the cp314 wheels exist).
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("kokoro_onnx") is not None
+
+
 def build_shared_services(
     config: AppConfig,
 ) -> tuple[SpeechToTextBackend, TextToSpeechBackend, WhisperModelLoader, TtsVoiceLoader]:
@@ -71,10 +88,26 @@ def build_shared_services(
             references_root=config.chatterbox_references_root,
             selected_item=config.tts_model,
         )
+    elif config.tts_engine == "kokoro" and _kokoro_extras_available():
+        from voiceagent.paths import default_kokoro_model_root
+        from voiceagent.services.kokoro_tts import KokoroTtsService
+
+        # Like Chatterbox, Kokoro gets its own engine-scoped model root
+        # (`<data>/tts/kokoro/model/`) so the single bundle can't collide
+        # with Piper voices under `<data>/tts/piper/`.
+        tts_service = KokoroTtsService(
+            model_root=default_kokoro_model_root(),
+            selected_item=config.tts_model,
+        )
     else:
         if config.tts_engine == "chatterbox":
             logger.warning(
                 "Chatterbox engine selected but extras not installed; "
+                "falling back to Piper"
+            )
+        elif config.tts_engine == "kokoro":
+            logger.warning(
+                "Kokoro engine selected but extras not installed; "
                 "falling back to Piper"
             )
         from voiceagent.services.tts import PiperTtsService

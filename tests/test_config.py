@@ -68,6 +68,19 @@ def test_tts_engine_chatterbox_round_trips(monkeypatch):
     assert config.tts_engine == "chatterbox"
 
 
+def test_tts_engine_kokoro_round_trips(monkeypatch):
+    monkeypatch.setenv("VOICEAGENT_TTS_ENGINE", "kokoro")
+    config = AppConfig.from_env()
+    assert config.tts_engine == "kokoro"
+
+
+@pytest.mark.parametrize("raw", ["  kokoro  ", "KOKORO", "Kokoro", "\tkokoro\n"])
+def test_tts_engine_kokoro_whitespace_and_case_insensitive(monkeypatch, raw):
+    monkeypatch.setenv("VOICEAGENT_TTS_ENGINE", raw)
+    config = AppConfig.from_env()
+    assert config.tts_engine == "kokoro"
+
+
 @pytest.mark.parametrize(
     "raw",
     [

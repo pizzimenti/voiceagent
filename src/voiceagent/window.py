@@ -35,7 +35,7 @@ from voiceagent.services.playback import AudioPlayer
 from voiceagent.startup_deferral import schedule_after_first_frame
 from voiceagent.tts_loader import TtsVoiceLoader
 
-_TTS_ENGINE_OPTIONS: tuple[str, ...] = ("piper", "chatterbox")
+_TTS_ENGINE_OPTIONS: tuple[str, ...] = ("piper", "chatterbox", "kokoro")
 _CHATTERBOX_DTYPES: tuple[str, ...] = ("q4", "q4f16", "fp16", "fp32")
 
 
@@ -626,6 +626,8 @@ class MainWindow(QObject):
         engine = self.selectedTtsEngine
         if engine == "chatterbox":
             return "ChatterboxTtsConfigPane.qml"
+        if engine == "kokoro":
+            return "KokoroTtsConfigPane.qml"
         return "PiperTtsConfigPane.qml"
 
     @Property(str, notify=ui_changed)
@@ -1313,6 +1315,15 @@ class MainWindow(QObject):
                 "error",
             )
             return
+        if normalized == "kokoro" and not self._kokoro_extras_available():
+            self._logger.info("Engine swap rejected: kokoro extras missing")
+            self._append_log_message(
+                "Kokoro engine is not installed. Install with "
+                "`pip install --ignore-requires-python voiceagent[kokoro]` "
+                "to enable it.",
+                "error",
+            )
+            return
         if self.controller.state == AppState.IDLE:
             self._perform_tts_engine_swap(normalized)
             return
@@ -1359,6 +1370,18 @@ class MainWindow(QObject):
                 return False
         return True
 
+    @staticmethod
+    def _kokoro_extras_available() -> bool:
+        """Probe for the optional Kokoro extras. Mirror of the equivalent
+        helper in `app.py` so the UI gate (here) and the startup factory
+        (there) agree on whether Kokoro is usable. `kokoro_onnx` pulls
+        `onnxruntime` / `numpy` / `phonemizer-fork` transitively, so a
+        successful top-level probe implies the runtime deps resolved.
+        """
+        import importlib.util
+
+        return importlib.util.find_spec("kokoro_onnx") is not None
+
     def _build_tts_service_for_engine(self, engine: str):
         """Construct a fresh TTS service for `engine`. Re-derives its
         configuration via `AppConfig.from_env()` so any env-var changes
@@ -1384,6 +1407,16 @@ class MainWindow(QObject):
                 references_root=config.chatterbox_references_root,
                 selected_item=config.tts_model,
                 dtype=stored_dtype,
+            )
+        if engine == "kokoro":
+            from voiceagent.paths import default_kokoro_model_root
+            from voiceagent.services.kokoro_tts import KokoroTtsService
+
+            # Engine-scoped bundle root (`<data>/tts/kokoro/model/`),
+            # independent of the Piper-specific `tts_model_root`.
+            return KokoroTtsService(
+                model_root=default_kokoro_model_root(),
+                selected_item=config.tts_model,
             )
         from voiceagent.services.tts import PiperTtsService
 

@@ -1,7 +1,7 @@
 # Maintainer: Bradley <bradley@gennakersystems.com>
 
 pkgname=voiceagent
-pkgver=0.13.0
+pkgver=0.14.0
 pkgrel=1
 pkgdesc='KDE-friendly desktop voice assistant'
 arch=('x86_64')
@@ -22,6 +22,13 @@ depends=(
 #   pip install voiceagent[chatterbox]
 # `python-librosa` and `python-soundfile` ARE in the official repos
 # and listed below — they cover audio I/O for the engine.
+#
+# Kokoro TTS engine extras (`kokoro-onnx`) are likewise pip-only — not
+# in the Arch repos. Install into a venv with:
+#   pip install --ignore-requires-python voiceagent[kokoro]
+# The `--ignore-requires-python` flag works around kokoro-onnx's
+# conservative `<3.14` cap; it ships cp314 wheels and runs on 3.14.
+# Kokoro writes WAV via the stdlib, so it needs no extra audio I/O dep.
 optdepends=(
   'python-librosa: Chatterbox TTS reference audio loading'
   'python-soundfile: Chatterbox TTS audio output'
