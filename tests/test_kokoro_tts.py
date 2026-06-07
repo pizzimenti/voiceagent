@@ -102,6 +102,12 @@ def test_catalog_lists_all_bundled_voices(service):
     assert len(items) == 54
 
 
+def test_declares_shared_bundle_capability(service):
+    # Drives the window's "refresh all catalog rows on install/remove"
+    # behavior — availability is bundle-wide, not per-voice.
+    assert service.catalog_is_shared_bundle is True
+
+
 def test_catalog_available_before_download(service):
     # Every voice is "managed" / "downloadable" up front because the
     # bundle (which contains them all) is the unit of install.
@@ -270,9 +276,21 @@ def test_artifact_paths(service, model_root):
     ]
 
 
-def test_artifact_manifest_is_empty(service):
-    # No machine-readable per-file checksums upstream — layers 1 + 4 only.
-    assert service.artifact_manifest("af_heart") == {}
+def test_artifact_manifest_pins_sha256_for_both_files(service, model_root):
+    # Layers 2/3: both bundle files carry a pinned size + sha256 so the
+    # download verifier rejects a tampered/truncated asset fail-closed.
+    manifest = service.artifact_manifest("af_heart")
+    assert set(manifest) == {
+        model_root / KokoroTtsService.MODEL_FILENAME,
+        model_root / KokoroTtsService.VOICES_FILENAME,
+    }
+    model_entry = manifest[model_root / KokoroTtsService.MODEL_FILENAME]
+    assert model_entry.checksum_algorithm == "sha256"
+    assert model_entry.expected_size == 325_532_387
+    assert len(model_entry.expected_checksum_hex) == 64
+    voices_entry = manifest[model_root / KokoroTtsService.VOICES_FILENAME]
+    assert voices_entry.checksum_algorithm == "sha256"
+    assert voices_entry.expected_size == 28_214_398
 
 
 # ---------------------------------------------------------------------

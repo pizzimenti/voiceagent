@@ -339,6 +339,38 @@ def test_startup_desync_kokoro_extras_missing_reverts_to_piper(
     assert win.tts_loader.tts_service.backend_name == "Piper"
 
 
+def test_shared_bundle_engine_refreshes_all_rows_on_inventory_change(
+    _swap_window, monkeypatch
+):
+    """A shared-bundle TTS engine (Kokoro) must refresh ALL catalog rows
+    when an install/remove completes — one voice's state change flips all
+    54. A per-voice engine (Piper) must not. Regression for stale
+    Install/Remove actions on the un-clicked rows.
+    """
+    win = _swap_window
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        win._tts_catalog_model,
+        "refresh_all_rows",
+        lambda: calls.__setitem__("n", calls["n"] + 1),
+    )
+
+    # Live service is Piper (no shared-bundle flag) → no full refresh.
+    win._handle_inventory_change()
+    assert calls["n"] == 0
+
+    # Mark the live service as shared-bundle → inventory change refreshes
+    # every row.
+    monkeypatch.setattr(
+        win.tts_loader.tts_service,
+        "catalog_is_shared_bundle",
+        True,
+        raising=False,
+    )
+    win._handle_inventory_change()
+    assert calls["n"] == 1
+
+
 def test_swap_to_chatterbox_with_empty_references_yields_empty_catalog(_swap_window):
     """When references_root is empty, swapping to Chatterbox produces
     an empty voice catalog. The user must explicitly record (option A)

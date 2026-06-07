@@ -33,7 +33,7 @@ phonemization. The default engine stays **Piper** for all users.
 conservative metadata, but ships cp314 wheels (numpy, onnxruntime) and
 runs correctly on 3.14. Install with:
 
-```
+```bash
 pip install --ignore-requires-python voiceagent[kokoro]
 ```
 

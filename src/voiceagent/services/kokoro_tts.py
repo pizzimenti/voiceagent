@@ -94,6 +94,12 @@ _DEFAULT_LANG = "en-us"
 class KokoroTtsService(TextToSpeechBackend):
     backend_name = "Kokoro"
     selection_label = "Voice"
+    # Availability is bundle-wide: installing or removing ANY voice flips
+    # the on-disk state for all 54 at once (they share one bundle). The
+    # window consults this flag to refresh every catalog row after an
+    # install/delete completes, instead of just the clicked one — Piper /
+    # Chatterbox change one voice at a time and leave this unset.
+    catalog_is_shared_bundle = True
     MODEL_FILENAME = "kokoro-v1.0.onnx"
     VOICES_FILENAME = "voices-v1.0.bin"
     RELEASE_URL_BASE = (
@@ -101,6 +107,18 @@ class KokoroTtsService(TextToSpeechBackend):
         "model-files-v1.0/"
     )
     SAMPLE_RATE = 24_000
+    # Pinned SHA-256 + byte size for the two `model-files-v1.0` release
+    # assets. The tag is an immutable GitHub release, so these never
+    # drift. Consumed by `artifact_manifest` → the download verifier
+    # (`ParallelItemLoader._verify_download`, layers 2/3) compares the
+    # on-disk bytes against these before `_bundle_available()` can pass
+    # and `_load_kokoro()` hands the file to ONNX Runtime — so a tampered
+    # or truncated release asset fails closed at install time instead of
+    # crashing cryptically on first synth.
+    _MODEL_SHA256 = "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5"
+    _MODEL_SIZE_BYTES = 325_532_387
+    _VOICES_SHA256 = "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"
+    _VOICES_SIZE_BYTES = 28_214_398
 
     def __init__(self, model_root, selected_item: str | None = None) -> None:
         self.model_root = Path(model_root)
@@ -269,12 +287,29 @@ class KokoroTtsService(TextToSpeechBackend):
         return [self.model_path, self.voices_path]
 
     def artifact_manifest(self, item_name: str) -> dict:
-        # Layer-2/3 verification skipped: GitHub release assets don't ship
-        # per-file checksums in a machine-readable manifest and the
-        # `model-files-v1.0` tag is immutable. Layer 1 (existence +
-        # sidecar guard, in `_bundle_available`) and layer 4 (smoke-load
-        # on first synth, in `_load_kokoro`) still apply.
-        return {}
+        # Layers 2 (size) + 3 (sha256) for both bundle files, pinned to
+        # the immutable `model-files-v1.0` release assets. The verifier
+        # streams each downloaded file through sha256 and rejects a
+        # mismatch fail-closed, so a corrupted or tampered download never
+        # reaches ONNX Runtime. Layer 1 (existence + `.aria2` sidecar
+        # guard, in `_bundle_available`) and layer 4 (smoke-load on first
+        # synth, in `_load_kokoro`) also apply. Keyed by the same paths
+        # `artifact_paths` returns so the verifier maps entries onto the
+        # on-disk files.
+        from voiceagent.parallel_item_loader import ArtifactManifestEntry
+
+        return {
+            self.model_path: ArtifactManifestEntry(
+                expected_size=self._MODEL_SIZE_BYTES,
+                expected_checksum_hex=self._MODEL_SHA256,
+                checksum_algorithm="sha256",
+            ),
+            self.voices_path: ArtifactManifestEntry(
+                expected_size=self._VOICES_SIZE_BYTES,
+                expected_checksum_hex=self._VOICES_SHA256,
+                checksum_algorithm="sha256",
+            ),
+        }
 
     def _lang_for_voice(self, voice: str) -> str:
         prefix = voice[:1].lower() if voice else ""

@@ -1902,8 +1902,23 @@ class MainWindow(QObject):
 
     def _handle_inventory_change(self) -> None:
         self._refresh_stt_catalog_if_changed()
+        self._refresh_tts_catalog_rows_if_shared_bundle()
         self._sync_installed_selections()
         self.ui_changed.emit()
+
+    def _refresh_tts_catalog_rows_if_shared_bundle(self) -> None:
+        # For a shared-bundle TTS engine (Kokoro), installing or removing
+        # any single voice flips availability for ALL of them at once. The
+        # per-row `refresh_row` driven by `item_loading_changed` only
+        # updates the clicked voice, so the rest of the catalog would keep
+        # rendering stale Install / Remove actions until the pane rebuilds
+        # — and clicking one of those stale actions then no-ops because the
+        # backend guard sees the real (already-installed / already-removed)
+        # bundle state. Refresh every row so all delegates re-query. Piper
+        # / Chatterbox change one voice at a time, so they skip this.
+        backend = getattr(self.tts_loader, "tts_service", None)
+        if getattr(backend, "catalog_is_shared_bundle", False):
+            self._tts_catalog_model.refresh_all_rows()
 
     def _refresh_stt_catalog_if_changed(self) -> None:
         # Whisper's `available_items()` is mostly static (managed
