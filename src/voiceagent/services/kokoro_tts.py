@@ -48,6 +48,15 @@ from voiceagent.downloaders import AriaDownloader, DownloadFile, DownloadProgres
 # `available_items()` overlays whatever the live `kokoro.voices` mapping
 # actually exposes — the on-disk bundle is authoritative if it ever
 # diverges from this static list.
+#
+# This list is NOT the stale "26 voices" figure from older upstream
+# READMEs — the `model-files-v1.0` `voices-v1.0.bin` was expanded to 54.
+# Verified byte-exact against the SHA-256-pinned bundle (see
+# `_VOICES_SHA256`): `set(_DEFAULT_BUNDLED_VOICES) == set(kokoro.voices)`
+# with zero phantom or missing entries, and every non-English voice
+# (e.g. `ef_dora`) synthesizes. Because the bundle is SHA-pinned and
+# immutable, this static list cannot drift out of sync with what an
+# install actually delivers.
 _DEFAULT_BUNDLED_VOICES = (
     "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica",
     "af_kore", "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
