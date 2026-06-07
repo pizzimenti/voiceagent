@@ -456,12 +456,22 @@ class MainWindow(QObject):
             )
 
         # Sync the live TTS engine with the user's last QSettings choice.
-        # `build_shared_services` (in app.py) reads `config.tts_engine`
-        # which only consults the env var; it does not see QSettings.
-        # If the user previously picked a different engine in the UI we
-        # would otherwise show a banner saying "engine X selected" while
-        # the actual service is still engine Y. Swap on first frame so
-        # the divergence resolves before the user opens any pane.
+        self._resolve_startup_engine_desync()
+
+    def _resolve_startup_engine_desync(self) -> None:
+        """Reconcile the live TTS service with the QSettings engine choice.
+
+        `build_shared_services` (in app.py) reads `config.tts_engine`
+        which only consults the env var; it does not see QSettings.
+        If the user previously picked a different engine in the UI we
+        would otherwise show a banner saying "engine X selected" while
+        the actual service is still engine Y. Swap on first frame so
+        the divergence resolves before the user opens any pane.
+
+        Extracted from `show()` so the desync resolution (especially the
+        missing-extras revert-to-piper branch) is unit-testable without a
+        live window.
+        """
         active_engine = getattr(
             self.tts_loader.tts_service, "backend_name", ""
         ).lower()
@@ -490,14 +500,27 @@ class MainWindow(QObject):
                 stored_engine,
                 active_engine,
             )
-            if stored_engine == "chatterbox" and not self._chatterbox_extras_available():
-                # Chatterbox previously selected but extras now missing.
-                # Reset QSettings to piper to keep the UI honest and
-                # prevent looping back into this same branch on every
-                # subsequent launch.
+            extras_missing = (
+                (stored_engine == "chatterbox"
+                 and not self._chatterbox_extras_available())
+                or (stored_engine == "kokoro"
+                    and not self._kokoro_extras_available())
+            )
+            if extras_missing:
+                # Optional engine previously selected but its extras are
+                # now missing (uninstalled, or never present on this
+                # machine). `build_shared_services` already fell back to
+                # Piper at startup; mirror that here by resetting
+                # QSettings to piper rather than swapping INTO the broken
+                # engine via the desync path below — which bypasses the
+                # `selectTtsEngine` extras gate and would strand the UI on
+                # an engine whose first synth fails with a deferred import
+                # error. Resetting also prevents looping back into this
+                # branch on every subsequent launch.
                 self._logger.warning(
-                    "QSettings asks for Chatterbox engine but extras "
-                    "are not installed; reverting to piper"
+                    "QSettings asks for %s engine but extras are not "
+                    "installed; reverting to piper",
+                    stored_engine,
                 )
                 self.settings.setValue("selected_tts_engine", "piper")
                 self.ui_changed.emit()

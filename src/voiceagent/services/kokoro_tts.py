@@ -112,6 +112,15 @@ class KokoroTtsService(TextToSpeechBackend):
         # concurrent synth reading it.
         self._kokoro = None
         self._kokoro_lock = threading.Lock()
+        # Serializes the shared-bundle download. The loader
+        # (`ParallelItemLoader`) dedupes in-flight installs by voice
+        # NAME on a `max_workers=3` pool, but every Kokoro voice maps to
+        # the same two-file fetch — so clicking Install on two different
+        # voices before the first completes would otherwise dispatch two
+        # aria2 processes writing the same `kokoro-v1.0.onnx` /
+        # `voices-v1.0.bin` destinations and corrupt the bundle. This
+        # lock collapses all concurrent voice requests into one download.
+        self._download_lock = threading.Lock()
 
     @property
     def model_path(self) -> Path:
@@ -207,8 +216,18 @@ class KokoroTtsService(TextToSpeechBackend):
 
     def download_item(self, item_name: str, progress_callback=None) -> None:
         # The bundle is the unit; any voice name maps to the same fetch.
+        # Fast-path: skip the lock entirely once the bundle is on disk.
         if self._bundle_available():
             return
+        # Double-checked locking: the first concurrent caller downloads;
+        # any caller that was blocked on the lock re-checks and finds the
+        # bundle present, so only one aria2 run ever touches these files.
+        with self._download_lock:
+            if self._bundle_available():
+                return
+            self._download_bundle(progress_callback)
+
+    def _download_bundle(self, progress_callback=None) -> None:
         self.model_root.mkdir(parents=True, exist_ok=True)
         model_url = f"{self.RELEASE_URL_BASE}{self.MODEL_FILENAME}"
         voices_url = f"{self.RELEASE_URL_BASE}{self.VOICES_FILENAME}"

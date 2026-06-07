@@ -199,6 +199,43 @@ def test_download_any_voice_fetches_same_bundle(service, model_root):
     assert service.is_available is True
 
 
+def test_concurrent_installs_download_bundle_once(service, model_root):
+    """Clicking Install on several Kokoro voices before the first
+    completes must fetch the shared bundle exactly once — two aria2
+    processes writing the same files would corrupt the bundle. The
+    double-checked `_download_lock` collapses the concurrent calls."""
+    import threading
+    import time
+
+    download_calls: list[int] = []
+    call_lock = threading.Lock()
+
+    class SlowDownloader:
+        def get_remote_size(self, url):
+            return 123
+
+        def download(self, files, progress_callback=None):
+            with call_lock:
+                download_calls.append(1)
+            time.sleep(0.15)  # widen the overlap window deterministically
+            for f in files:
+                f.destination.parent.mkdir(parents=True, exist_ok=True)
+                f.destination.write_bytes(b"downloaded")
+
+    service.downloader = SlowDownloader()
+    threads = [
+        threading.Thread(target=service.download_item, args=(v,))
+        for v in ("af_heart", "am_michael", "bf_lily")
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sum(download_calls) == 1
+    assert service.is_available is True
+
+
 def test_download_noop_when_bundle_present(service, model_root):
     _plant_bundle(model_root)
     fake = _FakeDownloader()

@@ -317,6 +317,28 @@ def test_swap_chatterbox_then_back_to_piper_preserves_installed_voices(_swap_win
     assert selected in win.ttsOptions
 
 
+def test_startup_desync_kokoro_extras_missing_reverts_to_piper(
+    _swap_window, monkeypatch
+):
+    """Regression for the startup desync path: if QSettings remembers
+    `selected_tts_engine=kokoro` but the Kokoro extras are gone, startup
+    must revert QSettings to piper — NOT swap into a Kokoro service whose
+    first synth would fail with a deferred import error. The desync path
+    bypasses the `selectTtsEngine` extras gate, so the guard has to live
+    in `_resolve_startup_engine_desync` itself.
+    """
+    win = _swap_window
+    # Live service is Piper (fixture default); pretend the user last
+    # picked Kokoro, but its extras are now unavailable.
+    win.settings.setValue("selected_tts_engine", "kokoro")
+    _force_kokoro_extras(monkeypatch, present=False)
+
+    win._resolve_startup_engine_desync()
+
+    assert win.settings.value("selected_tts_engine", "", str) == "piper"
+    assert win.tts_loader.tts_service.backend_name == "Piper"
+
+
 def test_swap_to_chatterbox_with_empty_references_yields_empty_catalog(_swap_window):
     """When references_root is empty, swapping to Chatterbox produces
     an empty voice catalog. The user must explicitly record (option A)
