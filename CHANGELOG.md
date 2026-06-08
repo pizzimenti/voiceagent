@@ -2,6 +2,54 @@
 
 All notable changes to VoiceAgent are documented here. Dates in YYYY-MM-DD.
 
+## 0.14.0 — 2026-06-07
+
+**Kokoro TTS engine.** Voiceagent now ships a third TTS engine —
+Kokoro (hexgrad/kokoro-onnx, ~82M-parameter neural model, Apache 2.0,
+pure ONNX runtime, no PyTorch). Quality is markedly above Piper while
+keeping the local-only / no-GPU posture. Pick **Kokoro** in the
+runtime engine selector alongside Piper (default) and Chatterbox;
+per-engine voice selection is remembered across swaps, same as before.
+
+**Single-bundle install.** Unlike Piper (one file pair per voice),
+Kokoro ships one bundle — `kokoro-v1.0.onnx` (~325 MB) +
+`voices-v1.0.bin` (~28 MB) — containing all **54 voices** across nine
+languages (American/British English, Spanish, French, Hindi, Italian,
+Japanese, Brazilian Portuguese, Mandarin Chinese). The catalog lists
+every voice up front; installing any one of them fetches the shared
+bundle, after which all 54 resolve as available. An inline note in the
+config pane surfaces the one-time ~350 MB download. The bundle lives at
+an engine-scoped root (`~/.local/share/voiceagent/tts/kokoro/model/`),
+isolated from Piper voices.
+
+**Per-voice language.** Each voice's leading prefix selects the
+espeak-ng phonemization language (`af_*` → American English, `ef_*` →
+Spanish, `zf_*` → Mandarin, etc.), so all 54 voices synthesize. Quality
+is English-strongest — the proper JP/ZH g2p (`misaki`) is unavailable
+on Python 3.14, so non-English voices fall back to espeak's coarser
+phonemization. The default engine stays **Piper** for all users.
+
+**Python 3.14.** `kokoro-onnx` caps `requires-python <3.14` as
+conservative metadata, but ships cp314 wheels (numpy, onnxruntime) and
+runs correctly on 3.14. Install with:
+
+```bash
+pip install --ignore-requires-python voiceagent[kokoro]
+```
+
+espeak-ng is bundled via `espeakng-loader` — no system package needed.
+WAV output uses the stdlib `wave` module, so Kokoro adds no `soundfile`
+dependency. The engine entry only activates when the `[kokoro]` extras
+are importable; otherwise selecting it falls back to Piper with a
+logged warning, identical to the Chatterbox gating.
+
+New surfaces: `services/kokoro_tts.py:KokoroTtsService`,
+`AppConfig.tts_engine` extended to `Literal["piper", "chatterbox",
+"kokoro"]`, `paths.default_kokoro_{root,model_root}()`,
+`qml/engines/KokoroTtsConfigPane.qml`, and the `[kokoro]` extras in
+`pyproject.toml`. Tests: `tests/test_kokoro_tts.py` plus Kokoro
+branches in `tests/test_engine_switching.py` and `tests/test_config.py`.
+
 ## 0.13.0 — 2026-05-13
 
 **Remove v0.11.x → v0.12 data-dir migration helper.** VoiceAgent is a

@@ -35,7 +35,7 @@ from voiceagent.services.playback import AudioPlayer
 from voiceagent.startup_deferral import schedule_after_first_frame
 from voiceagent.tts_loader import TtsVoiceLoader
 
-_TTS_ENGINE_OPTIONS: tuple[str, ...] = ("piper", "chatterbox")
+_TTS_ENGINE_OPTIONS: tuple[str, ...] = ("piper", "chatterbox", "kokoro")
 _CHATTERBOX_DTYPES: tuple[str, ...] = ("q4", "q4f16", "fp16", "fp32")
 
 
@@ -456,12 +456,22 @@ class MainWindow(QObject):
             )
 
         # Sync the live TTS engine with the user's last QSettings choice.
-        # `build_shared_services` (in app.py) reads `config.tts_engine`
-        # which only consults the env var; it does not see QSettings.
-        # If the user previously picked a different engine in the UI we
-        # would otherwise show a banner saying "engine X selected" while
-        # the actual service is still engine Y. Swap on first frame so
-        # the divergence resolves before the user opens any pane.
+        self._resolve_startup_engine_desync()
+
+    def _resolve_startup_engine_desync(self) -> None:
+        """Reconcile the live TTS service with the QSettings engine choice.
+
+        `build_shared_services` (in app.py) reads `config.tts_engine`
+        which only consults the env var; it does not see QSettings.
+        If the user previously picked a different engine in the UI we
+        would otherwise show a banner saying "engine X selected" while
+        the actual service is still engine Y. Swap on first frame so
+        the divergence resolves before the user opens any pane.
+
+        Extracted from `show()` so the desync resolution (especially the
+        missing-extras revert-to-piper branch) is unit-testable without a
+        live window.
+        """
         active_engine = getattr(
             self.tts_loader.tts_service, "backend_name", ""
         ).lower()
@@ -490,16 +500,45 @@ class MainWindow(QObject):
                 stored_engine,
                 active_engine,
             )
-            if stored_engine == "chatterbox" and not self._chatterbox_extras_available():
-                # Chatterbox previously selected but extras now missing.
-                # Reset QSettings to piper to keep the UI honest and
-                # prevent looping back into this same branch on every
-                # subsequent launch.
-                self._logger.warning(
-                    "QSettings asks for Chatterbox engine but extras "
-                    "are not installed; reverting to piper"
+            extras_missing = (
+                (stored_engine == "chatterbox"
+                 and not self._chatterbox_extras_available())
+                or (stored_engine == "kokoro"
+                    and not self._kokoro_extras_available())
+            )
+            if extras_missing:
+                # Optional engine previously selected but its extras are
+                # now missing (uninstalled, or never present on this
+                # machine). Reset QSettings to the engine that is ACTUALLY
+                # live (`active_engine`, what `build_shared_services`
+                # built) rather than swapping INTO the broken engine via
+                # the desync path below — that path bypasses the
+                # `selectTtsEngine` extras gate and would strand the UI on
+                # an engine whose first synth fails with a deferred import
+                # error.
+                #
+                # Reverting to `active_engine` (not a hardcoded "piper") is
+                # what keeps the UI honest: when the env var selected a
+                # different *usable* engine (e.g. live Chatterbox) while
+                # QSettings remembered the now-unavailable one (e.g.
+                # Kokoro), the live service is Chatterbox — writing "piper"
+                # would leave the banner reporting Piper while Chatterbox
+                # runs. `build_shared_services` only ever builds a usable
+                # engine (or falls back to Piper itself), so `active_engine`
+                # is always a valid, live choice. Also stops this branch
+                # from looping on every launch.
+                fallback_engine = (
+                    active_engine
+                    if active_engine in _TTS_ENGINE_OPTIONS
+                    else "piper"
                 )
-                self.settings.setValue("selected_tts_engine", "piper")
+                self._logger.warning(
+                    "QSettings asks for %s engine but extras are not "
+                    "installed; reverting to live engine %s",
+                    stored_engine,
+                    fallback_engine,
+                )
+                self.settings.setValue("selected_tts_engine", fallback_engine)
                 self.ui_changed.emit()
             else:
                 # Call _perform_tts_engine_swap directly rather than
@@ -626,6 +665,8 @@ class MainWindow(QObject):
         engine = self.selectedTtsEngine
         if engine == "chatterbox":
             return "ChatterboxTtsConfigPane.qml"
+        if engine == "kokoro":
+            return "KokoroTtsConfigPane.qml"
         return "PiperTtsConfigPane.qml"
 
     @Property(str, notify=ui_changed)
@@ -1313,6 +1354,15 @@ class MainWindow(QObject):
                 "error",
             )
             return
+        if normalized == "kokoro" and not self._kokoro_extras_available():
+            self._logger.info("Engine swap rejected: kokoro extras missing")
+            self._append_log_message(
+                "Kokoro engine is not installed. Install with "
+                "`pip install --ignore-requires-python voiceagent[kokoro]` "
+                "to enable it.",
+                "error",
+            )
+            return
         if self.controller.state == AppState.IDLE:
             self._perform_tts_engine_swap(normalized)
             return
@@ -1359,6 +1409,24 @@ class MainWindow(QObject):
                 return False
         return True
 
+    @staticmethod
+    def _kokoro_extras_available() -> bool:
+        """Probe for the optional Kokoro extras. Mirror of the equivalent
+        helper in `app.py` so the UI gate (here) and the startup factory
+        (there) agree on whether Kokoro is usable. Both consult the same
+        `KOKORO_EXTRA_MODULES` list (wrapper + ONNX/numpy + the
+        phonemizer side) so they can't drift — a wrapper-only probe is a
+        false positive when a transitive dep is missing.
+        """
+        import importlib.util
+
+        from voiceagent.services.kokoro_tts import KOKORO_EXTRA_MODULES
+
+        for name in KOKORO_EXTRA_MODULES:
+            if importlib.util.find_spec(name) is None:
+                return False
+        return True
+
     def _build_tts_service_for_engine(self, engine: str):
         """Construct a fresh TTS service for `engine`. Re-derives its
         configuration via `AppConfig.from_env()` so any env-var changes
@@ -1384,6 +1452,16 @@ class MainWindow(QObject):
                 references_root=config.chatterbox_references_root,
                 selected_item=config.tts_model,
                 dtype=stored_dtype,
+            )
+        if engine == "kokoro":
+            from voiceagent.paths import default_kokoro_model_root
+            from voiceagent.services.kokoro_tts import KokoroTtsService
+
+            # Engine-scoped bundle root (`<data>/tts/kokoro/model/`),
+            # independent of the Piper-specific `tts_model_root`.
+            return KokoroTtsService(
+                model_root=default_kokoro_model_root(),
+                selected_item=config.tts_model,
             )
         from voiceagent.services.tts import PiperTtsService
 
@@ -1846,8 +1924,23 @@ class MainWindow(QObject):
 
     def _handle_inventory_change(self) -> None:
         self._refresh_stt_catalog_if_changed()
+        self._refresh_tts_catalog_rows_if_shared_bundle()
         self._sync_installed_selections()
         self.ui_changed.emit()
+
+    def _refresh_tts_catalog_rows_if_shared_bundle(self) -> None:
+        # For a shared-bundle TTS engine (Kokoro), installing or removing
+        # any single voice flips availability for ALL of them at once. The
+        # per-row `refresh_row` driven by `item_loading_changed` only
+        # updates the clicked voice, so the rest of the catalog would keep
+        # rendering stale Install / Remove actions until the pane rebuilds
+        # — and clicking one of those stale actions then no-ops because the
+        # backend guard sees the real (already-installed / already-removed)
+        # bundle state. Refresh every row so all delegates re-query. Piper
+        # / Chatterbox change one voice at a time, so they skip this.
+        backend = getattr(self.tts_loader, "tts_service", None)
+        if getattr(backend, "catalog_is_shared_bundle", False):
+            self._tts_catalog_model.refresh_all_rows()
 
     def _refresh_stt_catalog_if_changed(self) -> None:
         # Whisper's `available_items()` is mostly static (managed

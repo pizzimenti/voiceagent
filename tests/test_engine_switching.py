@@ -87,6 +87,23 @@ def _force_extras(monkeypatch, *, present: bool) -> None:
     monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
 
 
+def _force_kokoro_extras(monkeypatch, *, present: bool) -> None:
+    """Make `_kokoro_extras_available` deterministic regardless of what is
+    actually installed. The probe checks the full `KOKORO_EXTRA_MODULES`
+    set (wrapper + ONNX/numpy + phonemizer side), so force all of them."""
+    from voiceagent.services.kokoro_tts import KOKORO_EXTRA_MODULES
+
+    real_find_spec = importlib.util.find_spec
+    targets = set(KOKORO_EXTRA_MODULES)
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name in targets:
+            return object() if present else None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+
+
 # ---------------------------------------------------------------------
 # tests
 # ---------------------------------------------------------------------
@@ -148,6 +165,70 @@ def test_chatterbox_model_root_uses_engine_scoped_helper(monkeypatch, tmp_path):
     )
 
     config = _make_config(tmp_path, tts_engine="chatterbox")
+    _, tts, _, _ = build_shared_services(config)
+    assert Path(tts.model_root).resolve() == expected.resolve()
+
+
+def test_kokoro_when_extras_present(monkeypatch, tmp_path):
+    # Hard import — a wiring regression (renamed module, broken import
+    # chain) should fail the suite, not be silently skipped.
+    from voiceagent.services.kokoro_tts import KokoroTtsService
+
+    _force_kokoro_extras(monkeypatch, present=True)
+    config = _make_config(tmp_path, tts_engine="kokoro")
+    _, tts, _, _ = build_shared_services(config)
+    assert isinstance(tts, KokoroTtsService)
+
+
+def test_kokoro_falls_back_to_piper_when_extras_absent(
+    monkeypatch, caplog, tmp_path
+):
+    _force_kokoro_extras(monkeypatch, present=False)
+    config = _make_config(tmp_path, tts_engine="kokoro")
+    with caplog.at_level(logging.WARNING):
+        _, tts, _, _ = build_shared_services(config)
+    assert isinstance(tts, PiperTtsService)
+    joined = " ".join(rec.getMessage() for rec in caplog.records).lower()
+    assert "kokoro" in joined
+
+
+def test_kokoro_partial_install_falls_back_to_piper(monkeypatch, tmp_path):
+    """A partial install — `kokoro_onnx` discoverable but a phonemizer-side
+    transitive dep missing (e.g. `--no-deps`) — must be caught by the
+    extras gate and fall back to Piper, not pass a wrapper-only probe and
+    crash at first synth."""
+    from voiceagent.services.kokoro_tts import KOKORO_EXTRA_MODULES
+
+    assert "phonemizer" in KOKORO_EXTRA_MODULES  # guards the dep list
+    real_find_spec = importlib.util.find_spec
+    full_set = set(KOKORO_EXTRA_MODULES)
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "phonemizer":
+            return None  # the one missing transitive dep
+        if name in full_set:
+            return object()
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    config = _make_config(tmp_path, tts_engine="kokoro")
+    _, tts, _, _ = build_shared_services(config)
+    assert isinstance(tts, PiperTtsService)
+
+
+def test_kokoro_model_root_uses_engine_scoped_helper(monkeypatch, tmp_path):
+    """Kokoro `model_root` must come from `default_kokoro_model_root()`
+    (`<data>/tts/kokoro/model/`), not the Piper-specific `tts_model_root`.
+    """
+    from voiceagent.services.kokoro_tts import KokoroTtsService  # noqa: F401
+
+    _force_kokoro_extras(monkeypatch, present=True)
+    expected = tmp_path / "tts" / "kokoro" / "model"
+    monkeypatch.setattr(
+        "voiceagent.paths.default_kokoro_model_root",
+        lambda: expected,
+    )
+    config = _make_config(tmp_path, tts_engine="kokoro")
     _, tts, _, _ = build_shared_services(config)
     assert Path(tts.model_root).resolve() == expected.resolve()
 
@@ -262,6 +343,85 @@ def test_swap_chatterbox_then_back_to_piper_preserves_installed_voices(_swap_win
         "placeholder text. _sync_installed_selections must run after the swap."
     )
     assert selected in win.ttsOptions
+
+
+def test_startup_desync_kokoro_extras_missing_reverts_to_piper(
+    _swap_window, monkeypatch
+):
+    """Regression for the startup desync path: if QSettings remembers
+    `selected_tts_engine=kokoro` but the Kokoro extras are gone, startup
+    must revert QSettings to piper — NOT swap into a Kokoro service whose
+    first synth would fail with a deferred import error. The desync path
+    bypasses the `selectTtsEngine` extras gate, so the guard has to live
+    in `_resolve_startup_engine_desync` itself.
+    """
+    win = _swap_window
+    # Live service is Piper (fixture default); pretend the user last
+    # picked Kokoro, but its extras are now unavailable.
+    win.settings.setValue("selected_tts_engine", "kokoro")
+    _force_kokoro_extras(monkeypatch, present=False)
+
+    win._resolve_startup_engine_desync()
+
+    assert win.settings.value("selected_tts_engine", "", str) == "piper"
+    assert win.tts_loader.tts_service.backend_name == "Piper"
+
+
+def test_startup_desync_missing_extras_reverts_to_live_engine_not_piper(
+    _swap_window, monkeypatch
+):
+    """When the env var selected a usable engine (Chatterbox) but
+    QSettings remembers a now-unavailable one (Kokoro), the desync revert
+    must point QSettings at the ACTUAL live engine, not a hardcoded piper
+    — otherwise the UI reports Piper while Chatterbox runs. Regression for
+    the 3-engine generalization of the revert branch.
+    """
+    win = _swap_window
+    # Make the live service Chatterbox (extras forced present by fixture).
+    win._perform_tts_engine_swap("chatterbox")
+    assert win.tts_loader.tts_service.backend_name == "Chatterbox"
+
+    # User last picked Kokoro in the UI, but its extras are gone.
+    win.settings.setValue("selected_tts_engine", "kokoro")
+    _force_kokoro_extras(monkeypatch, present=False)
+
+    win._resolve_startup_engine_desync()
+
+    # Revert to the live engine (chatterbox), NOT piper — keeps UI honest.
+    assert win.settings.value("selected_tts_engine", "", str) == "chatterbox"
+    assert win.tts_loader.tts_service.backend_name == "Chatterbox"
+
+
+def test_shared_bundle_engine_refreshes_all_rows_on_inventory_change(
+    _swap_window, monkeypatch
+):
+    """A shared-bundle TTS engine (Kokoro) must refresh ALL catalog rows
+    when an install/remove completes — one voice's state change flips all
+    54. A per-voice engine (Piper) must not. Regression for stale
+    Install/Remove actions on the un-clicked rows.
+    """
+    win = _swap_window
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        win._tts_catalog_model,
+        "refresh_all_rows",
+        lambda: calls.__setitem__("n", calls["n"] + 1),
+    )
+
+    # Live service is Piper (no shared-bundle flag) → no full refresh.
+    win._handle_inventory_change()
+    assert calls["n"] == 0
+
+    # Mark the live service as shared-bundle → inventory change refreshes
+    # every row.
+    monkeypatch.setattr(
+        win.tts_loader.tts_service,
+        "catalog_is_shared_bundle",
+        True,
+        raising=False,
+    )
+    win._handle_inventory_change()
+    assert calls["n"] == 1
 
 
 def test_swap_to_chatterbox_with_empty_references_yields_empty_catalog(_swap_window):

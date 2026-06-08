@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voiceagent"
-version = "0.13.0"
+version = "0.14.0"
 description = "KDE-friendly desktop voice assistant"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
@@ -47,6 +47,20 @@ chatterbox = [
   "transformers>=4.40",
   "librosa>=0.10",
   "soundfile>=0.12",
+]
+# Kokoro TTS engine — hexgrad/kokoro-onnx, single-bundle neural voices.
+# `kokoro-onnx` pulls `onnxruntime`, `numpy` and `phonemizer-fork`
+# (espeak-ng via bundled `espeakng-loader`) transitively; they are
+# pinned loosely here only so a bare `pip install voiceagent[kokoro]`
+# is self-contained. WAV output uses the stdlib `wave` module, so no
+# `soundfile` is needed. NOTE: kokoro-onnx caps `requires-python <3.14`
+# as conservative metadata, but ships cp314 wheels and runs on 3.14 —
+# install with `pip install --ignore-requires-python voiceagent[kokoro]`
+# on Python 3.14.
+kokoro = [
+  "kokoro-onnx>=0.4,<1",
+  "onnxruntime>=1.20",
+  "numpy>=2",
 ]
 
 [project.scripts]

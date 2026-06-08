@@ -76,6 +76,20 @@ def default_chatterbox_references_root() -> Path:
     return default_chatterbox_root() / "references"
 
 
+def default_kokoro_root() -> Path:
+    """Kokoro engine root (`<data>/tts/kokoro/`)."""
+    return default_tts_root() / "kokoro"
+
+
+def default_kokoro_model_root() -> Path:
+    """Kokoro downloaded model bundle (`<kokoro>/model/`).
+
+    Holds the single-bundle install: `kokoro-v1.0.onnx` + `voices-v1.0.bin`.
+    Engine-scoped so it can't collide with Piper voices in `<data>/tts/piper/`.
+    """
+    return default_kokoro_root() / "model"
+
+
 # Aliases used by `services/stt.py` (whisper) and `services/tts.py` (piper)
 # and by the test suite as monkeypatch targets. Functionally equivalent to
 # the engine-scoped helpers above.

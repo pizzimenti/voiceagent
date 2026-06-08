@@ -24,10 +24,44 @@ moved to the engine-scoped tree introduced in 0.12.0. The migration
 helper had begun emitting a spurious "Skipping legacy data migration"
 warning on every launch.
 
-## v0.14 — Kokoro TTS engine (was v0.13, was v0.12)
+## v0.14 — Kokoro TTS engine ✅ SHIPPED 2026-06-07
 
-**Status:** next up. Unblocked once `kokoro-onnx` / `misaki` ship
-Python 3.14 support, OR voiceagent pins to 3.13 for a release.
+Third TTS engine — Kokoro (hexgrad/kokoro-onnx, ~82M-param neural
+model, Apache 2.0, pure ONNX, no PyTorch). Selectable in the runtime
+engine selector alongside Piper (default) and Chatterbox. See
+CHANGELOG for the full shipped scope. Released as v0.14.0.
+
+**The Python 3.14 blocker turned out to be a paper cap.** The reason
+Kokoro was deferred behind Chatterbox in v0.12 — `kokoro-onnx`
+(`requires-python <3.14`) and `misaki` (`<3.13`) — was verified
+(2026-06-06 spike) to be conservative metadata only: `kokoro-onnx`
+0.5.0 ships native cp314 wheels (numpy, onnxruntime), imports, and
+synthesizes correctly on 3.14.5. Shipped by force-installing with
+`pip install --ignore-requires-python voiceagent[kokoro]`. `misaki`
+(the higher-quality JP/ZH g2p, still `<3.13`) is NOT used — Kokoro
+phonemizes via `phonemizer-fork` (espeak-ng, bundled through
+`espeakng-loader`, no system package needed).
+
+Notable deviations from the original plan (preserved below the line):
+
+- **Single-bundle, not per-voice.** The Kokoro v1.0 release ships ONE
+  bundle (`kokoro-v1.0.onnx` + `voices-v1.0.bin`) holding all 54
+  voices, not a per-voice catalog like Piper. So the config pane is a
+  straight mirror of the Piper pane (filter + CatalogList): the
+  catalog lists all 54 up front, installing any one fetches the shared
+  bundle, and `is_engine_ready` gates Talk until the bundle is on disk
+  (same shape as Chatterbox's shared-model readiness). No per-voice
+  download granularity, no `voices.json`-style catalog refresh.
+- **54 voices, not ~10.** Nine languages (en-US/GB, es, fr, hi, it,
+  ja, pt-BR, zh). Each voice's prefix selects its espeak language; all
+  54 synthesize, English-strongest. Default stays Piper.
+- **No `soundfile` dep.** WAV is written with the stdlib `wave` module,
+  mirroring Piper.
+- **Engine-scoped root** `<data>/tts/kokoro/model/`, isolated from
+  Piper — no flag-day migration, matching the Chatterbox layout.
+
+<details>
+<summary>Original v0.14 plan (pre-implementation) — historical</summary>
 
 ### Why
 
@@ -43,107 +77,28 @@ backend: ~82M-parameter neural model, Apache 2.0 license, ONNX runtime
 (no PyTorch dependency), runs at roughly realtime on a modern desktop
 CPU, ~330 MB single-file model. Quality is dramatically above Piper
 while keeping the local-only / no-GPU posture voiceagent depends on.
-Engine comparison artifact:
-`/home/bradley/.claude/plans/give-me-a-table-squishy-frog.md`.
 
-### Outcome
+### Open questions and risks (as resolved)
 
-User opens Settings → TTS engine, picks "Kokoro", picks a Kokoro voice
-from the catalog dropdown, and the next assistant turn speaks in a
-markedly more natural voice. Piper users see no behaviour change —
-default stays `piper` until Kokoro's multilingual catalog is broad
-enough to flip the default.
+- **espeak-ng dependency.** Resolved: bundled via `espeakng-loader`,
+  no system package or PKGBUILD dep needed.
+- **Voice catalog UX asymmetry.** Resolved: single-bundle means the
+  Piper-style pane works unchanged; all 54 voices listed up front.
+- **Multilingual coverage gap.** Kokoro is English-strongest; JP / ZH
+  via espeak are functional but coarse (misaki unavailable on 3.14).
+  Default stays `piper`.
+- **First-run download size.** ~350 MB bundle, surfaced via an inline
+  note in the config pane.
+- **Disk layout.** Engine-scoped root, backwards-compatible — Piper
+  voices untouched.
 
-### Scope
+### Streaming TTS — still out of scope
 
-One PR. Four surfaces:
+Sentence-streamed playback (speech starts mid-LLM-response) remains a
+separate effort. Kokoro chunk-streams natively, so when the streaming
+overhaul happens Kokoro inherits it cleanly. Track post-v0.14.
 
-**1. New `services/kokoro_tts.py:KokoroTtsService`.** Implements the
-existing `TextToSpeechBackend` Protocol from `backends.py:42`. Mirrors
-`PiperTtsService`'s download / verify / synthesize lifecycle. Loads
-the Kokoro `.onnx` + voice-pack file(s) from
-`$VOICEAGENT_TTS_MODEL_ROOT/kokoro/` (subfolder per engine so Piper
-and Kokoro coexist on disk; existing Piper voices in `tts-models/`
-root continue to resolve via backwards-compatible lookup, no flag-day
-migration). Synthesizes to a temp WAV the same way Piper does —
-pipeline-side code in `controller.py:300` doesn't change. Reuse
-`AriaDownloader` for segmented downloads. Reuse the v0.8.x install
-hardening (`.aria2` sidecar trap, parallel-install guard, sha pin) —
-those live at the downloader / catalog layer, not inside the Piper
-service, so the new service inherits them for free.
-
-**2. `AppConfig.tts_engine`** in `src/voiceagent/config.py`. New
-`Literal["piper", "kokoro"]` field, default `"piper"`. Persisted in
-QSettings the same way other engine choices are. Read at `app.py`
-construction time to wire the right service into `VoiceController`
-(`controller.py:76` already takes a `TextToSpeechBackend` Protocol —
-no controller changes needed).
-
-**3. UI: engine selector + per-engine catalog.** New TTS-engine
-dropdown in the model selector area, alongside the existing voice
-dropdown. Switching the engine swaps the voice catalog underneath.
-The catalog asymmetry (Piper has 100+ voices, Kokoro ships ~10) is
-real — handle it by making the engine selector a top-level choice
-and the voice catalog scoped to the selected engine. The
-`CatalogStateProvider` per-backend adapter from the v0.10.x cycle
-already supports this shape.
-
-**4. Catalog source for Kokoro.** Piper uses
-`rhasspy/piper-voices`'s `voices.json` for catalog refresh. Kokoro's
-voice pack is shipped from a HuggingFace repo (likely
-`hexgrad/Kokoro-82M` — confirm the canonical repo and packaging
-when implementation starts; upstream layout has changed across
-1.x releases). Catalog refresh fetches the upstream manifest and
-pins SHAs the same way the Piper path does.
-
-### Tests
-
-- `tests/test_kokoro_tts.py` — synthesize → WAV roundtrip on a
-  fixture voice; verify the file is a valid WAV with non-zero
-  samples and the expected sample rate.
-- `tests/test_kokoro_tts.py` — download + verify path with an
-  injected fake aria2 stub, mirroring `tests/test_tts.py` patterns.
-- `tests/test_config.py` — `tts_engine` field round-trips through
-  QSettings and defaults to `"piper"` for users upgrading.
-- `tests/test_app.py` (or wherever wiring is tested) — engine
-  selection wires the right service into `VoiceController`.
-- `tests/test_catalog_state.py` — switching engine in the UI swaps
-  the voice catalog without leaking entries from the other engine.
-
-### Streaming TTS — out of scope
-
-Sentence-streamed playback (speech starts mid-LLM-response) is a
-separate effort orthogonal to the engine swap. Bolting both into
-one PR doubles risk for no sequencing benefit. Track it as a
-v0.12.x or post-v0.14 follow-up. Kokoro chunk-streams natively, so
-when the streaming overhaul does happen Kokoro inherits it cleanly.
-
-### Open questions and risks
-
-- **espeak-ng dependency.** Kokoro uses espeak-ng for phonemization.
-  espeak-ng is on most desktop Linux installs but isn't a hard dep
-  of voiceagent today. PKGBUILD + README install notes need to add
-  it. Confirm exact phonemization integration when implementation
-  starts; some Kokoro distributions bundle a Misaki-based phonemizer
-  instead.
-- **Voice catalog UX asymmetry.** Piper's 100+ voices and Kokoro's
-  ~10 don't share a sensible single dropdown. Engine-selector-first
-  is the proposed shape — verify in implementation that it doesn't
-  regress the Piper user's existing flow.
-- **Multilingual coverage gap.** Kokoro is English-strongest; JP /
-  ZH support landed mid-2025 but the catalog beyond that is thin.
-  Default stays `piper` for non-English users until Kokoro's catalog
-  closes the gap. Document explicitly in the README.
-- **First-run download size.** Kokoro's model is ~330 MB vs. Piper's
-  20-60 MB per voice. Surface this clearly in the engine-selector UI
-  so users know what they're committing to.
-- **Disk layout migration.** Existing Piper voices in `tts-models/`
-  root (not `tts-models/piper/`) need backwards-compatible lookup,
-  not in-place migration. Avoid a flag day; leave user files alone.
-- **Voice-name collisions.** Engine-scoped catalog avoids ambiguity
-  at the UI layer. Keep storage paths engine-scoped too
-  (`tts-models/kokoro/...`, `tts-models/<piper-voice>.onnx`) so file
-  lookups can't cross.
+</details>
 
 ## ~~v0.13 — Chatterbox Turbo TTS engine~~ — superseded by v0.12.0
 
@@ -402,3 +357,77 @@ ding before a stable release.
 
 (Reserved — add as the v0.12 → v0.14 cycle surfaces other
 "good for a release-candidate" cleanups.)
+
+### Borrow Story Viber's LLM call-logger pattern
+
+Source: 2026-05-22 head-to-head comparison between Voice Agent and
+Story Viber (`~/Code/Story_Viber`). Voice Agent's `LmStudioClient` is
+ahead on connection management (model load/unload, context-window
+discovery, the loaded-instance bug workaround), but Story Viber is
+ahead on observability. Worth borrowing the latter back in.
+
+Story Viber's pattern, at `src/story_viber/observability/`:
+
+- **Typed events** (Pydantic): `RequestEvent`, `ChunkEvent`,
+  `ResponseEvent`, `ProviderErrorEvent`, `CancelledEvent`,
+  `GraderResultEvent`. Every event carries a required, non-empty
+  `call_id` (enforced via `field_validator`). A discriminator field
+  (`event: Literal["request"]`, etc.) + an `EVENT_REGISTRY` make
+  JSONL post-mortems trivial: `jq 'select(.event=="response") | ...'`.
+- **`CallContext`** — an `async with logger.call(call_id=...)`
+  context manager that **guarantees exactly one terminal event** per
+  call (response / error / cancelled). If the caller forgets, the
+  context manager auto-emits on exit. `asyncio.CancelledError`
+  produces a `CancelledEvent`; any other exception produces a
+  `ProviderErrorEvent` and re-raises.
+- **`LLMCallLogger`** — JSONL writer. Filesystem failure at
+  construction OR mid-session degrades to no-op silently with a
+  stdlib warning. Logging never aborts the host application — same
+  diagnostic-only contract Voice Agent already implicitly follows.
+- **`NullLogger`** — explicit no-op sibling, returned when logging
+  is disabled. Caller code doesn't need to special-case "no logger".
+
+**Why Voice Agent would benefit:**
+
+1. Per-call traceability across `request → chunks → response` is
+   currently impossible — `chat.py` uses stdlib `logging.warning()`
+   with plain-text messages. Diagnosing a hung stream or partial
+   completion means scrolling stderr.
+2. Voice Agent already captures reasoning_content via a callback;
+   the typed `ResponseEvent` would also persist it alongside content
+   in the log, so post-hoc analysis ("why did the model think for 4
+   seconds before answering?") works without re-running.
+3. CodeRabbit's "raw user content in logs" privacy concern (see
+   v1.0 conversation-log work above) becomes easier to reason about
+   with typed events: a future "redact messages on write" flag flips
+   only `RequestEvent.messages` to a hash, leaving timings and
+   call_ids intact for debugging.
+
+**What to actually do** (estimate: half a day):
+
+1. Vendor the three files into `src/voiceagent/services/observability/`
+   (or borrow as-is — they're MIT under Story Viber, same as us).
+2. Wrap `LmStudioClient.complete()` in a `CallContext` and emit
+   `RequestEvent` before opening the stream + `ChunkEvent` per
+   `delta.content`/`delta.reasoning_content` + `ResponseEvent` on
+   normal completion.
+3. Wire the logger into `LlmController` so the JSONL path is
+   configurable from `AppConfig` (default off — opt-in, same shape
+   as the conversation-log flip planned for v1.0).
+4. Don't replace the existing stdlib-`logging.warning()` calls;
+   layer JSONL alongside, since those warnings serve a different
+   audience (the developer reading journalctl).
+
+What we **don't** borrow:
+
+- Story Viber's `chunk_timeout` is a single knob; our two-knob model
+  (`timeout_seconds` for chat + `load_timeout_seconds` for model
+  warmup) is the right shape for our needs.
+- Story Viber's pure-asyncio cancellation story is irrelevant —
+  Voice Agent's ThreadPoolExecutor model can't use it.
+- Story Viber's prose-only contract isn't applicable; Voice Agent
+  has a real chat-history loop that needs the full assistant text
+  in the return value, which it already has.
+
+Track via a `feat/observability-jsonl` branch when we get to v1.0.
+

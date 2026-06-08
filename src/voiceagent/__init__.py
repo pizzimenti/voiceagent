@@ -1,6 +1,6 @@
 """voiceagent package."""
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 # Build counter: bumped on every commit that changes voiceagent's
 # behavior. Surfaced in the UI footer so the user can confirm at a
 # glance which build is running (since QSettings + cached venvs
