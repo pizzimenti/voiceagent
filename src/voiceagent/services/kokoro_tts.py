@@ -40,6 +40,24 @@ import wave
 from voiceagent.backends import TextToSpeechBackend
 from voiceagent.downloaders import AriaDownloader, DownloadFile, DownloadProgress
 
+# Every module `from kokoro_onnx import Kokoro` + a first synthesis
+# transitively imports. The extras gate in `app.py` / `window.py` probes
+# this whole set via `find_spec` (cheap — no heavy import on the startup
+# path) so a partial install (`--no-deps`, a distro package that omits a
+# transitive dep) is caught up front and falls back to Piper, rather than
+# passing a wrapper-only probe and crashing at first synth. `kokoro_onnx`
+# loads ONNX Runtime + numpy; its `tokenizer` submodule imports
+# `phonemizer` (phonemizer-fork) and `espeakng_loader` for espeak-ng
+# phonemization. Defined here as the single source of truth so the two
+# mirrored probes can't drift apart.
+KOKORO_EXTRA_MODULES: tuple[str, ...] = (
+    "kokoro_onnx",
+    "onnxruntime",
+    "numpy",
+    "phonemizer",
+    "espeakng_loader",
+)
+
 # Full voice catalog for `voices-v1.0.bin` (thewh1teagle bundle,
 # `model-files-v1.0` release — 54 voices spanning American/British
 # English, Spanish, French, Hindi, Italian, Japanese, Brazilian

@@ -1413,14 +1413,16 @@ class MainWindow(QObject):
     def _kokoro_extras_available() -> bool:
         """Probe for the optional Kokoro extras. Mirror of the equivalent
         helper in `app.py` so the UI gate (here) and the startup factory
-        (there) agree on whether Kokoro is usable. Checks `kokoro_onnx`
-        AND its load-bearing binary deps (`onnxruntime`, `numpy`) via
-        `find_spec` — a `kokoro_onnx`-only probe is a false positive when
-        the wrapper is present but its runtime stack is missing/broken.
+        (there) agree on whether Kokoro is usable. Both consult the same
+        `KOKORO_EXTRA_MODULES` list (wrapper + ONNX/numpy + the
+        phonemizer side) so they can't drift — a wrapper-only probe is a
+        false positive when a transitive dep is missing.
         """
         import importlib.util
 
-        for name in ("kokoro_onnx", "onnxruntime", "numpy"):
+        from voiceagent.services.kokoro_tts import KOKORO_EXTRA_MODULES
+
+        for name in KOKORO_EXTRA_MODULES:
             if importlib.util.find_spec(name) is None:
                 return False
         return True

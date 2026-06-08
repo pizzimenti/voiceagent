@@ -89,10 +89,12 @@ def _force_extras(monkeypatch, *, present: bool) -> None:
 
 def _force_kokoro_extras(monkeypatch, *, present: bool) -> None:
     """Make `_kokoro_extras_available` deterministic regardless of what is
-    actually installed. The probe checks `kokoro_onnx` + its runtime deps
-    (`onnxruntime`, `numpy`), so force the whole set."""
+    actually installed. The probe checks the full `KOKORO_EXTRA_MODULES`
+    set (wrapper + ONNX/numpy + phonemizer side), so force all of them."""
+    from voiceagent.services.kokoro_tts import KOKORO_EXTRA_MODULES
+
     real_find_spec = importlib.util.find_spec
-    targets = {"kokoro_onnx", "onnxruntime", "numpy"}
+    targets = set(KOKORO_EXTRA_MODULES)
 
     def fake_find_spec(name, *args, **kwargs):
         if name in targets:
@@ -188,6 +190,30 @@ def test_kokoro_falls_back_to_piper_when_extras_absent(
     assert isinstance(tts, PiperTtsService)
     joined = " ".join(rec.getMessage() for rec in caplog.records).lower()
     assert "kokoro" in joined
+
+
+def test_kokoro_partial_install_falls_back_to_piper(monkeypatch, tmp_path):
+    """A partial install — `kokoro_onnx` discoverable but a phonemizer-side
+    transitive dep missing (e.g. `--no-deps`) — must be caught by the
+    extras gate and fall back to Piper, not pass a wrapper-only probe and
+    crash at first synth."""
+    from voiceagent.services.kokoro_tts import KOKORO_EXTRA_MODULES
+
+    assert "phonemizer" in KOKORO_EXTRA_MODULES  # guards the dep list
+    real_find_spec = importlib.util.find_spec
+    full_set = set(KOKORO_EXTRA_MODULES)
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "phonemizer":
+            return None  # the one missing transitive dep
+        if name in full_set:
+            return object()
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    config = _make_config(tmp_path, tts_engine="kokoro")
+    _, tts, _, _ = build_shared_services(config)
+    assert isinstance(tts, PiperTtsService)
 
 
 def test_kokoro_model_root_uses_engine_scoped_helper(monkeypatch, tmp_path):

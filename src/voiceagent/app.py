@@ -46,23 +46,25 @@ def _chatterbox_extras_available() -> bool:
 def _kokoro_extras_available() -> bool:
     """Return True if the optional Kokoro engine deps are importable.
 
-    Mirrors the Chatterbox probe: check the actual runtime modules Kokoro
-    needs, not just the top-level wrapper. A `kokoro_onnx`-only
-    `find_spec` is a false positive when `kokoro_onnx` is discoverable but
-    its load-bearing binary deps (`onnxruntime`, `numpy`) are
-    missing/broken — that would bypass the deterministic Piper fallback
-    and defer the crash to first synth. `find_spec` (not a real import)
-    keeps the heavy `onnxruntime` load off the startup path while still
-    catching an absent dep. (`phonemizer-fork` is pulled by `kokoro_onnx`;
-    `onnxruntime` / `numpy` are the heavy wheels most likely to be
-    absent.) Install via
+    Mirrors the Chatterbox probe: check every module that
+    `from kokoro_onnx import Kokoro` + a first synth transitively imports
+    (`KOKORO_EXTRA_MODULES`: the wrapper, ONNX Runtime, numpy, and the
+    phonemizer side — `phonemizer` + `espeakng_loader`), not just the
+    top-level wrapper. A wrapper-only `find_spec` is a false positive when
+    `kokoro_onnx` is discoverable but a transitive dep is missing (a
+    `--no-deps`/partial install), which would bypass the deterministic
+    Piper fallback and defer the crash to first synth. `find_spec` (not a
+    real import) keeps the heavy `onnxruntime` load off the startup path
+    while still catching an absent dep. Install via
     `pip install --ignore-requires-python voiceagent[kokoro]` (the flag
     works around kokoro-onnx's conservative `<3.14` cap; cp314 wheels
     exist).
     """
     import importlib.util
 
-    for name in ("kokoro_onnx", "onnxruntime", "numpy"):
+    from voiceagent.services.kokoro_tts import KOKORO_EXTRA_MODULES
+
+    for name in KOKORO_EXTRA_MODULES:
         if importlib.util.find_spec(name) is None:
             return False
     return True
