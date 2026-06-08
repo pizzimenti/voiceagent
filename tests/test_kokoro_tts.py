@@ -242,6 +242,46 @@ def test_concurrent_installs_download_bundle_once(service, model_root):
     assert service.is_available is True
 
 
+def test_separate_instances_same_root_download_bundle_once(model_root):
+    """Two KokoroTtsService instances pointing at the same bundle dir (as
+    happens when an engine swap replaces the service mid-download) must
+    share the process-wide model_root-keyed lock and fetch the bundle
+    exactly once — a per-instance lock would let the second instance
+    launch a second aria2 against the same partial files."""
+    import threading
+    import time
+
+    download_calls: list[int] = []
+    call_lock = threading.Lock()
+
+    class SlowDownloader:
+        def get_remote_size(self, url):
+            return 123
+
+        def download(self, files, progress_callback=None):
+            with call_lock:
+                download_calls.append(1)
+            time.sleep(0.15)
+            for f in files:
+                f.destination.parent.mkdir(parents=True, exist_ok=True)
+                f.destination.write_bytes(b"downloaded")
+
+    svc_a = KokoroTtsService(model_root=model_root)
+    svc_b = KokoroTtsService(model_root=model_root)
+    svc_a.downloader = SlowDownloader()
+    svc_b.downloader = SlowDownloader()
+
+    t_a = threading.Thread(target=svc_a.download_item, args=("af_heart",))
+    t_b = threading.Thread(target=svc_b.download_item, args=("am_michael",))
+    t_a.start()
+    t_b.start()
+    t_a.join()
+    t_b.join()
+
+    assert sum(download_calls) == 1
+    assert svc_a.is_available is True
+
+
 def test_download_noop_when_bundle_present(service, model_root):
     _plant_bundle(model_root)
     fake = _FakeDownloader()

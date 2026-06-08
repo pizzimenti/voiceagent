@@ -35,6 +35,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+from typing import ClassVar
 import wave
 
 from voiceagent.backends import TextToSpeechBackend
@@ -147,6 +148,29 @@ class KokoroTtsService(TextToSpeechBackend):
     _VOICES_SHA256 = "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"
     _VOICES_SIZE_BYTES = 28_214_398
 
+    # PROCESS-WIDE download locks, keyed by resolved bundle directory.
+    # The serialization must NOT be per-instance: `_perform_tts_engine_swap`
+    # replaces the live `KokoroTtsService`, and a long-running aria2 worker
+    # can outlive the old loader's bounded `shutdown()`. If the user starts
+    # the ~350 MB install, swaps engine away, then swaps back, the new
+    # instance would otherwise get a fresh per-instance lock and — because
+    # the partial files still carry `.aria2` sidecars, so `_bundle_available`
+    # is False — could launch a SECOND aria2 against the same destinations
+    # and corrupt the bundle. Keying a class-level lock on `model_root`
+    # makes every instance pointing at the same bundle share one lock.
+    _download_locks: ClassVar[dict[Path, threading.Lock]] = {}
+    _download_locks_guard: ClassVar[threading.Lock] = threading.Lock()
+
+    @classmethod
+    def _bundle_download_lock(cls, model_root: Path) -> threading.Lock:
+        key = Path(model_root).resolve()
+        with cls._download_locks_guard:
+            lock = cls._download_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                cls._download_locks[key] = lock
+            return lock
+
     def __init__(self, model_root, selected_item: str | None = None) -> None:
         self.model_root = Path(model_root)
         self._selected_item = selected_item or _DEFAULT_VOICE
@@ -157,15 +181,6 @@ class KokoroTtsService(TextToSpeechBackend):
         # concurrent synth reading it.
         self._kokoro = None
         self._kokoro_lock = threading.Lock()
-        # Serializes the shared-bundle download. The loader
-        # (`ParallelItemLoader`) dedupes in-flight installs by voice
-        # NAME on a `max_workers=3` pool, but every Kokoro voice maps to
-        # the same two-file fetch — so clicking Install on two different
-        # voices before the first completes would otherwise dispatch two
-        # aria2 processes writing the same `kokoro-v1.0.onnx` /
-        # `voices-v1.0.bin` destinations and corrupt the bundle. This
-        # lock collapses all concurrent voice requests into one download.
-        self._download_lock = threading.Lock()
 
     @property
     def model_path(self) -> Path:
@@ -264,10 +279,13 @@ class KokoroTtsService(TextToSpeechBackend):
         # Fast-path: skip the lock entirely once the bundle is on disk.
         if self._bundle_available():
             return
-        # Double-checked locking: the first concurrent caller downloads;
-        # any caller that was blocked on the lock re-checks and finds the
-        # bundle present, so only one aria2 run ever touches these files.
-        with self._download_lock:
+        # Double-checked locking on the PROCESS-WIDE, model_root-keyed lock
+        # (not a per-instance one) so a service replaced mid-download by an
+        # engine swap still serializes against the in-flight aria2 worker.
+        # The first caller downloads; any caller blocked on the lock
+        # re-checks and finds the bundle present, so only one aria2 run
+        # ever touches these files.
+        with self._bundle_download_lock(self.model_root):
             if self._bundle_available():
                 return
             self._download_bundle(progress_callback)
