@@ -260,11 +260,17 @@ def test_download_selected_item_uses_current_voice(service):
 
 def test_remove_deletes_bundle_and_sidecars(service, model_root):
     _plant_bundle(model_root)
-    (model_root / f"{KokoroTtsService.MODEL_FILENAME}.aria2").write_bytes(b"c")
+    # Plant a stale `.aria2` sidecar next to BOTH bundle files so the
+    # removal of each sidecar is covered, not just the model's.
+    model_sidecar = model_root / f"{KokoroTtsService.MODEL_FILENAME}.aria2"
+    voices_sidecar = model_root / f"{KokoroTtsService.VOICES_FILENAME}.aria2"
+    model_sidecar.write_bytes(b"c")
+    voices_sidecar.write_bytes(b"c")
     service.remove_item("af_heart")
     assert not (model_root / KokoroTtsService.MODEL_FILENAME).exists()
     assert not (model_root / KokoroTtsService.VOICES_FILENAME).exists()
-    assert not (model_root / f"{KokoroTtsService.MODEL_FILENAME}.aria2").exists()
+    assert not model_sidecar.exists()
+    assert not voices_sidecar.exists()
     assert service.is_available is False
 
 
@@ -291,6 +297,7 @@ def test_artifact_manifest_pins_sha256_for_both_files(service, model_root):
     voices_entry = manifest[model_root / KokoroTtsService.VOICES_FILENAME]
     assert voices_entry.checksum_algorithm == "sha256"
     assert voices_entry.expected_size == 28_214_398
+    assert len(voices_entry.expected_checksum_hex) == 64
 
 
 # ---------------------------------------------------------------------

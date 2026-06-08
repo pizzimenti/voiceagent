@@ -89,11 +89,13 @@ def _force_extras(monkeypatch, *, present: bool) -> None:
 
 def _force_kokoro_extras(monkeypatch, *, present: bool) -> None:
     """Make `_kokoro_extras_available` deterministic regardless of what is
-    actually installed. The probe is a single `find_spec("kokoro_onnx")`."""
+    actually installed. The probe checks `kokoro_onnx` + its runtime deps
+    (`onnxruntime`, `numpy`), so force the whole set."""
     real_find_spec = importlib.util.find_spec
+    targets = {"kokoro_onnx", "onnxruntime", "numpy"}
 
     def fake_find_spec(name, *args, **kwargs):
-        if name == "kokoro_onnx":
+        if name in targets:
             return object() if present else None
         return real_find_spec(name, *args, **kwargs)
 

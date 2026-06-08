@@ -1413,13 +1413,17 @@ class MainWindow(QObject):
     def _kokoro_extras_available() -> bool:
         """Probe for the optional Kokoro extras. Mirror of the equivalent
         helper in `app.py` so the UI gate (here) and the startup factory
-        (there) agree on whether Kokoro is usable. `kokoro_onnx` pulls
-        `onnxruntime` / `numpy` / `phonemizer-fork` transitively, so a
-        successful top-level probe implies the runtime deps resolved.
+        (there) agree on whether Kokoro is usable. Checks `kokoro_onnx`
+        AND its load-bearing binary deps (`onnxruntime`, `numpy`) via
+        `find_spec` — a `kokoro_onnx`-only probe is a false positive when
+        the wrapper is present but its runtime stack is missing/broken.
         """
         import importlib.util
 
-        return importlib.util.find_spec("kokoro_onnx") is not None
+        for name in ("kokoro_onnx", "onnxruntime", "numpy"):
+            if importlib.util.find_spec(name) is None:
+                return False
+        return True
 
     def _build_tts_service_for_engine(self, engine: str):
         """Construct a fresh TTS service for `engine`. Re-derives its
